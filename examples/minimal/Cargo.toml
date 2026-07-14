@@ -37,6 +37,7 @@ debug-mailbox-init = [
     "rp1-hal/debug-mailbox-init",
     "rp1-rt/debug-mailbox-init",
 ]
+debug-mailbox-ping = ["state5-composite-boundary", "debug-mailbox-init"]
 debug-stub = [
     "pcie-ep-init",
     "debug-snapshot",

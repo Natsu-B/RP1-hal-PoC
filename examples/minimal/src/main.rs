@@ -1422,6 +1422,13 @@ fn main(mut p: Peripherals) -> ! {
                     pulse_width(&mut gpio22, 124);
                 }
             }
+            #[cfg(feature = "debug-mailbox-ping")]
+            if state5.decision == State5Decision::LinkUp {
+                loop {
+                    rp1_hal::mailbox::poll();
+                    core::hint::spin_loop();
+                }
+            }
             quiet_stop();
         }
 

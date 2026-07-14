@@ -27,10 +27,16 @@ pub fn init_mailbox() {
         &mut mailbox.size,
         core::mem::size_of::<DebugMailbox>() as u32,
     );
+    write_u32(&mut mailbox.flags, 0);
+    write_u32(&mut mailbox.seq, 0);
+    write_u32(&mut mailbox.ack, 0);
     write_u32(&mut mailbox.state, debug::state::RUNNING);
     write_u32(&mut mailbox.stop_reason, debug::stop_reason::NONE);
     write_u32(&mut mailbox.command, debug::command::NONE);
+    write_u32(&mut mailbox.arg0, 0);
+    write_u32(&mut mailbox.arg1, 0);
     write_u32(&mut mailbox.status, debug::status::OK);
+    write_u32(&mut mailbox.data_len, 0);
     LAST_SEQ.store(read_u32(&mailbox.seq), Ordering::Relaxed);
 }
 
