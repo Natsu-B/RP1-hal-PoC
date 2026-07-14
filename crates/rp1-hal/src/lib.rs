@@ -5,6 +5,7 @@ pub use rp1_macros::main;
 
 pub mod addr;
 pub mod gpio;
+pub mod i2c;
 pub mod mailbox;
 pub mod mmio;
 pub mod owner;

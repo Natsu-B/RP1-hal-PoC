@@ -11,10 +11,14 @@ const SYS_RIO_IN: usize = 0x400e_0008;
 
 const PROC_MISC_RESET_CLEAR: u32 = 1 << 19;
 const FUNCSEL_SYS_RIO: u32 = 0x85;
+const FUNCSEL_MASK: u32 = 0x1f;
 const PAD_G33_OUTPUT: u32 = 0x56;
+const PAD_SLEW_FAST: u32 = 1 << 0;
 const PAD_SCHMITT: u32 = 1 << 1;
 const PAD_PULL_MASK: u32 = 0b11 << 2;
 const PAD_PULL_UP: u32 = 0b10 << 2;
+const PAD_DRIVE_MASK: u32 = 0b11 << 4;
+const PAD_DRIVE_12MA: u32 = 0b11 << 4;
 const PAD_IE: u32 = 1 << 6;
 const PAD_OD: u32 = 1 << 7;
 
@@ -64,7 +68,10 @@ impl<const N: u8> Pin<N> {
     }
 
     pub fn into_function<const F: u8>(self) -> ConfiguredPin<N, Function<F>> {
-        // TODO: write actual function select once RP1 GPIO register offsets are verified.
+        assert!(N < 54, "RP1 function select supports GPIO pins 0..53");
+        assert!(F < 32, "RP1 function select is a five-bit field");
+        reg(gpio_ctrl_addr(N)).modify(|value| (value & !FUNCSEL_MASK) | u32::from(F));
+        reg(gpio_pad_addr(N)).modify(|value| (value | PAD_IE) & !PAD_OD);
         ConfiguredPin { _mode: PhantomData }
     }
 }
@@ -112,6 +119,17 @@ fn configure_input<const N: u8>(pull: u32) -> ConfiguredPin<N, Input> {
     ConfiguredPin { _mode: PhantomData }
 }
 
+pub(crate) fn configure_i2c_pin<const N: u8>() {
+    assert!(N < 54, "RP1 I2C pin must be in GPIO range 0..53");
+    reg(gpio_pad_addr(N)).modify(|value| {
+        (value & !(PAD_SLEW_FAST | PAD_PULL_MASK | PAD_DRIVE_MASK | PAD_OD))
+            | PAD_SCHMITT
+            | PAD_PULL_UP
+            | PAD_DRIVE_12MA
+            | PAD_IE
+    });
+}
+
 pub(crate) const fn gpio_ctrl_addr(n: u8) -> usize {
     IO_BANK0_BASE + 0x04 + (n as usize) * 8
 }
@@ -154,5 +172,22 @@ mod tests {
         assert_ne!(value & PAD_IE, 0);
         assert_ne!(value & PAD_OD, 0);
         assert_eq!(SYS_RIO_IN, 0x400e_0008);
+    }
+
+    #[test]
+    fn i2c_pad_contract_matches_rp1_linux_pin_configuration() {
+        let initial = PAD_SLEW_FAST | PAD_OD;
+        let value = (initial & !(PAD_SLEW_FAST | PAD_PULL_MASK | PAD_DRIVE_MASK | PAD_OD))
+            | PAD_SCHMITT
+            | PAD_PULL_UP
+            | PAD_DRIVE_12MA
+            | PAD_IE;
+
+        assert_eq!(value & PAD_SLEW_FAST, 0);
+        assert_eq!(value & PAD_PULL_MASK, PAD_PULL_UP);
+        assert_eq!(value & PAD_DRIVE_MASK, PAD_DRIVE_12MA);
+        assert_ne!(value & PAD_SCHMITT, 0);
+        assert_ne!(value & PAD_IE, 0);
+        assert_eq!(value & PAD_OD, 0);
     }
 }

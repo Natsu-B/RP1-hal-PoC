@@ -39,6 +39,8 @@ debug-mailbox-init = [
 ]
 debug-mailbox-ping = ["state5-composite-boundary", "debug-mailbox-init"]
 gpio-wiring-proof = ["state5-composite-boundary"]
+i2c1-reset-only = ["pll-sys-core-lock-only"]
+i2c1-host-proof = ["i2c1-reset-only"]
 debug-stub = [
     "pcie-ep-init",
     "debug-snapshot",

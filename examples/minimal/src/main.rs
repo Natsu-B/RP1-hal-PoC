@@ -242,6 +242,14 @@ enum Uart0ResetError {
     Timeout,
 }
 
+#[cfg(all(target_arch = "arm", feature = "i2c1-reset-only"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum I2c1ResetError {
+    PreconditionMismatch,
+    WriteRejected,
+    Timeout,
+}
+
 #[cfg(all(target_arch = "arm", feature = "state3-composite-boundary"))]
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -816,6 +824,39 @@ fn release_uart0_reset_bank1_bit26() -> Result<(), Uart0ResetError> {
     }
 
     Err(Uart0ResetError::Timeout)
+}
+
+#[cfg(all(target_arch = "arm", feature = "i2c1-reset-only"))]
+fn release_i2c1_reset_bank0_bit8() -> Result<(), I2c1ResetError> {
+    const CTRL0: *const u32 = 0x4001_4000 as *const u32;
+    const CLEAR0: *mut u32 = 0x4001_7000 as *mut u32;
+    const DONE0: *const u32 = 0x4001_4018 as *const u32;
+    const I2C1_RESET: u32 = 1 << 8;
+    const POLL_LIMIT: usize = 100_000;
+
+    unsafe {
+        let ctrl = core::ptr::read_volatile(CTRL0);
+        let done = core::ptr::read_volatile(DONE0);
+        if ctrl & I2C1_RESET == 0 || done & I2C1_RESET != 0 {
+            return Err(I2c1ResetError::PreconditionMismatch);
+        }
+
+        core::ptr::write_volatile(CLEAR0, I2C1_RESET);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+
+        if core::ptr::read_volatile(CTRL0) & I2C1_RESET != 0 {
+            return Err(I2c1ResetError::WriteRejected);
+        }
+    }
+
+    for _ in 0..POLL_LIMIT {
+        if unsafe { core::ptr::read_volatile(DONE0) } & I2C1_RESET != 0 {
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+
+    Err(I2c1ResetError::Timeout)
 }
 
 #[cfg(all(target_arch = "arm", feature = "state3-composite-boundary"))]
@@ -1481,6 +1522,39 @@ fn main(mut p: Peripherals) -> ! {
                     pulse_width(&mut gpio22, 488); // MISO release was not observed.
                 } else {
                     pulse_width(&mut gpio22, 480); // MISO pull-low was not observed.
+                }
+                quiet_stop();
+            }
+            #[cfg(feature = "i2c1-reset-only")]
+            if state5.decision == State5Decision::LinkUp {
+                match release_i2c1_reset_bank0_bit8() {
+                    Ok(()) => pulse_width(&mut gpio22, 376),
+                    Err(_) => {
+                        pulse_width(&mut gpio22, 512);
+                        quiet_stop();
+                    }
+                }
+                #[cfg(not(feature = "i2c1-host-proof"))]
+                quiet_stop();
+            }
+            #[cfg(feature = "i2c1-host-proof")]
+            if state5.decision == State5Decision::LinkUp {
+                const I2C1_PROOF_PACKET: [u8; 20] = [
+                    0x44, 0x31, 0x44, 0x52, 0x01, 0x49, 0x01, 0x09, 0xdf, 0x9b, 0x57, 0x13, 0xe0,
+                    0xac, 0x68, 0x24, 0x31, 0x43, 0x32, 0x49,
+                ];
+
+                let sda = p.gpio.pin::<2>();
+                let scl = p.gpio.pin::<3>();
+                match p.i2c1.into_host_100khz(sda, scl) {
+                    Ok(mut i2c1) => {
+                        pulse_width(&mut gpio22, 360); // I2C1 host initialized.
+                        match i2c1.write(0x2d, &I2C1_PROOF_PACKET) {
+                            Ok(_) => pulse_width(&mut gpio22, 368),
+                            Err(_) => pulse_width(&mut gpio22, 504),
+                        }
+                    }
+                    Err(_) => pulse_width(&mut gpio22, 496),
                 }
                 quiet_stop();
             }
