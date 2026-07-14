@@ -6,18 +6,52 @@ use rp1_abi::debug::{self, DebugMailbox};
 
 static LAST_SEQ: AtomicU32 = AtomicU32::new(0);
 
+const PCIE_CFG_BASE: usize = 0x4010_8000;
+const PCIE_DBI_BASE: usize = 0x4010_9000;
+const DEBUG_DIAG_ADDR: usize = 0x2000_f800;
+
+const DIAG_MAGIC: u32 = u32::from_le_bytes(*b"P1DG");
+
 const _: () = assert!(core::mem::size_of::<DebugMailbox>() <= debug::MAILBOX_SIZE);
 
 pub fn init() {
+    init_mailbox();
+    snapshot_pcie_diag(0x40, 0, 0);
+}
+
+pub fn init_mailbox() {
     let mailbox = mailbox_mut();
     write_u32(&mut mailbox.magic, debug::MAGIC);
     write_u32(&mut mailbox.version, debug::VERSION);
-    write_u32(&mut mailbox.size, core::mem::size_of::<DebugMailbox>() as u32);
+    write_u32(
+        &mut mailbox.size,
+        core::mem::size_of::<DebugMailbox>() as u32,
+    );
     write_u32(&mut mailbox.state, debug::state::RUNNING);
     write_u32(&mut mailbox.stop_reason, debug::stop_reason::NONE);
     write_u32(&mut mailbox.command, debug::command::NONE);
     write_u32(&mut mailbox.status, debug::status::OK);
     LAST_SEQ.store(read_u32(&mailbox.seq), Ordering::Relaxed);
+}
+
+fn snapshot_pcie_diag(phase: u32, register: u32, value: u32) {
+    write_diag(0, DIAG_MAGIC);
+    write_diag(1, phase);
+    write_diag(2, register);
+    write_diag(3, value);
+    write_diag(4, mmio_read32(PCIE_CFG_BASE + 0x004));
+    write_diag(5, mmio_read32(PCIE_CFG_BASE + 0x194));
+    write_diag(6, mmio_read32(PCIE_CFG_BASE + 0x1a4));
+    write_diag(7, mmio_read32(PCIE_CFG_BASE + 0x1ac));
+    write_diag(8, mmio_read32(PCIE_DBI_BASE + 0x004));
+}
+
+fn write_diag(index: usize, value: u32) {
+    unsafe { ptr::write_volatile((DEBUG_DIAG_ADDR as *mut u32).add(index), value) };
+}
+
+fn mmio_read32(addr: usize) -> u32 {
+    unsafe { ptr::read_volatile(addr as *const u32) }
 }
 
 pub fn poll() {

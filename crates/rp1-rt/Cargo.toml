@@ -6,7 +6,13 @@ build = "build.rs"
 
 [features]
 default = []
-debug-stub = []
+pcie-ep-init = []
+debug-stack-low = []
+debug-snapshot = ["debug-stack-low"]
+debug-mailbox-layout = ["debug-stack-low"]
+debug-mailbox-init = ["debug-mailbox-layout"]
+debug-stub = ["pcie-ep-init", "debug-snapshot", "debug-mailbox-init"]
+uart0-rx-irq = []
 
 [dependencies]
 rp1-abi = { path = "../rp1-abi" }
