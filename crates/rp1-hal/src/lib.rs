@@ -12,6 +12,7 @@ pub mod owner;
 pub mod peripherals;
 pub mod prelude;
 pub mod pwm;
+pub mod spi;
 pub mod uart;
 
 pub use peripherals::Peripherals;

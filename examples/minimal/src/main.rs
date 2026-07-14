@@ -250,6 +250,14 @@ enum I2c1ResetError {
     Timeout,
 }
 
+#[cfg(all(target_arch = "arm", feature = "spi0-reset-only"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Spi0ResetError {
+    PreconditionMismatch,
+    WriteRejected,
+    Timeout,
+}
+
 #[cfg(all(target_arch = "arm", feature = "state3-composite-boundary"))]
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -857,6 +865,39 @@ fn release_i2c1_reset_bank0_bit8() -> Result<(), I2c1ResetError> {
     }
 
     Err(I2c1ResetError::Timeout)
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-reset-only"))]
+fn release_spi0_reset_bank1_bit10() -> Result<(), Spi0ResetError> {
+    const CTRL1: *const u32 = 0x4001_4004 as *const u32;
+    const CLEAR1: *mut u32 = 0x4001_7004 as *mut u32;
+    const DONE1: *const u32 = 0x4001_401c as *const u32;
+    const SPI0_RESET: u32 = 1 << 10;
+    const POLL_LIMIT: usize = 100_000;
+
+    unsafe {
+        let ctrl = core::ptr::read_volatile(CTRL1);
+        let done = core::ptr::read_volatile(DONE1);
+        if ctrl & SPI0_RESET == 0 || done & SPI0_RESET != 0 {
+            return Err(Spi0ResetError::PreconditionMismatch);
+        }
+
+        core::ptr::write_volatile(CLEAR1, SPI0_RESET);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+
+        if core::ptr::read_volatile(CTRL1) & SPI0_RESET != 0 {
+            return Err(Spi0ResetError::WriteRejected);
+        }
+    }
+
+    for _ in 0..POLL_LIMIT {
+        if unsafe { core::ptr::read_volatile(DONE1) } & SPI0_RESET != 0 {
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+
+    Err(Spi0ResetError::Timeout)
 }
 
 #[cfg(all(target_arch = "arm", feature = "state3-composite-boundary"))]
@@ -1555,6 +1596,41 @@ fn main(mut p: Peripherals) -> ! {
                         }
                     }
                     Err(_) => pulse_width(&mut gpio22, 496),
+                }
+                quiet_stop();
+            }
+            #[cfg(feature = "spi0-reset-only")]
+            if state5.decision == State5Decision::LinkUp {
+                match release_spi0_reset_bank1_bit10() {
+                    Ok(()) => pulse_width(&mut gpio22, 384),
+                    Err(_) => {
+                        pulse_width(&mut gpio22, 520);
+                        quiet_stop();
+                    }
+                }
+                #[cfg(not(feature = "spi0-host-proof"))]
+                quiet_stop();
+            }
+            #[cfg(feature = "spi0-host-proof")]
+            if state5.decision == State5Decision::LinkUp {
+                const SPI0_PROOF_PACKET: [u8; 20] = [
+                    0x44, 0x31, 0x53, 0x50, 0x01, 0x53, 0x02, 0x09, 0xdf, 0x9b, 0x57, 0x13, 0xe0,
+                    0xac, 0x68, 0x24, 0x53, 0x50, 0x49, 0x30,
+                ];
+
+                let cs0 = p.gpio.pin::<8>();
+                let miso = p.gpio.pin::<9>();
+                let mosi = p.gpio.pin::<10>();
+                let sclk = p.gpio.pin::<11>();
+                match p.spi0.into_host_mode0_100khz(cs0, miso, mosi, sclk) {
+                    Ok(mut spi0) => {
+                        pulse_width(&mut gpio22, 400); // SPI0 host initialized.
+                        match spi0.write(&SPI0_PROOF_PACKET) {
+                            Ok(_) => pulse_width(&mut gpio22, 408),
+                            Err(_) => pulse_width(&mut gpio22, 536),
+                        }
+                    }
+                    Err(_) => pulse_width(&mut gpio22, 528),
                 }
                 quiet_stop();
             }

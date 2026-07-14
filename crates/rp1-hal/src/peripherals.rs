@@ -6,6 +6,7 @@ pub struct Peripherals {
     pub gpio: crate::gpio::Gpio,
     pub i2c1: crate::i2c::I2c1,
     pub pwm0: crate::pwm::Pwm0,
+    pub spi0: crate::spi::Spi0,
     pub uart0: crate::uart::Uart0,
     _private: (),
 }
@@ -35,6 +36,7 @@ impl Peripherals {
             gpio: unsafe { crate::gpio::Gpio::new() },
             i2c1: unsafe { crate::i2c::I2c1::new() },
             pwm0: unsafe { crate::pwm::Pwm0::new() },
+            spi0: unsafe { crate::spi::Spi0::new() },
             uart0: unsafe { crate::uart::Uart0::new() },
             _private: (),
         }

@@ -130,6 +130,32 @@ pub(crate) fn configure_i2c_pin<const N: u8>() {
     });
 }
 
+pub(crate) fn configure_spi_data_pin<const N: u8>() {
+    assert!(N < 54, "RP1 SPI pin must be in GPIO range 0..53");
+    reg(gpio_pad_addr(N)).modify(|value| {
+        (value & !(PAD_PULL_MASK | PAD_DRIVE_MASK | PAD_OD))
+            | PAD_SLEW_FAST
+            | PAD_SCHMITT
+            | PAD_DRIVE_12MA
+            | PAD_IE
+    });
+}
+
+pub(crate) fn configure_spi_cs_pin<const N: u8>() {
+    assert!(
+        N < 54,
+        "RP1 SPI chip-select pin must be in GPIO range 0..53"
+    );
+    reg(gpio_pad_addr(N)).modify(|value| {
+        (value & !(PAD_PULL_MASK | PAD_DRIVE_MASK | PAD_OD))
+            | PAD_SLEW_FAST
+            | PAD_SCHMITT
+            | PAD_PULL_UP
+            | PAD_DRIVE_12MA
+            | PAD_IE
+    });
+}
+
 pub(crate) const fn gpio_ctrl_addr(n: u8) -> usize {
     IO_BANK0_BASE + 0x04 + (n as usize) * 8
 }
@@ -188,6 +214,34 @@ mod tests {
         assert_eq!(value & PAD_DRIVE_MASK, PAD_DRIVE_12MA);
         assert_ne!(value & PAD_SCHMITT, 0);
         assert_ne!(value & PAD_IE, 0);
+        assert_eq!(value & PAD_OD, 0);
+    }
+
+    #[test]
+    fn spi_data_pad_contract_is_fast_push_pull_with_no_bias() {
+        let initial = PAD_PULL_UP | PAD_OD;
+        let value = (initial & !(PAD_PULL_MASK | PAD_DRIVE_MASK | PAD_OD))
+            | PAD_SLEW_FAST
+            | PAD_SCHMITT
+            | PAD_DRIVE_12MA
+            | PAD_IE;
+        assert_ne!(value & PAD_SLEW_FAST, 0);
+        assert_eq!(value & PAD_PULL_MASK, 0);
+        assert_eq!(value & PAD_DRIVE_MASK, PAD_DRIVE_12MA);
+        assert_ne!(value & PAD_IE, 0);
+        assert_eq!(value & PAD_OD, 0);
+    }
+
+    #[test]
+    fn spi_chip_select_pad_contract_keeps_idle_pull_up() {
+        let initial = PAD_OD;
+        let value = (initial & !(PAD_PULL_MASK | PAD_DRIVE_MASK | PAD_OD))
+            | PAD_SLEW_FAST
+            | PAD_SCHMITT
+            | PAD_PULL_UP
+            | PAD_DRIVE_12MA
+            | PAD_IE;
+        assert_eq!(value & PAD_PULL_MASK, PAD_PULL_UP);
         assert_eq!(value & PAD_OD, 0);
     }
 }
