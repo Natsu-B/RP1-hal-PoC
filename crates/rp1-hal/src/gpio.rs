@@ -7,10 +7,16 @@ const IO_BANK0_BASE: usize = 0x400d_0000;
 const PADS_BANK0_BASE: usize = 0x400f_0000;
 const SYS_RIO_OUT: usize = 0x400e_0000;
 const SYS_RIO_OE: usize = 0x400e_0004;
+const SYS_RIO_IN: usize = 0x400e_0008;
 
 const PROC_MISC_RESET_CLEAR: u32 = 1 << 19;
 const FUNCSEL_SYS_RIO: u32 = 0x85;
 const PAD_G33_OUTPUT: u32 = 0x56;
+const PAD_SCHMITT: u32 = 1 << 1;
+const PAD_PULL_MASK: u32 = 0b11 << 2;
+const PAD_PULL_UP: u32 = 0b10 << 2;
+const PAD_IE: u32 = 1 << 6;
+const PAD_OD: u32 = 1 << 7;
 
 pub struct Gpio {
     _private: (),
@@ -40,8 +46,11 @@ impl Gpio {
 
 impl<const N: u8> Pin<N> {
     pub fn into_input(self) -> ConfiguredPin<N, Input> {
-        // TODO: write actual RP1 GPIO function/select register once offsets are verified.
-        ConfiguredPin { _mode: PhantomData }
+        configure_input::<N>(0)
+    }
+
+    pub fn into_input_pull_up(self) -> ConfiguredPin<N, Input> {
+        configure_input::<N>(PAD_PULL_UP)
     }
 
     pub fn into_output(self) -> ConfiguredPin<N, Output> {
@@ -57,6 +66,17 @@ impl<const N: u8> Pin<N> {
     pub fn into_function<const F: u8>(self) -> ConfiguredPin<N, Function<F>> {
         // TODO: write actual function select once RP1 GPIO register offsets are verified.
         ConfiguredPin { _mode: PhantomData }
+    }
+}
+
+impl<const N: u8> ConfiguredPin<N, Input> {
+    pub fn is_high(&self) -> bool {
+        assert!(N < 32, "SYS_RIO GPIO input currently supports pins 0..31");
+        reg(SYS_RIO_IN).read() & gpio_bit(N) != 0
+    }
+
+    pub fn is_low(&self) -> bool {
+        !self.is_high()
     }
 }
 
@@ -80,6 +100,16 @@ impl<const N: u8> ConfiguredPin<N, Output> {
 #[inline(always)]
 fn reg(addr: usize) -> Reg<u32> {
     unsafe { Reg::new(addr) }
+}
+
+fn configure_input<const N: u8>(pull: u32) -> ConfiguredPin<N, Input> {
+    assert!(N < 32, "SYS_RIO GPIO input currently supports pins 0..31");
+    reg(PROC_MISC).write(PROC_MISC_RESET_CLEAR);
+    reg(SYS_RIO_OE).modify(|value| value & !gpio_bit(N));
+    reg(gpio_ctrl_addr(N)).write(FUNCSEL_SYS_RIO);
+    reg(gpio_pad_addr(N))
+        .modify(|value| (value & !PAD_PULL_MASK) | PAD_SCHMITT | PAD_IE | PAD_OD | pull);
+    ConfiguredPin { _mode: PhantomData }
 }
 
 pub(crate) const fn gpio_ctrl_addr(n: u8) -> usize {
@@ -115,5 +145,14 @@ mod tests {
     #[test]
     fn gpio_bits_match_sys_rio_mask() {
         assert_eq!(gpio_bit(22), 0x0040_0000);
+    }
+
+    #[test]
+    fn input_pad_contract_uses_pull_up_without_enabling_output() {
+        let value = PAD_SCHMITT | PAD_IE | PAD_OD | PAD_PULL_UP;
+        assert_eq!(value & PAD_PULL_MASK, PAD_PULL_UP);
+        assert_ne!(value & PAD_IE, 0);
+        assert_ne!(value & PAD_OD, 0);
+        assert_eq!(SYS_RIO_IN, 0x400e_0008);
     }
 }

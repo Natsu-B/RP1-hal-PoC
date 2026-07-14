@@ -38,6 +38,7 @@ debug-mailbox-init = [
     "rp1-rt/debug-mailbox-init",
 ]
 debug-mailbox-ping = ["state5-composite-boundary", "debug-mailbox-init"]
+gpio-wiring-proof = ["state5-composite-boundary"]
 debug-stub = [
     "pcie-ep-init",
     "debug-snapshot",

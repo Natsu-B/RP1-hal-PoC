@@ -42,6 +42,35 @@ fn pulse_width(pin: &mut ConfiguredPin<22, Output>, units: u32) {
     delay_readback_units(8);
 }
 
+#[cfg(all(target_arch = "arm", feature = "gpio-wiring-proof"))]
+fn wiring_pulses<const N: u8>(pin: &mut ConfiguredPin<N, Output>, count: u8) {
+    for _ in 0..count {
+        pin.set_high();
+        busy_wait_us(5_000);
+        pin.set_low();
+        busy_wait_us(5_000);
+    }
+    busy_wait_us(10_000);
+}
+
+#[cfg(all(target_arch = "arm", feature = "gpio-wiring-proof"))]
+fn wait_for_input_level<const N: u8>(
+    pin: &ConfiguredPin<N, Input>,
+    high: bool,
+    timeout_us: u64,
+) -> bool {
+    let start = raw_timer_us();
+    loop {
+        if pin.is_high() == high {
+            return true;
+        }
+        if raw_timer_us().wrapping_sub(start) > timeout_us {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 #[cfg(all(target_arch = "arm", feature = "pll-sys-core-lock-only"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PllSysResetError {
@@ -1421,6 +1450,39 @@ fn main(mut p: Peripherals) -> ! {
                 } else {
                     pulse_width(&mut gpio22, 124);
                 }
+            }
+            #[cfg(feature = "gpio-wiring-proof")]
+            if state5.decision == State5Decision::LinkUp {
+                let miso = p.gpio.pin::<9>().into_input_pull_up();
+                let mut i2c_sda = p.gpio.pin::<2>().into_output();
+                let mut i2c_scl = p.gpio.pin::<3>().into_output();
+                let mut spi_mosi = p.gpio.pin::<10>().into_output();
+                let mut spi_sclk = p.gpio.pin::<11>().into_output();
+                let mut spi_cs0 = p.gpio.pin::<8>().into_output();
+                let mut spi_cs1 = p.gpio.pin::<7>().into_output();
+
+                busy_wait_us(20_000);
+                wiring_pulses(&mut i2c_sda, 2);
+                wiring_pulses(&mut i2c_scl, 3);
+                wiring_pulses(&mut spi_mosi, 4);
+                wiring_pulses(&mut spi_sclk, 5);
+                wiring_pulses(&mut spi_cs0, 6);
+                wiring_pulses(&mut spi_cs1, 7);
+
+                pulse_width(&mut gpio22, 336); // Wiring outputs complete; MISO is input.
+                let saw_low = wait_for_input_level(&miso, false, 10_000_000);
+                if saw_low {
+                    pulse_width(&mut gpio22, 344); // ESP32 pulled MISO low.
+                }
+                let saw_release = saw_low && wait_for_input_level(&miso, true, 10_000_000);
+                if saw_release {
+                    pulse_width(&mut gpio22, 352); // ESP32 released MISO; RP1 pull-up won.
+                } else if saw_low {
+                    pulse_width(&mut gpio22, 488); // MISO release was not observed.
+                } else {
+                    pulse_width(&mut gpio22, 480); // MISO pull-low was not observed.
+                }
+                quiet_stop();
             }
             #[cfg(feature = "debug-mailbox-ping")]
             if state5.decision == State5Decision::LinkUp {
