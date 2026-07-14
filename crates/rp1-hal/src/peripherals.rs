@@ -4,6 +4,8 @@ static PERIPHERALS_TAKEN: AtomicBool = AtomicBool::new(false);
 
 pub struct Peripherals {
     pub gpio: crate::gpio::Gpio,
+    pub pwm0: crate::pwm::Pwm0,
+    pub uart0: crate::uart::Uart0,
     _private: (),
 }
 
@@ -30,6 +32,8 @@ impl Peripherals {
     unsafe fn new() -> Self {
         Self {
             gpio: unsafe { crate::gpio::Gpio::new() },
+            pwm0: unsafe { crate::pwm::Pwm0::new() },
+            uart0: unsafe { crate::uart::Uart0::new() },
             _private: (),
         }
     }
