@@ -1033,6 +1033,26 @@ fn publish_bar2_readonly_identity(flags: u32) {
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "raw-timer-proof"))]
+fn publish_raw_timer_proof(immediate_delta_us: u64, delay_delta_us: u64) {
+    const MAGIC: u32 = 0x3152_4d54; // TMR1
+    const REQUESTED_DELAY_US: u32 = 1_000;
+    const RESULT_WORDS: usize = 4;
+    const _: () =
+        assert!(RESULT_WORDS * core::mem::size_of::<u32>() <= rp1_hal::debug::MAILBOX_SIZE);
+
+    let words = rp1_hal::debug::MAILBOX_ADDR as usize as *mut u32;
+    unsafe {
+        core::ptr::write_volatile(words, 0);
+        core::ptr::write_volatile(words.add(1), immediate_delta_us as u32);
+        core::ptr::write_volatile(words.add(2), delay_delta_us as u32);
+        core::ptr::write_volatile(words.add(3), REQUESTED_DELAY_US);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        core::ptr::write_volatile(words, MAGIC);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
 #[cfg(all(target_arch = "arm", feature = "pll-sys-core-lock-only"))]
 fn publish_pll_sys_core_lock_result(result: PllSysCoreLockResult) {
     const MAGIC: u32 = 0x4b4c_4c50;
@@ -1317,6 +1337,21 @@ fn main(mut p: Peripherals) -> ! {
                 publish_bar2_readonly_identity(0);
             }
             emit_state5_result_frame(&mut gpio22, result, state5);
+            #[cfg(feature = "raw-timer-proof")]
+            if state5.decision == State5Decision::LinkUp {
+                let immediate_start = p.raw_timer.now();
+                let immediate_delta_us = p.raw_timer.elapsed_since(immediate_start);
+
+                gpio22.set_high();
+                let delay_start = p.raw_timer.now();
+                p.raw_timer.delay_us(1_000);
+                let delay_delta_us = p.raw_timer.elapsed_since(delay_start);
+                gpio22.set_low();
+
+                publish_raw_timer_proof(immediate_delta_us, delay_delta_us);
+                pulse_width(&mut gpio22, 416);
+                quiet_stop();
+            }
             #[cfg(feature = "pll-sys-core-lock-only")]
             if state5.decision == State5Decision::LinkUp {
                 let pll_sys = pll_sys_core_lock_transition();

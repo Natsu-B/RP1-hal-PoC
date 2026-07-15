@@ -13,6 +13,7 @@ pub mod peripherals;
 pub mod prelude;
 pub mod pwm;
 pub mod spi;
+pub mod timer;
 pub mod uart;
 
 pub use peripherals::Peripherals;
