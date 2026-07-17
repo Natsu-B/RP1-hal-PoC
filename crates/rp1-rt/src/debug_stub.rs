@@ -1,19 +1,26 @@
-use core::cmp;
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use rp1_abi::debug::{self, DebugMailbox};
+#[cfg(feature = "debug-stub")]
+use core::cmp;
+
+use rp1_abi::debug::{self, DebugMailbox, SnapshotEntry};
 
 static LAST_SEQ: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(feature = "debug-stub")]
 const PCIE_CFG_BASE: usize = 0x4010_8000;
+#[cfg(feature = "debug-stub")]
 const PCIE_DBI_BASE: usize = 0x4010_9000;
+#[cfg(feature = "debug-stub")]
 const DEBUG_DIAG_ADDR: usize = 0x2000_f800;
 
+#[cfg(feature = "debug-stub")]
 const DIAG_MAGIC: u32 = u32::from_le_bytes(*b"P1DG");
 
 const _: () = assert!(core::mem::size_of::<DebugMailbox>() <= debug::MAILBOX_SIZE);
 
+#[cfg(feature = "debug-stub")]
 pub fn init() {
     init_mailbox();
     snapshot_pcie_diag(0x40, 0, 0);
@@ -40,6 +47,7 @@ pub fn init_mailbox() {
     LAST_SEQ.store(read_u32(&mailbox.seq), Ordering::Relaxed);
 }
 
+#[cfg(feature = "debug-stub")]
 fn snapshot_pcie_diag(phase: u32, register: u32, value: u32) {
     write_diag(0, DIAG_MAGIC);
     write_diag(1, phase);
@@ -52,10 +60,12 @@ fn snapshot_pcie_diag(phase: u32, register: u32, value: u32) {
     write_diag(8, mmio_read32(PCIE_DBI_BASE + 0x004));
 }
 
+#[cfg(feature = "debug-stub")]
 fn write_diag(index: usize, value: u32) {
     unsafe { ptr::write_volatile((DEBUG_DIAG_ADDR as *mut u32).add(index), value) };
 }
 
+#[cfg(feature = "debug-stub")]
 fn mmio_read32(addr: usize) -> u32 {
     unsafe { ptr::read_volatile(addr as *const u32) }
 }
@@ -71,17 +81,23 @@ pub fn poll() {
     let status = match command {
         debug::command::NONE => debug::status::OK,
         debug::command::PING => debug::status::OK,
+        debug::command::READ_SNAPSHOT_ALLOWLISTED => read_snapshot_allowlisted(mailbox, seq),
+        #[cfg(feature = "debug-stub")]
         debug::command::GET_REGS => {
             snapshot_core_regs(mailbox);
             debug::status::OK
         }
+        #[cfg(feature = "debug-stub")]
         debug::command::READ_MEM => read_mem(mailbox),
+        #[cfg(feature = "debug-stub")]
         debug::command::WRITE_MEM => write_mem(mailbox),
+        #[cfg(feature = "debug-stub")]
         debug::command::HALT => {
             write_u32(&mut mailbox.state, debug::state::STOPPED);
             write_u32(&mut mailbox.stop_reason, debug::stop_reason::HOST_HALT);
             debug::status::OK
         }
+        #[cfg(feature = "debug-stub")]
         debug::command::CONTINUE => {
             write_u32(&mut mailbox.state, debug::state::RUNNING);
             write_u32(&mut mailbox.stop_reason, debug::stop_reason::NONE);
@@ -96,6 +112,74 @@ pub fn poll() {
     LAST_SEQ.store(seq, Ordering::Relaxed);
 }
 
+fn read_snapshot_allowlisted(mailbox: &mut DebugMailbox, sequence: u32) -> u32 {
+    let snapshot_id = read_u32(&mailbox.arg0);
+    if read_u32(&mailbox.arg1) != debug::snapshot_request_checksum(sequence, snapshot_id) {
+        write_u32(&mut mailbox.data_len, 0);
+        return debug::status::BAD_CHECKSUM;
+    }
+
+    if snapshot_id != debug::snapshot::CORE_STATUS {
+        write_snapshot_response(
+            mailbox,
+            snapshot_id,
+            sequence,
+            debug::status::BAD_SNAPSHOT_ID,
+            &[],
+        );
+        return debug::status::BAD_SNAPSHOT_ID;
+    }
+
+    let mut entries = [SnapshotEntry {
+        local_address: 0,
+        value: 0,
+        status: debug::snapshot::ENTRY_OK,
+    }; debug::SNAPSHOT_MAX_ENTRIES];
+    let values = [
+        read_u32(&mailbox.magic),
+        read_u32(&mailbox.version),
+        read_u32(&mailbox.size),
+        read_u32(&mailbox.ack),
+        read_u32(&mailbox.state),
+        read_u32(&mailbox.stop_reason),
+        read_u32(&mailbox.command),
+        read_u32(&mailbox.status),
+    ];
+    for ((entry, &address), value) in entries
+        .iter_mut()
+        .zip(debug::snapshot::CORE_STATUS_ADDRESSES.iter())
+        .zip(values)
+    {
+        entry.local_address = address;
+        entry.value = value;
+    }
+    write_snapshot_response(mailbox, snapshot_id, sequence, debug::status::OK, &entries);
+    debug::status::OK
+}
+
+fn write_snapshot_response(
+    mailbox: &mut DebugMailbox,
+    snapshot_id: u32,
+    sequence: u32,
+    response_status: u32,
+    entries: &[SnapshotEntry],
+) {
+    let mut encoded = [0u8; debug::SNAPSHOT_RESPONSE_MAX_LEN];
+    let len = debug::encode_snapshot_response(
+        &mut encoded,
+        snapshot_id,
+        sequence,
+        response_status,
+        entries,
+    )
+    .expect("bounded snapshot response");
+    for (index, value) in encoded[..len].iter().copied().enumerate() {
+        unsafe { ptr::write_volatile(mailbox.data.as_mut_ptr().add(index), value) };
+    }
+    write_u32(&mut mailbox.data_len, len as u32);
+}
+
+#[cfg(feature = "debug-stub")]
 pub fn fault() -> ! {
     let mailbox = mailbox_mut();
     snapshot_core_regs(mailbox);
@@ -107,6 +191,7 @@ pub fn fault() -> ! {
     }
 }
 
+#[cfg(feature = "debug-stub")]
 pub fn panic() -> ! {
     let mailbox = mailbox_mut();
     snapshot_core_regs(mailbox);
@@ -118,6 +203,7 @@ pub fn panic() -> ! {
     }
 }
 
+#[cfg(feature = "debug-stub")]
 fn read_mem(mailbox: &mut DebugMailbox) -> u32 {
     let addr = read_u32(&mailbox.arg0) as usize;
     let len = cmp::min(read_u32(&mailbox.arg1) as usize, debug::MAILBOX_DATA_LEN);
@@ -129,6 +215,7 @@ fn read_mem(mailbox: &mut DebugMailbox) -> u32 {
     debug::status::OK
 }
 
+#[cfg(feature = "debug-stub")]
 fn write_mem(mailbox: &mut DebugMailbox) -> u32 {
     let addr = read_u32(&mailbox.arg0) as usize;
     let len = read_u32(&mailbox.arg1) as usize;
@@ -142,6 +229,7 @@ fn write_mem(mailbox: &mut DebugMailbox) -> u32 {
     debug::status::OK
 }
 
+#[cfg(feature = "debug-stub")]
 fn snapshot_core_regs(mailbox: &mut DebugMailbox) {
     let mut regs = [0u32; debug::MAILBOX_REG_COUNT];
     unsafe {
