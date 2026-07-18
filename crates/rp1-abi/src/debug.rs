@@ -5,7 +5,7 @@ pub const MAILBOX_REG_COUNT: usize = 18;
 
 pub const SNAPSHOT_CHECKSUM_SEED: u32 = 0x811c_9dc5;
 pub const SNAPSHOT_RESPONSE_MAGIC: u32 = u32::from_le_bytes(*b"S1RP");
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 2;
 pub const SNAPSHOT_MAX_ENTRIES: usize = 8;
 pub const SNAPSHOT_RESPONSE_HEADER_WORDS: usize = 6;
 pub const SNAPSHOT_ENTRY_WORDS: usize = 3;
@@ -24,7 +24,10 @@ pub mod command {
     pub const WRITE_MEM: u32 = 4;
     pub const CONTINUE: u32 = 5;
     pub const HALT: u32 = 6;
-    pub const READ_SNAPSHOT_ALLOWLISTED: u32 = 7;
+    /// Private RP1 debugger command namespace (`"RPD\0"`).
+    pub const PRIVATE_PREFIX: u32 = 0x5250_4400;
+    pub const PRIVATE_PREFIX_MASK: u32 = 0xffff_ff00;
+    pub const READ_SNAPSHOT_ALLOWLISTED: u32 = PRIVATE_PREFIX | 0x01;
 }
 
 pub mod state {
@@ -52,7 +55,11 @@ pub mod status {
 pub mod snapshot {
     use super::MAILBOX_ADDR;
 
-    pub const CORE_STATUS: u32 = 1;
+    /// Private RP1 debugger snapshot namespace (`"RPS\0"`).
+    pub const PRIVATE_PREFIX: u32 = 0x5250_5300;
+    pub const PRIVATE_PREFIX_MASK: u32 = 0xffff_ff00;
+    pub const CORE_STATUS: u32 = PRIVATE_PREFIX | 0x01;
+    pub const PERIPHERAL_STATUS: u32 = PRIVATE_PREFIX | 0x02;
     pub const ENTRY_OK: u32 = 0;
 
     pub const CORE_STATUS_ADDRESSES: [u32; super::SNAPSHOT_MAX_ENTRIES] = [
@@ -64,6 +71,18 @@ pub mod snapshot {
         MAILBOX_ADDR + 0x1c,
         MAILBOX_ADDR + 0x20,
         MAILBOX_ADDR + 0x2c,
+    ];
+
+    /// Side-effect-free status registers from initialized RP1 peripherals.
+    pub const PERIPHERAL_STATUS_ADDRESSES: [u32; super::SNAPSHOT_MAX_ENTRIES] = [
+        0x4002_0000, // PLL_SYS.CS
+        0x4001_401c, // RESETS.DONE1
+        0x400a_c028, // TIMER.RAW_LOW
+        0x4009_8000, // PWM0.GLOBAL_CTRL
+        0x4009_8060, // PWM0.INTS
+        0x4003_0018, // UART0.FR
+        0x4007_4070, // I2C1.IC_STATUS
+        0x4005_0028, // SPI0.SR
     ];
 }
 
@@ -254,6 +273,24 @@ mod tests {
     }
 
     #[test]
+    fn debugger_extensions_use_private_namespaces() {
+        assert_eq!(
+            command::READ_SNAPSHOT_ALLOWLISTED & command::PRIVATE_PREFIX_MASK,
+            command::PRIVATE_PREFIX
+        );
+        assert_eq!(
+            snapshot::CORE_STATUS & snapshot::PRIVATE_PREFIX_MASK,
+            snapshot::PRIVATE_PREFIX
+        );
+        assert_eq!(
+            snapshot::PERIPHERAL_STATUS & snapshot::PRIVATE_PREFIX_MASK,
+            snapshot::PRIVATE_PREFIX
+        );
+        assert_ne!(command::READ_SNAPSHOT_ALLOWLISTED, 7);
+        assert_ne!(snapshot::CORE_STATUS, 1);
+    }
+
+    #[test]
     fn snapshot_response_round_trip_and_corruption_detection() {
         let entries = [
             SnapshotEntry {
@@ -303,6 +340,27 @@ mod tests {
             snapshot::CORE_STATUS_ADDRESSES
                 .iter()
                 .all(|&address| address >= MAILBOX_ADDR && address < MAILBOX_ADDR + 48)
+        );
+    }
+
+    #[test]
+    fn peripheral_status_allowlist_is_exact_and_bounded() {
+        assert_eq!(
+            snapshot::PERIPHERAL_STATUS_ADDRESSES,
+            [
+                0x4002_0000,
+                0x4001_401c,
+                0x400a_c028,
+                0x4009_8000,
+                0x4009_8060,
+                0x4003_0018,
+                0x4007_4070,
+                0x4005_0028,
+            ]
+        );
+        assert_eq!(
+            snapshot::PERIPHERAL_STATUS_ADDRESSES.len(),
+            SNAPSHOT_MAX_ENTRIES
         );
     }
 }

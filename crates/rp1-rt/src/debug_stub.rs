@@ -119,22 +119,25 @@ fn read_snapshot_allowlisted(mailbox: &mut DebugMailbox, sequence: u32) -> u32 {
         return debug::status::BAD_CHECKSUM;
     }
 
-    if snapshot_id != debug::snapshot::CORE_STATUS {
-        write_snapshot_response(
-            mailbox,
-            snapshot_id,
-            sequence,
-            debug::status::BAD_SNAPSHOT_ID,
-            &[],
-        );
-        return debug::status::BAD_SNAPSHOT_ID;
-    }
+    let entries = match snapshot_id {
+        debug::snapshot::CORE_STATUS => core_status_entries(mailbox),
+        debug::snapshot::PERIPHERAL_STATUS => peripheral_status_entries(),
+        _ => {
+            write_snapshot_response(
+                mailbox,
+                snapshot_id,
+                sequence,
+                debug::status::BAD_SNAPSHOT_ID,
+                &[],
+            );
+            return debug::status::BAD_SNAPSHOT_ID;
+        }
+    };
+    write_snapshot_response(mailbox, snapshot_id, sequence, debug::status::OK, &entries);
+    debug::status::OK
+}
 
-    let mut entries = [SnapshotEntry {
-        local_address: 0,
-        value: 0,
-        status: debug::snapshot::ENTRY_OK,
-    }; debug::SNAPSHOT_MAX_ENTRIES];
+fn core_status_entries(mailbox: &DebugMailbox) -> [SnapshotEntry; debug::SNAPSHOT_MAX_ENTRIES] {
     let values = [
         read_u32(&mailbox.magic),
         read_u32(&mailbox.version),
@@ -145,16 +148,35 @@ fn read_snapshot_allowlisted(mailbox: &mut DebugMailbox, sequence: u32) -> u32 {
         read_u32(&mailbox.command),
         read_u32(&mailbox.status),
     ];
-    for ((entry, &address), value) in entries
+    snapshot_entries(&debug::snapshot::CORE_STATUS_ADDRESSES, values)
+}
+
+fn peripheral_status_entries() -> [SnapshotEntry; debug::SNAPSHOT_MAX_ENTRIES] {
+    let mut values = [0u32; debug::SNAPSHOT_MAX_ENTRIES];
+    for (value, &address) in values
         .iter_mut()
-        .zip(debug::snapshot::CORE_STATUS_ADDRESSES.iter())
-        .zip(values)
+        .zip(debug::snapshot::PERIPHERAL_STATUS_ADDRESSES.iter())
     {
+        // SAFETY: the ABI allowlist contains only fixed, side-effect-free status registers.
+        *value = unsafe { ptr::read_volatile(address as *const u32) };
+    }
+    snapshot_entries(&debug::snapshot::PERIPHERAL_STATUS_ADDRESSES, values)
+}
+
+fn snapshot_entries(
+    addresses: &[u32; debug::SNAPSHOT_MAX_ENTRIES],
+    values: [u32; debug::SNAPSHOT_MAX_ENTRIES],
+) -> [SnapshotEntry; debug::SNAPSHOT_MAX_ENTRIES] {
+    let mut entries = [SnapshotEntry {
+        local_address: 0,
+        value: 0,
+        status: debug::snapshot::ENTRY_OK,
+    }; debug::SNAPSHOT_MAX_ENTRIES];
+    for ((entry, &address), value) in entries.iter_mut().zip(addresses.iter()).zip(values) {
         entry.local_address = address;
         entry.value = value;
     }
-    write_snapshot_response(mailbox, snapshot_id, sequence, debug::status::OK, &entries);
-    debug::status::OK
+    entries
 }
 
 fn write_snapshot_response(
