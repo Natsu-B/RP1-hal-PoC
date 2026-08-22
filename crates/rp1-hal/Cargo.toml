@@ -3,5 +3,17 @@ name = "rp1-hal"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+pcie-ep-init = ["rp1-rt/pcie-ep-init"]
+debug-stack-low = ["rp1-rt/debug-stack-low"]
+debug-snapshot = ["debug-stack-low", "rp1-rt/debug-snapshot"]
+debug-mailbox-layout = ["debug-stack-low", "rp1-rt/debug-mailbox-layout"]
+debug-mailbox-init = ["debug-mailbox-layout", "rp1-rt/debug-mailbox-init"]
+debug-stub = ["pcie-ep-init", "debug-snapshot", "debug-mailbox-init", "rp1-rt/debug-stub"]
+scmi-uart-clock = ["dep:rp1-rt"]
+
 [dependencies]
+rp1-abi = { path = "../rp1-abi" }
 rp1-macros = { path = "../rp1-macros" }
+rp1-rt = { path = "../rp1-rt", optional = true }

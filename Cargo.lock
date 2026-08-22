@@ -227,7 +227,9 @@ dependencies = [
 name = "rp1-hal"
 version = "0.1.0"
 dependencies = [
+ "rp1-abi",
  "rp1-macros",
+ "rp1-rt",
 ]
 
 [[package]]
@@ -242,6 +244,9 @@ dependencies = [
 [[package]]
 name = "rp1-rt"
 version = "0.1.0"
+dependencies = [
+ "rp1-abi",
+]
 
 [[package]]
 name = "scroll"

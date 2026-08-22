@@ -10,3 +10,45 @@ rp1-rt = { path = "../../crates/rp1-rt" }
 
 [build-dependencies]
 rp1-build = { path = "../../crates/rp1-build" }
+
+[features]
+default = []
+endpoint-clock-only = []
+state3-composite-boundary = ["endpoint-clock-only"]
+state5-composite-boundary = ["state3-composite-boundary"]
+bar2-readonly-handshake = ["state5-composite-boundary", "debug-mailbox-layout"]
+raw-timer-proof = ["bar2-readonly-handshake"]
+pll-sys-core-lock-only = ["bar2-readonly-handshake"]
+uart0-reset-only = ["pll-sys-core-lock-only"]
+uart0-functional-clock-before-reset-done = ["uart0-reset-only"]
+uart0-tx-polling-only = ["uart0-functional-clock-before-reset-done"]
+uart0-polled-rx = ["uart0-tx-polling-only"]
+uart0-rx-irq = ["uart0-polled-rx", "rp1-rt/uart0-rx-irq"]
+scmi-uart-clock = ["uart0-tx-polling-only", "rp1-hal/scmi-uart-clock"]
+pwm-gpio12-proof = ["pll-sys-core-lock-only"]
+pcie-ep-init = ["rp1-hal/pcie-ep-init", "rp1-rt/pcie-ep-init"]
+debug-stack-low = ["rp1-hal/debug-stack-low", "rp1-rt/debug-stack-low"]
+debug-snapshot = ["debug-stack-low", "rp1-hal/debug-snapshot", "rp1-rt/debug-snapshot"]
+debug-mailbox-layout = [
+    "debug-stack-low",
+    "rp1-hal/debug-mailbox-layout",
+    "rp1-rt/debug-mailbox-layout",
+]
+debug-mailbox-init = [
+    "debug-mailbox-layout",
+    "rp1-hal/debug-mailbox-init",
+    "rp1-rt/debug-mailbox-init",
+]
+debug-mailbox-ping = ["state5-composite-boundary", "debug-mailbox-init"]
+gpio-wiring-proof = ["state5-composite-boundary"]
+i2c1-reset-only = ["pll-sys-core-lock-only"]
+i2c1-host-proof = ["i2c1-reset-only"]
+spi0-reset-only = ["pll-sys-core-lock-only"]
+spi0-host-proof = ["spi0-reset-only"]
+debug-stub = [
+    "pcie-ep-init",
+    "debug-snapshot",
+    "debug-mailbox-init",
+    "rp1-hal/debug-stub",
+    "rp1-rt/debug-stub",
+]

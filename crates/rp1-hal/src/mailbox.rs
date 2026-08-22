@@ -22,5 +22,11 @@ pub fn get_feature(fourcc: u32) -> Option<FeatureRange> {
 }
 
 pub fn poll() {
-    // TODO: hook to actual RP1 mailbox shared buffer.
+    #[cfg(all(
+        any(feature = "debug-mailbox-init", feature = "debug-stub"),
+        target_arch = "arm"
+    ))]
+    {
+        rp1_rt::debug_stub::poll();
+    }
 }
