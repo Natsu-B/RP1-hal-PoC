@@ -1,0 +1,12 @@
+[package]
+name = "rp1-example-scmi-uart-coexist"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+rp1-hal = { path = "../../crates/rp1-hal", features = ["pcie-ep-init", "scmi-uart-clock"] }
+rp1-rt = { path = "../../crates/rp1-rt", features = ["pcie-ep-init"] }
+
+[build-dependencies]
+rp1-build = { path = "../../crates/rp1-build" }
