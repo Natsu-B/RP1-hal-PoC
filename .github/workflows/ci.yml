@@ -28,3 +28,6 @@ jobs:
 
       - name: Build minimal firmware
         run: nix develop -c cargo build -p rp1-example-minimal --release --target thumbv7m-none-eabi --locked
+
+      - name: Build SCMI UART coexistence firmware
+        run: nix develop -c cargo build -p rp1-example-scmi-uart-coexist --release --target thumbv7m-none-eabi --locked
