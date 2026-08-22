@@ -28,7 +28,7 @@ static mut SCMI_VECTOR_TABLE: AlignedVectorTable = AlignedVectorTable([0; VECTOR
 #[cfg(target_arch = "arm")]
 pub unsafe fn install_and_enable() {
     let old_base = unsafe { core::ptr::read_volatile(SCB_VTOR) } as *const usize;
-    let new_base = core::ptr::addr_of_mut!(SCMI_VECTOR_TABLE.0) as *mut usize;
+    let new_base = unsafe { core::ptr::addr_of_mut!(SCMI_VECTOR_TABLE.0) as *mut usize };
 
     for index in 0..CORE_VECTOR_COUNT {
         let value = unsafe { core::ptr::read_volatile(old_base.add(index)) };
@@ -36,13 +36,16 @@ pub unsafe fn install_and_enable() {
     }
     for index in CORE_VECTOR_COUNT..VECTOR_COUNT {
         unsafe {
-            core::ptr::write_volatile(new_base.add(index), rp1_rt::DefaultHandler as usize);
+            core::ptr::write_volatile(
+                new_base.add(index),
+                rp1_rt::DefaultHandler as *const () as usize,
+            );
         }
     }
     unsafe {
         core::ptr::write_volatile(
             new_base.add(SCMI_VECTOR_INDEX),
-            RP1_SCMI_IRQHandler as usize,
+            RP1_SCMI_IRQHandler as *const () as usize,
         );
 
         core::ptr::write_volatile(NVIC_ICER1, SCMI_IRQ_ISER1_BIT);

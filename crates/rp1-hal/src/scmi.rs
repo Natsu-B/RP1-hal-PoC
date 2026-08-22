@@ -79,6 +79,28 @@ const ALL_UART_VOTES: u32 = VOTE_UART | VOTE_UART_APB;
 
 static LINUX_VOTES: AtomicU32 = AtomicU32::new(0);
 static FIRMWARE_VOTES: AtomicU32 = AtomicU32::new(ALL_UART_VOTES);
+static IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
+static PROC_EVENT_COUNT: AtomicU32 = AtomicU32::new(0);
+static HOST_EVENT_COUNT: AtomicU32 = AtomicU32::new(0);
+static CLOCK_CONFIG_SET_COUNT: AtomicU32 = AtomicU32::new(0);
+static CLOCK_ENABLE_COUNT: AtomicU32 = AtomicU32::new(0);
+static CLOCK_DISABLE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Clone, Copy)]
+pub struct Telemetry {
+    pub irq_count: u32,
+    pub proc_event_count: u32,
+    pub host_event_count: u32,
+    pub clock_config_set_count: u32,
+    pub clock_enable_count: u32,
+    pub clock_disable_count: u32,
+    pub linux_votes: u32,
+    pub firmware_votes: u32,
+    pub clk_uart_ctrl: u32,
+    pub clk_uart_div_int: u32,
+    pub clk_uart_sel: u32,
+    pub pll_sys_prim: u32,
+}
 
 /// Initialise the SCMI shared-memory channel and make the firmware vote visible
 /// in the physical clock gates. Call this after the desired UART source/rates
@@ -86,6 +108,12 @@ static FIRMWARE_VOTES: AtomicU32 = AtomicU32::new(ALL_UART_VOTES);
 pub fn init_uart_clock_server() {
     LINUX_VOTES.store(0, Ordering::Release);
     FIRMWARE_VOTES.store(ALL_UART_VOTES, Ordering::Release);
+    IRQ_COUNT.store(0, Ordering::Release);
+    PROC_EVENT_COUNT.store(0, Ordering::Release);
+    HOST_EVENT_COUNT.store(0, Ordering::Release);
+    CLOCK_CONFIG_SET_COUNT.store(0, Ordering::Release);
+    CLOCK_ENABLE_COUNT.store(0, Ordering::Release);
+    CLOCK_DISABLE_COUNT.store(0, Ordering::Release);
     apply_clock_votes();
 
     write32(SCMI_SHMEM_BASE + SHMEM_FLAGS, SHMEM_FLAG_INTR_ENABLED);
@@ -94,10 +122,7 @@ pub fn init_uart_clock_server() {
     write32(SCMI_SHMEM_BASE + SHMEM_CHANNEL_STATUS, SHMEM_CHANNEL_FREE);
 
     // Discard a stale channel-1 event before enabling the NVIC line.
-    write32(
-        SYSCFG_PROC_EVENTS + HW_CLR_BITS,
-        SCMI_DOORBELL_MASK,
-    );
+    write32(SYSCFG_PROC_EVENTS + HW_CLR_BITS, SCMI_DOORBELL_MASK);
     barrier();
 }
 
@@ -123,18 +148,34 @@ pub fn firmware_votes() -> u32 {
     FIRMWARE_VOTES.load(Ordering::Acquire)
 }
 
+pub fn telemetry() -> Telemetry {
+    Telemetry {
+        irq_count: IRQ_COUNT.load(Ordering::Acquire),
+        proc_event_count: PROC_EVENT_COUNT.load(Ordering::Acquire),
+        host_event_count: HOST_EVENT_COUNT.load(Ordering::Acquire),
+        clock_config_set_count: CLOCK_CONFIG_SET_COUNT.load(Ordering::Acquire),
+        clock_enable_count: CLOCK_ENABLE_COUNT.load(Ordering::Acquire),
+        clock_disable_count: CLOCK_DISABLE_COUNT.load(Ordering::Acquire),
+        linux_votes: linux_votes(),
+        firmware_votes: firmware_votes(),
+        clk_uart_ctrl: read32(CLK_UART_CTRL),
+        clk_uart_div_int: read32(CLOCKMAN_BASE + 0x58),
+        clk_uart_sel: read32(CLOCKMAN_BASE + 0x60),
+        pll_sys_prim: read32(PLL_SYS_PRIM),
+    }
+}
+
 /// Service mailbox doorbell 1. Intended to be called directly from the M3
 /// SYSCFG/NVIC interrupt handler.
 pub fn handle_doorbell_irq() {
+    IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
     let events = read32(SYSCFG_PROC_EVENTS);
     if events & SCMI_DOORBELL_MASK == 0 {
         return;
     }
+    PROC_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    write32(
-        SYSCFG_PROC_EVENTS + HW_CLR_BITS,
-        SCMI_DOORBELL_MASK,
-    );
+    write32(SYSCFG_PROC_EVENTS + HW_CLR_BITS, SCMI_DOORBELL_MASK);
     barrier();
 
     if read32(SCMI_SHMEM_BASE + SHMEM_CHANNEL_STATUS) & SHMEM_CHANNEL_FREE != 0 {
@@ -148,10 +189,8 @@ pub fn handle_doorbell_irq() {
     barrier();
 
     if read32(SCMI_SHMEM_BASE + SHMEM_FLAGS) & SHMEM_FLAG_INTR_ENABLED != 0 {
-        write32(
-            SYSCFG_HOST_EVENTS + HW_SET_BITS,
-            SCMI_DOORBELL_MASK,
-        );
+        write32(SYSCFG_HOST_EVENTS + HW_SET_BITS, SCMI_DOORBELL_MASK);
+        HOST_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
         barrier();
     }
 }
@@ -165,7 +204,10 @@ fn service_request() {
 
     // TX length includes the four-byte SCMI message header, but not the SMT
     // transport fields preceding it.
-    if length < 4 || length > SCMI_SHMEM_SIZE - SHMEM_MSG_HEADER || msg_type != SCMI_MSG_TYPE_COMMAND {
+    if length < 4
+        || length > SCMI_SHMEM_SIZE - SHMEM_MSG_HEADER
+        || msg_type != SCMI_MSG_TYPE_COMMAND
+    {
         finish_error(SCMI_PROTOCOL_ERROR);
         return;
     }
@@ -323,11 +365,15 @@ fn service_clock(message: u8, request_len: usize) {
             };
             match state {
                 0 => {
+                    CLOCK_CONFIG_SET_COUNT.fetch_add(1, Ordering::Relaxed);
+                    CLOCK_DISABLE_COUNT.fetch_add(1, Ordering::Relaxed);
                     LINUX_VOTES.fetch_and(!vote, Ordering::AcqRel);
                     apply_clock_votes();
                     finish_error(SCMI_SUCCESS);
                 }
                 1 => {
+                    CLOCK_CONFIG_SET_COUNT.fetch_add(1, Ordering::Relaxed);
+                    CLOCK_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
                     LINUX_VOTES.fetch_or(vote, Ordering::AcqRel);
                     apply_clock_votes();
                     finish_error(SCMI_SUCCESS);
@@ -390,23 +436,14 @@ fn finish_agent(status: i32, id: u32, name: &[u8]) {
 fn response_begin(status: i32, data_len: usize) {
     let max_data = SCMI_SHMEM_SIZE - (SHMEM_PAYLOAD + 4);
     if data_len > max_data {
-        write32(
-            SCMI_SHMEM_BASE + SHMEM_PAYLOAD,
-            SCMI_PROTOCOL_ERROR as u32,
-        );
+        write32(SCMI_SHMEM_BASE + SHMEM_PAYLOAD, SCMI_PROTOCOL_ERROR as u32);
         write32(SCMI_SHMEM_BASE + SHMEM_LENGTH, 8);
-        write32(
-            SCMI_SHMEM_BASE + SHMEM_CHANNEL_STATUS,
-            SHMEM_CHANNEL_ERROR,
-        );
+        write32(SCMI_SHMEM_BASE + SHMEM_CHANNEL_STATUS, SHMEM_CHANNEL_ERROR);
         return;
     }
     write32(SCMI_SHMEM_BASE + SHMEM_PAYLOAD, status as u32);
     // Response length includes message header + status + response data.
-    write32(
-        SCMI_SHMEM_BASE + SHMEM_LENGTH,
-        (8 + data_len) as u32,
-    );
+    write32(SCMI_SHMEM_BASE + SHMEM_LENGTH, (8 + data_len) as u32);
 }
 
 fn request_u32(offset: usize) -> u32 {
