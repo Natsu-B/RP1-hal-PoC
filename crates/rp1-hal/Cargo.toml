@@ -11,7 +11,7 @@ debug-snapshot = ["debug-stack-low", "rp1-rt/debug-snapshot"]
 debug-mailbox-layout = ["debug-stack-low", "rp1-rt/debug-mailbox-layout"]
 debug-mailbox-init = ["debug-mailbox-layout", "rp1-rt/debug-mailbox-init"]
 debug-stub = ["pcie-ep-init", "debug-snapshot", "debug-mailbox-init", "rp1-rt/debug-stub"]
-scmi-uart-clock = ["rp1-rt/scmi-uart-clock"]
+scmi-uart-clock = ["dep:rp1-rt"]
 
 [dependencies]
 rp1-abi = { path = "../rp1-abi" }
