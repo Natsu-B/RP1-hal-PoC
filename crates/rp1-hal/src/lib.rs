@@ -13,6 +13,8 @@ pub mod peripherals;
 pub mod prelude;
 pub mod pwm;
 pub mod scmi;
+#[cfg(feature = "scmi-uart-clock")]
+pub mod scmi_irq;
 pub mod spi;
 pub mod timer;
 pub mod uart;
