@@ -8,5 +8,5 @@ members = [
     "crates/rp1-macros",
     "crates/rp1-rt",
     "examples/minimal",
-    "examples/scmi-uart-coexist",
 ]
+exclude = ["examples/scmi-uart-coexist"]
