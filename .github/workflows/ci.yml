@@ -24,10 +24,10 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace
-        run: nix develop -c cargo build --workspace
+        run: nix develop -c cargo build --workspace --locked
 
       - name: Build minimal firmware
-        run: nix develop -c cargo build -p rp1-example-minimal --release --target thumbv7m-none-eabi
+        run: nix develop -c cargo build -p rp1-example-minimal --release --target thumbv7m-none-eabi --locked
 
       - name: Build SCMI UART coexistence firmware
-        run: nix develop -c cargo build -p rp1-example-scmi-uart-coexist --release --target thumbv7m-none-eabi
+        run: nix develop -c cargo build --manifest-path examples/scmi-uart-coexist/Cargo.toml --release --target thumbv7m-none-eabi
