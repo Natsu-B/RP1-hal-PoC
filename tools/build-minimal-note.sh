@@ -1,13 +1,20 @@
 #!/usr/bin/env sh
 set -eu
 
-cargo build -p rp1-example-minimal --release --target thumbv7m-none-eabi
+set -- cargo run -p cargo-rp1 -- build --example minimal
 
-NOTE_BIN=$(find target/thumbv7m-none-eabi/release/build/rp1-example-minimal-* -name rp1_note.bin | sort | tail -n1)
+if [ "${NO_DEFAULT_FEATURES:-0}" = 1 ]; then
+  set -- "$@" --no-default-features
+fi
 
-tools/attach-rp1-note.sh \
-  target/thumbv7m-none-eabi/release/rp1-example-minimal \
-  "$NOTE_BIN" \
-  target/thumbv7m-none-eabi/release/rp1-example-minimal-note.elf
+if [ -n "${FEATURES:-}" ]; then
+  set -- "$@" --features "$FEATURES"
+fi
 
-printf '%s\n' target/thumbv7m-none-eabi/release/rp1-example-minimal-note.elf
+if [ -n "${RP1_CONFIG:-}" ]; then
+  set -- "$@" --config "$RP1_CONFIG"
+fi
+
+"$@"
+
+printf '%s\n' "${CARGO_TARGET_DIR:-target}/rp1/release/RP1.elf"

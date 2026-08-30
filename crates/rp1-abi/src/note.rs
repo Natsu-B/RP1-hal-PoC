@@ -6,6 +6,12 @@ pub const RP1_NOTE_ABI_VERSION: u16 = 1;
 pub const RP1_VERSION_NON_PIO: u32 = 0;
 pub const RP1_VERSION_PIO: u32 = 1;
 
+pub const RP1_MAILBOX_FLAG_ENABLE: u32 = 1 << 0;
+pub const RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1: u32 = 1 << 1;
+pub const RP1_MAILBOX_FLAG_SHARED_SRAM_V2: u32 = 1 << 2;
+pub const RP1_MAILBOX_FLAGS_SUPPORTED_MASK: u32 =
+    RP1_MAILBOX_FLAG_ENABLE | RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Rp1NoteHeader {
@@ -49,5 +55,24 @@ impl Rp1BootInfoV1 {
         self.header.magic == RP1_NOTE_MAGIC
             && self.header.abi_version == RP1_NOTE_ABI_VERSION
             && self.header.header_size as usize == Self::SIZE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_info_v1_layout_is_unchanged() {
+        assert_eq!(core::mem::size_of::<Rp1BootInfoV1>(), 176);
+        assert_eq!(core::mem::offset_of!(Rp1BootInfoV1, mailbox_flags), 72);
+    }
+
+    #[test]
+    fn mailbox_flags_are_stable() {
+        assert_eq!(RP1_MAILBOX_FLAG_ENABLE, 0x1);
+        assert_eq!(RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1, 0x2);
+        assert_eq!(RP1_MAILBOX_FLAG_SHARED_SRAM_V2, 0x4);
+        assert_eq!(RP1_MAILBOX_FLAGS_SUPPORTED_MASK, 0x7);
     }
 }

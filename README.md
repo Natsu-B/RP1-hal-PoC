@@ -48,17 +48,7 @@ Manual build fallback:
 nix develop -c cargo build -p rp1-example-minimal --release --target thumbv7m-none-eabi
 ```
 
-Attach the generated note to the ELF:
-
-```sh
-NOTE_BIN=$(find target/thumbv7m-none-eabi/release/build/rp1-example-minimal-* -name rp1_note.bin | head -n1)
-tools/attach-rp1-note.sh \
-  target/thumbv7m-none-eabi/release/rp1-example-minimal \
-  "$NOTE_BIN" \
-  target/thumbv7m-none-eabi/release/rp1-example-minimal-note.elf
-```
-
-Or build and attach the note in one step:
+Build and attach the note in one step:
 
 ```sh
 nix develop -c tools/build-minimal-note.sh

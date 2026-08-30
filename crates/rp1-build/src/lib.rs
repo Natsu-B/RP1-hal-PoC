@@ -4,8 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rp1_abi::note::{
-    RP1_NOTE_ABI_VERSION, RP1_NOTE_MAGIC, RP1_NOTE_NAME, RP1_NOTE_TYPE_BOOT_V1,
-    RP1_VERSION_NON_PIO, Rp1BootInfoV1,
+    RP1_MAILBOX_FLAG_ENABLE, RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1, RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
+    RP1_MAILBOX_FLAGS_SUPPORTED_MASK, RP1_NOTE_ABI_VERSION, RP1_NOTE_MAGIC, RP1_NOTE_NAME,
+    RP1_NOTE_TYPE_BOOT_V1, RP1_VERSION_NON_PIO, Rp1BootInfoV1,
 };
 use rp1_abi::owner::{
     DEV_DMA, DEV_GPIO, DEV_I2C0, DEV_I2C1, DEV_PIO0, DEV_PIO1, DEV_SPI0, DEV_TIMER, DEV_UART0,
@@ -23,6 +24,10 @@ struct Rp1Toml {
 #[derive(Debug, Deserialize)]
 struct Firmware {
     name: String,
+    #[serde(default)]
+    mailbox_layout_v1: bool,
+    #[serde(default)]
+    shared_sram_layout_v2: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,11 +55,45 @@ pub struct OwnerBitmap {
 pub fn generate() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
-    let config_path = manifest_dir.join("rp1.toml");
+    let config_path = std::env::var_os("RP1_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("rp1.toml"));
+    println!("cargo:rerun-if-env-changed=RP1_CONFIG");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V2");
     println!("cargo:rerun-if-changed={}", config_path.display());
-    let note_path = generate_from_paths(&config_path, &out_dir)?;
+    let config = parse_config(&config_path)?;
+    validate_layout_features(
+        &config,
+        std::env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1").is_some(),
+        std::env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V2").is_some(),
+    )?;
+    fs::create_dir_all(&out_dir)?;
+    let note_path = out_dir.join("rp1_note.bin");
+    write_note_bin(&config, &note_path)?;
     println!("cargo:rustc-env=RP1_NOTE_BIN={}", note_path.display());
     Ok(note_path)
+}
+
+pub fn validate_layout_features(
+    config: &Rp1BuildConfig,
+    v1_feature: bool,
+    v2_feature: bool,
+) -> Result<(), Box<dyn Error>> {
+    let v1_config = config.mailbox_flags & RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 != 0;
+    let v2_config = config.mailbox_flags & RP1_MAILBOX_FLAG_SHARED_SRAM_V2 != 0;
+    if v1_config && v2_config {
+        return Err(
+            "[firmware] mailbox_layout_v1 and shared_sram_layout_v2 are mutually exclusive".into(),
+        );
+    }
+    if v1_config != v1_feature || v2_config != v2_feature {
+        return Err(
+            "[firmware] shared SRAM layout config must match enabled debug-mailbox-layout feature"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 pub fn generate_from_paths(config_path: &Path, out_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
@@ -67,7 +106,14 @@ pub fn generate_from_paths(config_path: &Path, out_dir: &Path) -> Result<PathBuf
 
 pub fn parse_config(path: impl AsRef<Path>) -> Result<Rp1BuildConfig, Box<dyn Error>> {
     let config_text = fs::read_to_string(path)?;
+    parse_config_text(&config_text)
+}
+
+fn parse_config_text(config_text: &str) -> Result<Rp1BuildConfig, Box<dyn Error>> {
     let config: Rp1Toml = toml::from_str(&config_text)?;
+    if config.firmware.mailbox_layout_v1 && config.firmware.shared_sram_layout_v2 {
+        return Err("mailbox_layout_v1 and shared_sram_layout_v2 are mutually exclusive".into());
+    }
     let owners = owner_bitmap(&config.owner)?;
     let _ = config.firmware.name.as_str();
     let _ = config.linux.pio;
@@ -75,7 +121,9 @@ pub fn parse_config(path: impl AsRef<Path>) -> Result<Rp1BuildConfig, Box<dyn Er
         owner_rp1: owners.owner_rp1,
         owner_linux: owners.owner_linux,
         owner_disabled: owners.owner_disabled,
-        mailbox_flags: u32::from(config.linux.mailbox),
+        mailbox_flags: u32::from(config.linux.mailbox) * RP1_MAILBOX_FLAG_ENABLE
+            | u32::from(config.firmware.mailbox_layout_v1) * RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1
+            | u32::from(config.firmware.shared_sram_layout_v2) * RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
         firmware_version_kind: RP1_VERSION_NON_PIO,
     })
 }
@@ -84,7 +132,20 @@ pub fn write_note_bin(
     config: &Rp1BuildConfig,
     output: impl AsRef<Path>,
 ) -> Result<(), Box<dyn Error>> {
+    validate_note_flags(config)?;
     fs::write(output, encode_note(config))?;
+    Ok(())
+}
+
+pub fn validate_note_flags(config: &Rp1BuildConfig) -> Result<(), Box<dyn Error>> {
+    if config.mailbox_flags & !RP1_MAILBOX_FLAGS_SUPPORTED_MASK != 0 {
+        return Err("[firmware] unsupported mailbox flag bits are set".into());
+    }
+    if config.mailbox_flags & (RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2)
+        == (RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2)
+    {
+        return Err("[firmware] mailbox layout v1 and v2 flags are mutually exclusive".into());
+    }
     Ok(())
 }
 
@@ -181,6 +242,7 @@ fn put_u64(out: &mut [u8], offset: usize, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rp1_abi::note::RP1_MAILBOX_FLAGS_SUPPORTED_MASK;
 
     #[test]
     fn minimal_owner_bitmap_matches_expected_values() {
@@ -234,5 +296,103 @@ mod tests {
         assert_eq!(config.owner_disabled, 0x0);
         assert_eq!(config.mailbox_flags, 1);
         assert_eq!(config.firmware_version_kind, 0);
+    }
+
+    fn flags_from_config(extra_firmware: &str, mailbox: bool) -> Result<u32, Box<dyn Error>> {
+        Ok(parse_config_text(&format!(
+            "[firmware]\nname = \"test\"\n{extra_firmware}[linux]\nmailbox = {mailbox}\npio = false\n[owner]\n"
+        ))?
+        .mailbox_flags)
+    }
+
+    #[test]
+    fn mailbox_layout_v2_is_explicit_bit2() {
+        assert_eq!(
+            flags_from_config("", true).unwrap(),
+            RP1_MAILBOX_FLAG_ENABLE
+        );
+        assert_eq!(
+            flags_from_config("mailbox_layout_v1 = true\n", false).unwrap(),
+            RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1
+        );
+        assert_eq!(
+            flags_from_config("shared_sram_layout_v2 = true\n", false).unwrap(),
+            RP1_MAILBOX_FLAG_SHARED_SRAM_V2
+        );
+        assert_eq!(
+            flags_from_config("shared_sram_layout_v2 = true\n", true).unwrap(),
+            RP1_MAILBOX_FLAG_ENABLE | RP1_MAILBOX_FLAG_SHARED_SRAM_V2
+        );
+        assert_eq!(
+            flags_from_config("shared_sram_layout_v2 = true\n", true).unwrap()
+                & !RP1_MAILBOX_FLAGS_SUPPORTED_MASK,
+            0
+        );
+    }
+
+    #[test]
+    fn mailbox_layout_v1_and_v2_are_rejected() {
+        assert!(
+            flags_from_config(
+                "mailbox_layout_v1 = true\nshared_sram_layout_v2 = true\n",
+                true
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn layout_feature_truth_table() {
+        for (flags, v1_feature, v2_feature, ok) in [
+            (0, false, false, true),
+            (RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1, true, false, true),
+            (RP1_MAILBOX_FLAG_SHARED_SRAM_V2, false, true, true),
+            (RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1, false, false, false),
+            (RP1_MAILBOX_FLAG_SHARED_SRAM_V2, false, false, false),
+            (
+                RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
+                true,
+                true,
+                false,
+            ),
+        ] {
+            let config = Rp1BuildConfig {
+                owner_rp1: 0,
+                owner_linux: 0,
+                owner_disabled: 0,
+                mailbox_flags: flags,
+                firmware_version_kind: RP1_VERSION_NON_PIO,
+            };
+            assert_eq!(
+                validate_layout_features(&config, v1_feature, v2_feature).is_ok(),
+                ok
+            );
+        }
+    }
+
+    #[test]
+    fn public_note_writer_rejects_reserved_flag_bits() {
+        let path = std::env::temp_dir().join("rp1-build-rejects-reserved-note.bin");
+        let config = Rp1BuildConfig {
+            owner_rp1: 0,
+            owner_linux: 0,
+            owner_disabled: 0,
+            mailbox_flags: RP1_MAILBOX_FLAGS_SUPPORTED_MASK | 0x8,
+            firmware_version_kind: RP1_VERSION_NON_PIO,
+        };
+        assert!(write_note_bin(&config, &path).is_err());
+    }
+
+    #[test]
+    fn public_note_writer_rejects_v1_plus_v2_flags() {
+        let path = std::env::temp_dir().join("rp1-build-rejects-v1-plus-v2-note.bin");
+        let config = Rp1BuildConfig {
+            owner_rp1: 0,
+            owner_linux: 0,
+            owner_disabled: 0,
+            mailbox_flags: RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
+            firmware_version_kind: RP1_VERSION_NON_PIO,
+        };
+        assert!(write_note_bin(&config, &path).is_err());
     }
 }

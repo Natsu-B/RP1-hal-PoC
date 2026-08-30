@@ -1,7 +1,28 @@
 pub const MAILBOX_ADDR: u32 = 0x2000_fc00;
 pub const MAILBOX_SIZE: usize = 1024;
+pub const MAILBOX_V1_SIZE: usize = 0x300;
 pub const MAILBOX_DATA_LEN: usize = 256;
 pub const MAILBOX_REG_COUNT: usize = 18;
+
+pub mod shared_sram {
+    pub const APP_START: u32 = 0x2000_0000;
+    pub const APP_LEN_V2: usize = 0xf700;
+    pub const STACK_TOP_V2: u32 = 0x2000_f700;
+
+    pub const DMA_ADDR: u32 = 0x2000_f700;
+    pub const DMA_LEN: usize = 0x100;
+    pub const DIAG_ADDR: u32 = 0x2000_f800;
+    pub const DIAG_LEN: usize = 0x100;
+    pub const RPC_ADDR: u32 = 0x2000_f900;
+    pub const RPC_LEN: usize = 0x200;
+    pub const SCMI_ADDR: u32 = 0x2000_fb00;
+    pub const SCMI_LEN: usize = 0x100;
+    pub const D1RP_ADDR: u32 = 0x2000_fc00;
+    pub const D1RP_LEN: usize = 0x300;
+    pub const OFFICIAL_ADDR: u32 = 0x2000_ff00;
+    pub const OFFICIAL_LEN: usize = 0x100;
+    pub const END: u32 = 0x2001_0000;
+}
 
 pub const SNAPSHOT_CHECKSUM_SEED: u32 = 0x811c_9dc5;
 pub const SNAPSHOT_RESPONSE_MAGIC: u32 = u32::from_le_bytes(*b"S1RP");
@@ -254,12 +275,51 @@ mod tests {
     #[test]
     fn mailbox_v1_layout_is_unchanged() {
         assert_eq!(core::mem::size_of::<DebugMailbox>(), 380);
+        assert!(core::mem::size_of::<DebugMailbox>() <= MAILBOX_V1_SIZE);
+        assert_eq!(MAILBOX_ADDR, shared_sram::D1RP_ADDR);
+        assert_eq!(
+            MAILBOX_ADDR + MAILBOX_V1_SIZE as u32,
+            shared_sram::OFFICIAL_ADDR
+        );
         assert_eq!(core::mem::offset_of!(DebugMailbox, seq), 16);
         assert_eq!(core::mem::offset_of!(DebugMailbox, ack), 20);
         assert_eq!(core::mem::offset_of!(DebugMailbox, command), 32);
         assert_eq!(core::mem::offset_of!(DebugMailbox, status), 44);
         assert_eq!(core::mem::offset_of!(DebugMailbox, data_len), 120);
         assert_eq!(core::mem::offset_of!(DebugMailbox, data), 124);
+    }
+
+    #[test]
+    fn shared_sram_v2_layout_is_contiguous() {
+        assert_eq!(
+            shared_sram::APP_START + shared_sram::APP_LEN_V2 as u32,
+            shared_sram::DMA_ADDR
+        );
+        assert_eq!(
+            shared_sram::DMA_ADDR + shared_sram::DMA_LEN as u32,
+            shared_sram::DIAG_ADDR
+        );
+        assert_eq!(
+            shared_sram::DIAG_ADDR + shared_sram::DIAG_LEN as u32,
+            shared_sram::RPC_ADDR
+        );
+        assert_eq!(
+            shared_sram::RPC_ADDR + shared_sram::RPC_LEN as u32,
+            shared_sram::SCMI_ADDR
+        );
+        assert_eq!(
+            shared_sram::SCMI_ADDR + shared_sram::SCMI_LEN as u32,
+            shared_sram::D1RP_ADDR
+        );
+        assert_eq!(
+            shared_sram::D1RP_ADDR + shared_sram::D1RP_LEN as u32,
+            shared_sram::OFFICIAL_ADDR
+        );
+        assert_eq!(
+            shared_sram::OFFICIAL_ADDR + shared_sram::OFFICIAL_LEN as u32,
+            shared_sram::END
+        );
+        assert_eq!(shared_sram::STACK_TOP_V2, shared_sram::DMA_ADDR);
     }
 
     #[test]

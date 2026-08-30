@@ -29,6 +29,8 @@ struct BuildArgs {
     #[arg(long)]
     example: String,
     #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long)]
     no_default_features: bool,
     #[arg(long, value_delimiter = ',')]
     features: Vec<String>,
@@ -57,16 +59,21 @@ fn build(args: BuildArgs) -> Result<()> {
 
     let root = std::env::current_dir().context("read current directory")?;
     let example_dir = root.join("examples").join("minimal");
-    let config_path = example_dir.join("rp1.toml");
+    let config_path = args
+        .config
+        .clone()
+        .or_else(|| std::env::var_os("RP1_CONFIG").map(PathBuf::from))
+        .unwrap_or_else(|| example_dir.join("rp1.toml"));
     let config = rp1_build::parse_config(&config_path)
         .map_err(|err| anyhow::anyhow!("parse {}: {err}", config_path.display()))?;
+    validate_config_features(&config, &args.features)?;
     let package = "rp1-example-minimal";
-    let raw_elf = root
-        .join("target")
+    let target_dir = cargo_target_dir(&root);
+    let raw_elf = target_dir
         .join(TARGET)
         .join("release")
         .join(package);
-    let output_dir = root.join("target").join("rp1").join("release");
+    let output_dir = target_dir.join("rp1").join("release");
     let output_elf = output_dir.join("RP1.elf");
 
     println!("[RP1] building example {}", args.example);
@@ -84,10 +91,13 @@ fn build(args: BuildArgs) -> Result<()> {
     if !args.features.is_empty() {
         cargo.arg("--features").arg(args.features.join(","));
     }
+    if config_path != example_dir.join("rp1.toml") {
+        cargo.env("RP1_CONFIG", &config_path);
+    }
     run(&mut cargo)?;
 
-    let note_bin = find_latest_note_bin(&root, package)?;
     fs::create_dir_all(&output_dir).context("create target/rp1/release")?;
+    let note_bin = write_invocation_note(&config, &output_dir)?;
     attach_note(&raw_elf, &note_bin, &output_elf)?;
     let check = check_bootloader_compatible(&output_elf)?;
 
@@ -108,6 +118,16 @@ fn build(args: BuildArgs) -> Result<()> {
         check.load_start, check.load_end
     );
     Ok(())
+}
+
+fn validate_config_features(config: &rp1_build::Rp1BuildConfig, features: &[String]) -> Result<()> {
+    let has_feature = |name: &str| features.iter().any(|feature| feature == name);
+    rp1_build::validate_layout_features(
+        config,
+        has_feature("debug-mailbox-layout-v1"),
+        has_feature("debug-mailbox-layout-v2"),
+    )
+    .map_err(|err| anyhow::anyhow!("{err}"))
 }
 
 fn run(command: &mut Command) -> Result<()> {
@@ -134,33 +154,11 @@ fn attach_note(input: &Path, note_bin: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_latest_note_bin(root: &Path, package: &str) -> Result<PathBuf> {
-    let build_dir = root
-        .join("target")
-        .join(TARGET)
-        .join("release")
-        .join("build");
-    let mut candidates = Vec::new();
-    for entry in fs::read_dir(&build_dir)
-        .with_context(|| format!("read build dir {}", build_dir.display()))?
-    {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with(package) {
-            continue;
-        }
-        let note = entry.path().join("out").join("rp1_note.bin");
-        if note.is_file() {
-            let modified = note.metadata()?.modified()?;
-            candidates.push((modified, note));
-        }
-    }
-    candidates.sort_by_key(|(modified, _)| *modified);
-    candidates
-        .pop()
-        .map(|(_, note)| note)
-        .ok_or_else(|| anyhow::anyhow!("rp1_note.bin not found for {package}"))
+fn write_invocation_note(config: &rp1_build::Rp1BuildConfig, output_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(output_dir).context("create note output dir")?;
+    let note = output_dir.join("rp1_note.bin");
+    rp1_build::write_note_bin(config, &note).map_err(|err| anyhow::anyhow!("{err}"))?;
+    Ok(note)
 }
 
 fn check_bootloader_compatible(path: &Path) -> Result<ElfCheck> {
@@ -236,4 +234,63 @@ fn display_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+}
+
+fn cargo_target_dir(root: &Path) -> PathBuf {
+    match std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => root.join(path),
+        None => root.join("target"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FLAG_ENABLE: u32 = 0x1;
+    const FLAG_V1: u32 = 0x2;
+    const FLAG_V2: u32 = 0x4;
+
+    fn config(flags: u32) -> rp1_build::Rp1BuildConfig {
+        rp1_build::Rp1BuildConfig {
+            owner_rp1: 0,
+            owner_linux: 0,
+            owner_disabled: 0,
+            mailbox_flags: flags,
+            firmware_version_kind: 0,
+        }
+    }
+
+    fn note_flags(path: &Path) -> u32 {
+        let note = fs::read(path).unwrap();
+        u32::from_le_bytes(note[88..92].try_into().unwrap())
+    }
+
+    #[test]
+    fn invocation_note_selection_ignores_stale_cargo_notes() {
+        let root =
+            std::env::temp_dir().join(format!("cargo-rp1-note-selection-{}", std::process::id()));
+        let stale = root
+            .join("target")
+            .join(TARGET)
+            .join("release")
+            .join("build")
+            .join("rp1-example-minimal-stale")
+            .join("out");
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("rp1_note.bin"), [0xffu8; 96]).unwrap();
+
+        let out = root.join("target").join("rp1").join("release");
+        for (flags, expected) in [
+            (FLAG_ENABLE, 0x1),
+            (FLAG_ENABLE | FLAG_V1, 0x3),
+            (FLAG_ENABLE | FLAG_V2, 0x5),
+        ] {
+            let note = write_invocation_note(&config(flags), &out).unwrap();
+            assert_eq!(note_flags(&note), expected);
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

@@ -33,6 +33,16 @@ debug-mailbox-layout = [
     "rp1-hal/debug-mailbox-layout",
     "rp1-rt/debug-mailbox-layout",
 ]
+debug-mailbox-layout-v1 = [
+    "debug-mailbox-layout",
+    "rp1-hal/debug-mailbox-layout-v1",
+    "rp1-rt/debug-mailbox-layout-v1",
+]
+debug-mailbox-layout-v2 = [
+    "debug-mailbox-layout",
+    "rp1-hal/debug-mailbox-layout-v2",
+    "rp1-rt/debug-mailbox-layout-v2",
+]
 debug-mailbox-init = [
     "debug-mailbox-layout",
     "rp1-hal/debug-mailbox-init",
