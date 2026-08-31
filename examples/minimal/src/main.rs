@@ -24,6 +24,10 @@ fn pulse_group(pin: &mut ConfiguredPin<22, Output>, count: u8) {
     delay_blink();
 }
 
+const fn legacy_boot_pulse_groups_enabled() -> bool {
+    !cfg!(feature = "scmi-uart-coexist")
+}
+
 #[cfg(target_arch = "arm")]
 fn delay_readback_units(units: u32) {
     for _ in 0..units * 1_000 {
@@ -1379,8 +1383,10 @@ fn read_scmi_clk_uart_ctrl() -> u32 {
 #[rp1_hal::main]
 fn main(mut p: Peripherals) -> ! {
     let mut gpio22 = p.gpio.pin::<22>().into_output();
-    pulse_group(&mut gpio22, 1);
-    pulse_group(&mut gpio22, 2);
+    if legacy_boot_pulse_groups_enabled() {
+        pulse_group(&mut gpio22, 1);
+        pulse_group(&mut gpio22, 2);
+    }
 
     #[cfg(feature = "pll-sys-core-lock-only")]
     match release_pll_sys_reset_bit29() {
@@ -1874,6 +1880,14 @@ fn main(mut p: Peripherals) -> ! {
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_boot_pulse_groups_are_disabled_only_for_scmi_coexistence() {
+        assert_eq!(
+            legacy_boot_pulse_groups_enabled(),
+            !cfg!(feature = "scmi-uart-coexist")
+        );
+    }
+
     #[cfg(feature = "scmi-uart-coexist")]
     #[test]
     fn scmi_heartbeat_encoding_and_schedule_are_fixed() {
@@ -1887,6 +1901,7 @@ mod tests {
         assert!(scmi_gpio_marker_due(0));
         assert!(!scmi_gpio_marker_due(99));
         assert!(scmi_gpio_marker_due(100));
+        assert!(scmi_gpio_marker_due(1_100));
         assert!(scmi_telemetry_due(0));
         assert!(!scmi_telemetry_due(9));
         assert!(scmi_telemetry_due(10));

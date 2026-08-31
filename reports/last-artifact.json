@@ -1,7 +1,7 @@
 {
   "artifact_path": "target/rp1/release/RP1.elf",
-  "sha256": "669fb51dd9ecbe592d638b4e65995623d8839fafeba6c69b461da28dc06324ab",
+  "sha256": "6c2a0472cb61c3152f14d176dec7b1c57ae29214b58db11cffa3162c4dd73d84",
   "build_log": "reports/build.log",
-  "build_log_sha256": "86faae9325da249f17bb616fb64feddccc4af080b211fa9e9d69cc198ed0f69b",
+  "build_log_sha256": "9906f87b6db197f979f1ea1b9d3d6b8712c24ba318957e3fc948bf3aa7a59e99",
   "build_log_status": "local-untracked"
 }
