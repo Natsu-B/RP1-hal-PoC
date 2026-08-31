@@ -1311,6 +1311,70 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32) {
     let _ = uart.write_bytes(b"\r\n");
 }
 
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_WINDOW_US: u64 = 120_000_000;
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_HEARTBEAT_PERIOD_US: u64 = 100_000;
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_GPIO_PERIOD_TICKS: u32 = 100;
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_TELEMETRY_PERIOD_TICKS: u32 = 10;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_GPIO_PULSE_US: u64 = 1_000;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_CLK_UART_CTRL: *const u32 = 0x4001_8054 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_CLK_UART_ENABLE: u32 = 1 << 11;
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_HEARTBEAT_TEMPLATE: [u8; 54] =
+    *b"RP1CLK seq=0x00000000 ctrl=0x00000000 off=0x00000000\r\n";
+
+#[cfg(feature = "scmi-uart-coexist")]
+fn encode_hex_u32(out: &mut [u8], offset: usize, value: u32) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for index in 0..8 {
+        out[offset + index] = HEX[((value >> ((7 - index) * 4)) & 0xf) as usize];
+    }
+}
+
+#[cfg(feature = "scmi-uart-coexist")]
+fn scmi_heartbeat_line(
+    sequence: u32,
+    ctrl: u32,
+    off_periods: u32,
+) -> [u8; SCMI_HEARTBEAT_TEMPLATE.len()] {
+    let mut line = SCMI_HEARTBEAT_TEMPLATE;
+    encode_hex_u32(&mut line, 13, sequence);
+    encode_hex_u32(&mut line, 29, ctrl);
+    encode_hex_u32(&mut line, 44, off_periods);
+    line
+}
+
+#[cfg(feature = "scmi-uart-coexist")]
+const fn scmi_tick_due(elapsed_us: u64, next_us: u64) -> bool {
+    elapsed_us < SCMI_WINDOW_US && elapsed_us >= next_us
+}
+
+#[cfg(feature = "scmi-uart-coexist")]
+const fn scmi_next_deadline(elapsed_us: u64) -> u64 {
+    (elapsed_us / SCMI_HEARTBEAT_PERIOD_US + 1) * SCMI_HEARTBEAT_PERIOD_US
+}
+
+#[cfg(feature = "scmi-uart-coexist")]
+const fn scmi_gpio_marker_due(sequence: u32) -> bool {
+    sequence % SCMI_GPIO_PERIOD_TICKS == 0
+}
+
+#[cfg(feature = "scmi-uart-coexist")]
+const fn scmi_telemetry_due(sequence: u32) -> bool {
+    sequence % SCMI_TELEMETRY_PERIOD_TICKS == 0
+}
+
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+fn read_scmi_clk_uart_ctrl() -> u32 {
+    unsafe { core::ptr::read_volatile(SCMI_CLK_UART_CTRL) }
+}
+
 #[cfg(target_arch = "arm")]
 #[rp1_hal::main]
 fn main(mut p: Peripherals) -> ! {
@@ -1428,19 +1492,38 @@ fn main(mut p: Peripherals) -> ! {
                     rp1_hal::scmi_irq::enable();
                 }
 
-                let mut heartbeat = 0u32;
+                let start = p.raw_timer.now();
+                let mut next_us = 0;
+                let mut off_periods = 0u32;
                 loop {
                     rp1_hal::rpc::poll(&p.raw_timer);
-                    heartbeat = heartbeat.wrapping_add(1);
-                    let _ = uart0.write_bytes(b"RP1 UART0 alive|count=");
-                    write_hex32(&mut uart0, heartbeat);
-                    let _ = uart0.write_bytes(b"\r\n");
-                    if heartbeat & 7 == 0 {
-                        write_scmi_telemetry(&mut uart0, heartbeat);
+
+                    let elapsed_us = p.raw_timer.elapsed_since(start);
+                    if elapsed_us >= SCMI_WINDOW_US {
+                        gpio22.set_low();
+                        quiet_stop();
                     }
-                    for _ in 0..1_000_000 {
-                        core::hint::spin_loop();
+                    if scmi_tick_due(elapsed_us, next_us) {
+                        let sequence = (elapsed_us / SCMI_HEARTBEAT_PERIOD_US) as u32;
+                        if scmi_gpio_marker_due(sequence) {
+                            gpio22.set_high();
+                            p.raw_timer.delay_us(SCMI_GPIO_PULSE_US);
+                            gpio22.set_low();
+                        }
+
+                        let ctrl = read_scmi_clk_uart_ctrl();
+                        if ctrl & SCMI_CLK_UART_ENABLE != 0 {
+                            let line = scmi_heartbeat_line(sequence, ctrl, off_periods);
+                            let _ = uart0.write_bytes(&line);
+                            if scmi_telemetry_due(sequence) {
+                                write_scmi_telemetry(&mut uart0, sequence);
+                            }
+                        } else {
+                            off_periods = off_periods.wrapping_add(1);
+                        }
+                        next_us = scmi_next_deadline(elapsed_us);
                     }
+                    core::hint::spin_loop();
                 }
             }
             #[cfg(feature = "pwm-gpio12-proof")]
@@ -1784,6 +1867,30 @@ fn main(mut p: Peripherals) -> ! {
             delay_blink();
             delay_blink();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "scmi-uart-coexist")]
+    #[test]
+    fn scmi_heartbeat_encoding_and_schedule_are_fixed() {
+        assert_eq!(
+            scmi_heartbeat_line(0x0123_abcd, 0x1000_0840, 0x55),
+            *b"RP1CLK seq=0x0123abcd ctrl=0x10000840 off=0x00000055\r\n"
+        );
+        assert!(scmi_tick_due(0, 0));
+        assert!(!scmi_tick_due(99_999, 100_000));
+        assert_eq!(scmi_next_deadline(350_000), 400_000);
+        assert!(scmi_gpio_marker_due(0));
+        assert!(!scmi_gpio_marker_due(99));
+        assert!(scmi_gpio_marker_due(100));
+        assert!(scmi_telemetry_due(0));
+        assert!(!scmi_telemetry_due(9));
+        assert!(scmi_telemetry_due(10));
+        assert!(!scmi_tick_due(SCMI_WINDOW_US, SCMI_WINDOW_US));
     }
 }
 
