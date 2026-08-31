@@ -1,5 +1,7 @@
 {
   "artifact_path": "target/rp1/release/RP1.elf",
   "sha256": "669fb51dd9ecbe592d638b4e65995623d8839fafeba6c69b461da28dc06324ab",
-  "build_log": "reports/build.log"
+  "build_log": "reports/build.log",
+  "build_log_sha256": "86faae9325da249f17bb616fb64feddccc4af080b211fa9e9d69cc198ed0f69b",
+  "build_log_status": "local-untracked"
 }
