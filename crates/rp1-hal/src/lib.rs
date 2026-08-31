@@ -12,6 +12,8 @@ pub mod owner;
 pub mod peripherals;
 pub mod prelude;
 pub mod pwm;
+#[cfg(feature = "bar2-rpc-v2")]
+pub mod rpc;
 pub mod spi;
 pub mod timer;
 pub mod uart;

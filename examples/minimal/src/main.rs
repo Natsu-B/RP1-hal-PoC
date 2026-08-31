@@ -1676,6 +1676,14 @@ fn main(mut p: Peripherals) -> ! {
                     core::hint::spin_loop();
                 }
             }
+            #[cfg(feature = "bar2-rpc-poll")]
+            if state5.decision == State5Decision::LinkUp {
+                rp1_hal::rpc::init();
+                loop {
+                    rp1_hal::rpc::poll(&p.raw_timer);
+                    core::hint::spin_loop();
+                }
+            }
             quiet_stop();
         }
 

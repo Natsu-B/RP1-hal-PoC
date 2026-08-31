@@ -49,6 +49,11 @@ debug-mailbox-init = [
     "rp1-rt/debug-mailbox-init",
 ]
 debug-mailbox-ping = ["state5-composite-boundary", "debug-mailbox-init"]
+bar2-rpc-poll = [
+    "state5-composite-boundary",
+    "debug-mailbox-layout-v2",
+    "rp1-hal/bar2-rpc-v2",
+]
 gpio-wiring-proof = ["state5-composite-boundary"]
 i2c1-reset-only = ["pll-sys-core-lock-only"]
 i2c1-host-proof = ["i2c1-reset-only"]
