@@ -59,20 +59,19 @@ fn build(args: BuildArgs) -> Result<()> {
 
     let root = std::env::current_dir().context("read current directory")?;
     let example_dir = root.join("examples").join("minimal");
-    let config_path = args
-        .config
-        .clone()
-        .or_else(|| std::env::var_os("RP1_CONFIG").map(PathBuf::from))
-        .unwrap_or_else(|| example_dir.join("rp1.toml"));
+    let config_path = normalize_config_path(
+        &root,
+        args.config
+            .clone()
+            .or_else(|| std::env::var_os("RP1_CONFIG").map(PathBuf::from))
+            .unwrap_or_else(|| example_dir.join("rp1.toml")),
+    );
     let config = rp1_build::parse_config(&config_path)
         .map_err(|err| anyhow::anyhow!("parse {}: {err}", config_path.display()))?;
     validate_config_features(&config, &args.features)?;
     let package = "rp1-example-minimal";
     let target_dir = cargo_target_dir(&root);
-    let raw_elf = target_dir
-        .join(TARGET)
-        .join("release")
-        .join(package);
+    let raw_elf = target_dir.join(TARGET).join("release").join(package);
     let output_dir = target_dir.join("rp1").join("release");
     let output_elf = output_dir.join("RP1.elf");
 
@@ -125,9 +124,19 @@ fn validate_config_features(config: &rp1_build::Rp1BuildConfig, features: &[Stri
     rp1_build::validate_layout_features(
         config,
         has_feature("debug-mailbox-layout-v1"),
-        has_feature("debug-mailbox-layout-v2"),
+        has_feature("debug-mailbox-layout-v2")
+            || has_feature("scmi-uart-coexist")
+            || has_feature("bar2-rpc-poll"),
     )
     .map_err(|err| anyhow::anyhow!("{err}"))
+}
+
+fn normalize_config_path(root: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
 }
 
 fn run(command: &mut Command) -> Result<()> {

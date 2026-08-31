@@ -55,9 +55,10 @@ pub struct OwnerBitmap {
 pub fn generate() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
-    let config_path = std::env::var_os("RP1_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("rp1.toml"));
+    let config_path = resolve_config_path(
+        &manifest_dir,
+        std::env::var_os("RP1_CONFIG").map(PathBuf::from),
+    );
     println!("cargo:rerun-if-env-changed=RP1_CONFIG");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V2");
@@ -107,6 +108,26 @@ pub fn generate_from_paths(config_path: &Path, out_dir: &Path) -> Result<PathBuf
 pub fn parse_config(path: impl AsRef<Path>) -> Result<Rp1BuildConfig, Box<dyn Error>> {
     let config_text = fs::read_to_string(path)?;
     parse_config_text(&config_text)
+}
+
+fn resolve_config_path(manifest_dir: &Path, config_path: Option<PathBuf>) -> PathBuf {
+    let Some(path) = config_path else {
+        return manifest_dir.join("rp1.toml");
+    };
+    if path.is_absolute() {
+        return path;
+    }
+    let package_relative = manifest_dir.join(&path);
+    if package_relative.exists() {
+        return package_relative;
+    }
+    for ancestor in manifest_dir.ancestors().skip(1) {
+        let candidate = ancestor.join(&path);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    package_relative
 }
 
 fn parse_config_text(config_text: &str) -> Result<Rp1BuildConfig, Box<dyn Error>> {
@@ -339,6 +360,25 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn repo_relative_config_path_resolves_from_package_build_dir() {
+        let root = std::env::temp_dir().join(format!("rp1-build-config-{}", std::process::id()));
+        let manifest_dir = root.join("examples").join("minimal");
+        let config_path = manifest_dir.join("rp1-scmi-uart.toml");
+        fs::create_dir_all(&manifest_dir).unwrap();
+        fs::write(&config_path, "").unwrap();
+
+        assert_eq!(
+            resolve_config_path(
+                &manifest_dir,
+                Some(PathBuf::from("examples/minimal/rp1-scmi-uart.toml"))
+            ),
+            config_path
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
