@@ -14,6 +14,10 @@ pub mod prelude;
 pub mod pwm;
 #[cfg(feature = "bar2-rpc-v2")]
 pub mod rpc;
+#[cfg(feature = "scmi-uart-clock")]
+pub mod scmi;
+#[cfg(feature = "scmi-uart-clock")]
+pub mod scmi_irq;
 pub mod spi;
 pub mod timer;
 pub mod uart;

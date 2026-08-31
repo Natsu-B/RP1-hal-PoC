@@ -12,6 +12,7 @@ debug-mailbox-layout = ["debug-stack-low", "rp1-rt/debug-mailbox-layout"]
 debug-mailbox-layout-v1 = ["debug-mailbox-layout", "rp1-rt/debug-mailbox-layout-v1"]
 debug-mailbox-layout-v2 = ["debug-mailbox-layout", "rp1-rt/debug-mailbox-layout-v2"]
 bar2-rpc-v2 = ["debug-mailbox-layout-v2"]
+scmi-uart-clock = ["debug-mailbox-layout-v2", "rp1-rt/scmi-uart-clock"]
 debug-mailbox-init = ["debug-mailbox-layout", "rp1-rt/debug-mailbox-init"]
 debug-stub = ["pcie-ep-init", "debug-snapshot", "debug-mailbox-init", "rp1-rt/debug-stub"]
 

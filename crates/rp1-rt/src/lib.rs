@@ -27,13 +27,21 @@ unsafe extern "C" {
     fn UART0_IRQHandler();
 }
 
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-clock"))]
+unsafe extern "C" {
+    fn RP1_SCMI_IRQHandler();
+}
+
 #[cfg(target_arch = "arm")]
 unsafe extern "C" {
     static mut __sbss: u8;
     static mut __ebss: u8;
 }
 
-#[cfg(all(target_arch = "arm", not(feature = "uart0-rx-irq")))]
+#[cfg(all(
+    target_arch = "arm",
+    not(any(feature = "uart0-rx-irq", feature = "scmi-uart-clock"))
+))]
 #[unsafe(link_section = ".vector_table")]
 #[used]
 pub static VECTOR_TABLE: [unsafe extern "C" fn(); 16] = [
@@ -55,8 +63,26 @@ pub static VECTOR_TABLE: [unsafe extern "C" fn(); 16] = [
     DefaultHandler,
 ];
 
-#[cfg(all(target_arch = "arm", feature = "uart0-rx-irq"))]
-const fn uart0_irq_vector_table() -> [unsafe extern "C" fn(); 80] {
+#[cfg(all(
+    target_arch = "arm",
+    feature = "uart0-rx-irq",
+    feature = "scmi-uart-clock"
+))]
+const fn local_irq_vector_table() -> [unsafe extern "C" fn(); 80] {
+    let mut vectors = [DefaultHandler as unsafe extern "C" fn(); 80];
+    vectors[0] = _stack_start;
+    vectors[1] = Reset;
+    vectors[UART0_VECTOR_INDEX] = UART0_IRQHandler;
+    vectors[SCMI_VECTOR_INDEX] = RP1_SCMI_IRQHandler;
+    vectors
+}
+
+#[cfg(all(
+    target_arch = "arm",
+    feature = "uart0-rx-irq",
+    not(feature = "scmi-uart-clock")
+))]
+const fn local_irq_vector_table() -> [unsafe extern "C" fn(); 80] {
     let mut vectors = [DefaultHandler as unsafe extern "C" fn(); 80];
     vectors[0] = _stack_start;
     vectors[1] = Reset;
@@ -64,19 +90,46 @@ const fn uart0_irq_vector_table() -> [unsafe extern "C" fn(); 80] {
     vectors
 }
 
-#[cfg(all(target_arch = "arm", feature = "uart0-rx-irq"))]
+#[cfg(all(
+    target_arch = "arm",
+    feature = "scmi-uart-clock",
+    not(feature = "uart0-rx-irq")
+))]
+const fn local_irq_vector_table() -> [unsafe extern "C" fn(); 80] {
+    let mut vectors = [DefaultHandler as unsafe extern "C" fn(); 80];
+    vectors[0] = _stack_start;
+    vectors[1] = Reset;
+    vectors[SCMI_VECTOR_INDEX] = RP1_SCMI_IRQHandler;
+    vectors
+}
+
+#[cfg(all(
+    target_arch = "arm",
+    any(feature = "uart0-rx-irq", feature = "scmi-uart-clock")
+))]
 #[unsafe(link_section = ".vector_table")]
 #[used]
-pub static VECTOR_TABLE: [unsafe extern "C" fn(); 80] = uart0_irq_vector_table();
+pub static VECTOR_TABLE: [unsafe extern "C" fn(); 80] = local_irq_vector_table();
 
 pub const UART0_IRQ_NUMBER: usize = 25;
 pub const UART0_VECTOR_INDEX: usize = 16 + UART0_IRQ_NUMBER;
+pub const SCMI_IRQ_NUMBER: usize = 57;
+pub const SCMI_VECTOR_INDEX: usize = 16 + SCMI_IRQ_NUMBER;
 
 #[cfg(all(target_arch = "arm", feature = "uart0-rx-irq"))]
 const UART0_IRQ_BIT: u32 = 1 << UART0_IRQ_NUMBER;
+#[cfg(all(
+    target_arch = "arm",
+    feature = "uart0-rx-irq",
+    feature = "scmi-uart-clock"
+))]
+const SCMI_IRQ_BIT1: u32 = 1 << (SCMI_IRQ_NUMBER - 32);
 #[cfg(all(target_arch = "arm", feature = "uart0-rx-irq"))]
 const VECTOR_TABLE_BASE: u32 = 0x2000_0000;
-#[cfg(all(target_arch = "arm", feature = "uart0-rx-irq"))]
+#[cfg(all(
+    target_arch = "arm",
+    any(feature = "uart0-rx-irq", feature = "scmi-uart-clock")
+))]
 const SCB_VTOR: *mut u32 = 0xe000_ed08 as *mut u32;
 #[cfg(all(target_arch = "arm", feature = "uart0-rx-irq"))]
 const NVIC_ISER0: *mut u32 = 0xe000_e100 as *mut u32;
@@ -184,7 +237,14 @@ pub unsafe fn record_uart0_irq_entry() {
 #[cfg(all(target_arch = "arm", feature = "uart0-rx-irq"))]
 pub unsafe fn prepare_uart0_irq() -> bool {
     let before = uart0_irq_route_snapshot();
-    if before.vtor != VECTOR_TABLE_BASE || before.iser0 & !UART0_IRQ_BIT != 0 || before.iser1 != 0 {
+    #[cfg(feature = "scmi-uart-clock")]
+    let allowed_iser1 = SCMI_IRQ_BIT1;
+    #[cfg(not(feature = "scmi-uart-clock"))]
+    let allowed_iser1 = 0;
+    if before.vtor != VECTOR_TABLE_BASE
+        || before.iser0 & !UART0_IRQ_BIT != 0
+        || before.iser1 & !allowed_iser1 != 0
+    {
         return false;
     }
 
@@ -219,7 +279,10 @@ pub unsafe fn disable_uart0_irq() {
     }
 }
 
-#[cfg(all(target_arch = "arm", feature = "uart0-rx-irq"))]
+#[cfg(all(
+    target_arch = "arm",
+    any(feature = "uart0-rx-irq", feature = "scmi-uart-clock")
+))]
 unsafe fn configure_vector_table() {
     let address = core::ptr::addr_of!(VECTOR_TABLE) as usize as u32;
     unsafe {
@@ -234,7 +297,7 @@ pub unsafe extern "C" fn Reset() {
     unsafe {
         zero_bss();
     }
-    #[cfg(feature = "uart0-rx-irq")]
+    #[cfg(any(feature = "uart0-rx-irq", feature = "scmi-uart-clock"))]
     unsafe {
         configure_vector_table();
     }

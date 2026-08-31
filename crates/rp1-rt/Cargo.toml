@@ -15,6 +15,7 @@ debug-mailbox-layout-v2 = ["debug-mailbox-layout"]
 debug-mailbox-init = ["debug-mailbox-layout"]
 debug-stub = ["pcie-ep-init", "debug-snapshot", "debug-mailbox-init"]
 uart0-rx-irq = []
+scmi-uart-clock = []
 
 [dependencies]
 rp1-abi = { path = "../rp1-abi" }

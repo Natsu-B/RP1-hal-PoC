@@ -1273,6 +1273,44 @@ fn emit_readback_frames(pin: &mut ConfiguredPin<22, Output>, uart0: &Uart0Tx) {
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+fn write_hex32(uart: &mut Uart0Tx, value: u32) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0; 8];
+    for index in 0..8 {
+        bytes[index] = HEX[((value >> ((7 - index) * 4)) & 0xf) as usize];
+    }
+    let _ = uart.write_bytes(&bytes);
+}
+
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+fn write_field(uart: &mut Uart0Tx, name: &[u8], value: u32) {
+    let _ = uart.write_bytes(b"|");
+    let _ = uart.write_bytes(name);
+    let _ = uart.write_bytes(b"=");
+    write_hex32(uart, value);
+}
+
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32) {
+    let state = rp1_hal::scmi::telemetry();
+    let _ = uart.write_bytes(b"RP1SCMI|TELEMETRY");
+    write_field(uart, b"heartbeat", heartbeat);
+    write_field(uart, b"irq", state.irq_count);
+    write_field(uart, b"proc_event", state.proc_event_count);
+    write_field(uart, b"host_event", state.host_event_count);
+    write_field(uart, b"config_set", state.clock_config_set_count);
+    write_field(uart, b"enable", state.clock_enable_count);
+    write_field(uart, b"disable", state.clock_disable_count);
+    write_field(uart, b"linux_votes", state.linux_votes);
+    write_field(uart, b"firmware_votes", state.firmware_votes);
+    write_field(uart, b"clk_uart_ctrl", state.clk_uart_ctrl);
+    write_field(uart, b"clk_uart_div_int", state.clk_uart_div_int);
+    write_field(uart, b"clk_uart_sel", state.clk_uart_sel);
+    write_field(uart, b"pll_sys_prim", state.pll_sys_prim);
+    let _ = uart.write_bytes(b"\r\n");
+}
+
 #[cfg(target_arch = "arm")]
 #[rp1_hal::main]
 fn main(mut p: Peripherals) -> ! {
@@ -1376,6 +1414,32 @@ fn main(mut p: Peripherals) -> ! {
                     Err(_) => {
                         pulse_width(&mut gpio22, 120);
                         quiet_stop();
+                    }
+                }
+            }
+            #[cfg(feature = "scmi-uart-coexist")]
+            if state5.decision == State5Decision::LinkUp {
+                let mut uart0 = p.uart0.init_tx_115200_clock_ready();
+                let _ = uart0.write_bytes(b"RP1 SCMI UART clock server boot\r\n");
+                rp1_hal::rpc::init();
+                rp1_hal::scmi::init_uart_clock_server();
+                rp1_hal::scmi::set_firmware_uart_vote(true);
+                unsafe {
+                    rp1_hal::scmi_irq::enable();
+                }
+
+                let mut heartbeat = 0u32;
+                loop {
+                    rp1_hal::rpc::poll(&p.raw_timer);
+                    heartbeat = heartbeat.wrapping_add(1);
+                    let _ = uart0.write_bytes(b"RP1 UART0 alive|count=");
+                    write_hex32(&mut uart0, heartbeat);
+                    let _ = uart0.write_bytes(b"\r\n");
+                    if heartbeat & 7 == 0 {
+                        write_scmi_telemetry(&mut uart0, heartbeat);
+                    }
+                    for _ in 0..1_000_000 {
+                        core::hint::spin_loop();
                     }
                 }
             }
