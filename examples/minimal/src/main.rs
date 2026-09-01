@@ -838,6 +838,34 @@ fn release_uart0_reset_bank1_bit26() -> Result<(), Uart0ResetError> {
     Err(Uart0ResetError::Timeout)
 }
 
+#[cfg(all(target_arch = "arm", feature = "pll-sys-core-lock-only"))]
+fn prepare_pll_sys_uart0_chain(pin: &mut ConfiguredPin<22, Output>) {
+    let pll_sys = pll_sys_core_lock_transition();
+    publish_pll_sys_core_lock_result(pll_sys);
+    let pri_ph = if pll_sys.decision == PllSysCoreLockDecision::Locked {
+        enable_pll_sys_pri_ph_bit4()
+    } else {
+        Err(PllSysPriPhError::ParentNotLocked)
+    };
+    match pri_ph {
+        Ok(()) => {
+            pulse_width(pin, 88);
+            #[cfg(feature = "uart0-reset-only")]
+            match release_uart0_reset_bank1_bit26() {
+                Ok(()) => pulse_width(pin, 89),
+                Err(_) => {
+                    pulse_width(pin, 121);
+                    quiet_stop();
+                }
+            }
+        }
+        Err(_) => {
+            pulse_width(pin, 120);
+            quiet_stop();
+        }
+    }
+}
+
 #[cfg(all(target_arch = "arm", feature = "i2c1-reset-only"))]
 fn release_i2c1_reset_bank0_bit8() -> Result<(), I2c1ResetError> {
     const CTRL0: *const u32 = 0x4001_4000 as *const u32;
@@ -1434,6 +1462,13 @@ fn main(mut p: Peripherals) -> ! {
         };
         result.pre_state1_observation = pre_state1.observation;
 
+        #[cfg(all(feature = "scmi-uart-coexist", feature = "pll-sys-core-lock-only"))]
+        if result.decision == State3Decision::CoreAlive {
+            // The endpoint must train against the final PLL state.  Re-locking
+            // PLL_SYS after State5 has reported LinkUp drops the host link.
+            prepare_pll_sys_uart0_chain(&mut gpio22);
+        }
+
         #[cfg(feature = "state5-composite-boundary")]
         if result.decision == State3Decision::CoreAlive {
             let state5 = state5_composite_boundary();
@@ -1460,32 +1495,9 @@ fn main(mut p: Peripherals) -> ! {
                 pulse_width(&mut gpio22, 416);
                 quiet_stop();
             }
-            #[cfg(feature = "pll-sys-core-lock-only")]
+            #[cfg(all(feature = "pll-sys-core-lock-only", not(feature = "scmi-uart-coexist")))]
             if state5.decision == State5Decision::LinkUp {
-                let pll_sys = pll_sys_core_lock_transition();
-                publish_pll_sys_core_lock_result(pll_sys);
-                let pri_ph = if pll_sys.decision == PllSysCoreLockDecision::Locked {
-                    enable_pll_sys_pri_ph_bit4()
-                } else {
-                    Err(PllSysPriPhError::ParentNotLocked)
-                };
-                match pri_ph {
-                    Ok(()) => {
-                        pulse_width(&mut gpio22, 88);
-                        #[cfg(feature = "uart0-reset-only")]
-                        match release_uart0_reset_bank1_bit26() {
-                            Ok(()) => pulse_width(&mut gpio22, 89),
-                            Err(_) => {
-                                pulse_width(&mut gpio22, 121);
-                                quiet_stop();
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        pulse_width(&mut gpio22, 120);
-                        quiet_stop();
-                    }
-                }
+                prepare_pll_sys_uart0_chain(&mut gpio22);
             }
             #[cfg(feature = "scmi-uart-coexist")]
             if state5.decision == State5Decision::LinkUp {
