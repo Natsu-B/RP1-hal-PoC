@@ -1385,7 +1385,7 @@ const fn scmi_endpoint_class_revision(current: u32) -> u32 {
 }
 
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
-fn repair_scmi_endpoint_class_if_reset() -> Option<(u32, u32)> {
+fn repair_scmi_endpoint_class_if_reset() -> Option<(u32, u32, [u32; 8])> {
     const DBI_SELECTOR: *mut u32 = 0x4010_8000 as *mut u32;
     const DBI_BASE: usize = 0x4010_9000;
     const CLASS_REVISION: *mut u32 = (DBI_BASE + 0x008) as *mut u32;
@@ -1400,6 +1400,22 @@ fn repair_scmi_endpoint_class_if_reset() -> Option<(u32, u32)> {
             return None;
         }
 
+        core::ptr::write_volatile(DBI_SELECTOR, 0x23);
+        let iatu = [
+            core::ptr::read_volatile((DBI_BASE + 0x114) as *const u32),
+            core::ptr::read_volatile((DBI_BASE + 0x118) as *const u32),
+            core::ptr::read_volatile((DBI_BASE + 0x100) as *const u32),
+            core::ptr::read_volatile((DBI_BASE + 0x104) as *const u32),
+            {
+                core::ptr::write_volatile(DBI_SELECTOR, 0x63);
+                core::ptr::read_volatile((DBI_BASE + 0x114) as *const u32)
+            },
+            core::ptr::read_volatile((DBI_BASE + 0x118) as *const u32),
+            core::ptr::read_volatile((DBI_BASE + 0x100) as *const u32),
+            core::ptr::read_volatile((DBI_BASE + 0x104) as *const u32),
+        ];
+
+        core::ptr::write_volatile(DBI_SELECTOR, 0);
         let ro_write_before = core::ptr::read_volatile(DBI_RO_WR_EN);
         core::ptr::write_volatile(DBI_RO_WR_EN, ro_write_before | 1);
         core::ptr::write_volatile(CLASS_REVISION, scmi_endpoint_class_revision(before));
@@ -1407,7 +1423,7 @@ fn repair_scmi_endpoint_class_if_reset() -> Option<(u32, u32)> {
         let after = core::ptr::read_volatile(CLASS_REVISION);
         core::ptr::write_volatile(DBI_RO_WR_EN, ro_write_before);
         core::ptr::write_volatile(DBI_SELECTOR, selector_before);
-        Some((before, after))
+        Some((before, after, iatu))
     }
 }
 
@@ -1587,10 +1603,18 @@ fn main(mut p: Peripherals) -> ! {
                 let mut next_us = 0;
                 let mut off_periods = 0u32;
                 loop {
-                    if let Some((before, after)) = repair_scmi_endpoint_class_if_reset() {
+                    if let Some((before, after, iatu)) = repair_scmi_endpoint_class_if_reset() {
                         let _ = uart0.write_bytes(b"RP1SCMI|ENDPOINT_CLASS_REPAIR");
                         write_field(&mut uart0, b"before", before);
                         write_field(&mut uart0, b"after", after);
+                        write_field(&mut uart0, b"r23_target_lo", iatu[0]);
+                        write_field(&mut uart0, b"r23_target_hi", iatu[1]);
+                        write_field(&mut uart0, b"r23_ctrl1", iatu[2]);
+                        write_field(&mut uart0, b"r23_ctrl2", iatu[3]);
+                        write_field(&mut uart0, b"r63_target_lo", iatu[4]);
+                        write_field(&mut uart0, b"r63_target_hi", iatu[5]);
+                        write_field(&mut uart0, b"r63_ctrl1", iatu[6]);
+                        write_field(&mut uart0, b"r63_ctrl2", iatu[7]);
                         let _ = uart0.write_bytes(b"\r\n");
                         if after != scmi_endpoint_class_revision(before) {
                             pulse_width(&mut gpio22, 125);
