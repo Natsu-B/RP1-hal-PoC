@@ -1,0 +1,19 @@
+[firmware]
+name = "scmi-uart-coexist"
+shared_sram_layout_v2 = true
+
+[linux]
+mailbox = true
+pio = false
+
+[owner]
+gpio = "linux"
+uart0 = "rp1"
+uart1 = "linux"
+i2c0 = "linux"
+i2c1 = "linux"
+spi0 = "linux"
+pio0 = "rp1"
+pio1 = "rp1"
+dma = "linux"
+timer = "linux"

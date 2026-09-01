@@ -9,3 +9,4 @@ members = [
     "crates/rp1-rt",
     "examples/minimal",
 ]
+exclude = ["examples/scmi-uart-coexist"]

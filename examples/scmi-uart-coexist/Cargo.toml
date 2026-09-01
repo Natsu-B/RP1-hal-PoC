@@ -1,0 +1,19 @@
+[package]
+name = "rp1-example-scmi-uart-coexist"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[features]
+default = ["debug-mailbox-layout-v2"]
+debug-mailbox-layout-v2 = [
+    "rp1-hal/debug-mailbox-layout-v2",
+    "rp1-rt/debug-mailbox-layout-v2",
+]
+
+[dependencies]
+rp1-hal = { path = "../../crates/rp1-hal", features = ["pcie-ep-init", "scmi-uart-clock", "bar2-rpc-v2"] }
+rp1-rt = { path = "../../crates/rp1-rt", features = ["pcie-ep-init", "scmi-uart-clock"] }
+
+[build-dependencies]
+rp1-build = { path = "../../crates/rp1-build" }

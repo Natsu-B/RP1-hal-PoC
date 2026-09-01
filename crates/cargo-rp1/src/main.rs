@@ -50,15 +50,15 @@ fn main() -> Result<()> {
 }
 
 fn build(args: BuildArgs) -> Result<()> {
-    if args.example != "minimal" {
+    if !matches!(args.example.as_str(), "minimal" | "scmi-uart-coexist") {
         bail!(
-            "unsupported example `{}`; only `minimal` is wired up",
+            "unsupported example `{}`; expected `minimal` or `scmi-uart-coexist`",
             args.example
         );
     }
 
     let root = std::env::current_dir().context("read current directory")?;
-    let example_dir = root.join("examples").join("minimal");
+    let example_dir = root.join("examples").join(&args.example);
     let config_path = normalize_config_path(
         &root,
         args.config
@@ -68,8 +68,8 @@ fn build(args: BuildArgs) -> Result<()> {
     );
     let config = rp1_build::parse_config(&config_path)
         .map_err(|err| anyhow::anyhow!("parse {}: {err}", config_path.display()))?;
-    validate_config_features(&config, &args.features)?;
-    let package = "rp1-example-minimal";
+    validate_config_features(&config, &args.features, &args.example)?;
+    let package = format!("rp1-example-{}", args.example);
     let target_dir = cargo_target_dir(&root);
     let raw_elf = target_dir.join(TARGET).join("release").join(package);
     let output_dir = target_dir.join("rp1").join("release");
@@ -79,8 +79,10 @@ fn build(args: BuildArgs) -> Result<()> {
     let mut cargo = Command::new("cargo");
     cargo
         .arg("build")
-        .arg("-p")
-        .arg(package)
+        .arg("--manifest-path")
+        .arg(example_dir.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target_dir)
         .arg("--release")
         .arg("--target")
         .arg(TARGET);
@@ -119,14 +121,19 @@ fn build(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
-fn validate_config_features(config: &rp1_build::Rp1BuildConfig, features: &[String]) -> Result<()> {
+fn validate_config_features(
+    config: &rp1_build::Rp1BuildConfig,
+    features: &[String],
+    example: &str,
+) -> Result<()> {
     let has_feature = |name: &str| features.iter().any(|feature| feature == name);
     rp1_build::validate_layout_features(
         config,
         has_feature("debug-mailbox-layout-v1"),
         has_feature("debug-mailbox-layout-v2")
             || has_feature("scmi-uart-coexist")
-            || has_feature("bar2-rpc-poll"),
+            || has_feature("bar2-rpc-poll")
+            || example == "scmi-uart-coexist",
     )
     .map_err(|err| anyhow::anyhow!("{err}"))
 }

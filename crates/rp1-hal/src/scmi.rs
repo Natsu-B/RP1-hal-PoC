@@ -1,9 +1,10 @@
-//! Minimal event-driven SCMI clock server for the shared UART functional clock.
+//! Minimal event-driven SCMI clock server for the shared UART clocks.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
 pub const SCMI_CLOCK_UART: u32 = 0;
-pub const SCMI_CLOCK_COUNT: u32 = 1;
+pub const SCMI_CLOCK_UART_APB: u32 = 1;
+pub const SCMI_CLOCK_COUNT: u32 = 2;
 pub const SCMI_SHMEM_BASE: usize = rp1_abi::debug::shared_sram::SCMI_ADDR as usize;
 pub const SCMI_SHMEM_SIZE: usize = rp1_abi::debug::shared_sram::SCMI_LEN;
 pub const SCMI_DOORBELL_CHANNEL: u32 = 1;
@@ -21,6 +22,7 @@ const CLK_UART_DIV_INT: usize = CLOCKMAN_BASE + 0x58;
 const CLK_UART_SEL: usize = CLOCKMAN_BASE + 0x60;
 const CLK_CTRL_ENABLE: u32 = 1 << 11;
 const PLL_SYS_PRIM: usize = 0x4002_0010;
+const PLL_PH_EN: u32 = 1 << 4;
 
 const SCMI_PROTOCOL_BASE: u8 = 0x10;
 const SCMI_PROTOCOL_CLOCK: u8 = 0x14;
@@ -60,10 +62,13 @@ const SCMI_MSG_PROTOCOL_SHIFT: u32 = 10;
 const SCMI_MSG_PROTOCOL_MASK: u32 = 0xff << SCMI_MSG_PROTOCOL_SHIFT;
 
 const UART_RATE: u64 = 50_000_000;
+const UART_APB_RATE: u64 = 100_000_000;
 const VOTE_UART: u32 = 1 << SCMI_CLOCK_UART;
+const VOTE_UART_APB: u32 = 1 << SCMI_CLOCK_UART_APB;
+const ALL_UART_VOTES: u32 = VOTE_UART | VOTE_UART_APB;
 
 static LINUX_VOTES: AtomicU32 = AtomicU32::new(0);
-static FIRMWARE_VOTES: AtomicU32 = AtomicU32::new(VOTE_UART);
+static FIRMWARE_VOTES: AtomicU32 = AtomicU32::new(ALL_UART_VOTES);
 static IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
 static PROC_EVENT_COUNT: AtomicU32 = AtomicU32::new(0);
 static HOST_EVENT_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -89,7 +94,7 @@ pub struct Telemetry {
 
 pub fn init_uart_clock_server() {
     LINUX_VOTES.store(0, Ordering::Release);
-    FIRMWARE_VOTES.store(VOTE_UART, Ordering::Release);
+    FIRMWARE_VOTES.store(ALL_UART_VOTES, Ordering::Release);
     IRQ_COUNT.store(0, Ordering::Release);
     PROC_EVENT_COUNT.store(0, Ordering::Release);
     HOST_EVENT_COUNT.store(0, Ordering::Release);
@@ -108,6 +113,12 @@ pub fn init_uart_clock_server() {
 
 pub fn set_firmware_uart_vote(enabled: bool) {
     FIRMWARE_VOTES.store(u32::from(enabled) * VOTE_UART, Ordering::Release);
+    apply_clock_votes();
+}
+
+pub fn set_firmware_uart_votes(functional: bool, apb: bool) {
+    let votes = u32::from(functional) * VOTE_UART | u32::from(apb) * VOTE_UART_APB;
+    FIRMWARE_VOTES.store(votes, Ordering::Release);
     apply_clock_votes();
 }
 
@@ -238,51 +249,53 @@ fn service_clock(message: u8, request_len: usize) {
             }
         }
         CLOCK_ATTRIBUTES if request_len == 4 => {
-            if request_u32(0) != SCMI_CLOCK_UART {
+            let Some((name, vote)) = clock_name_vote(request_u32(0)) else {
                 finish_error(SCMI_INVALID_PARAMETERS);
                 return;
-            }
+            };
             response_begin(SCMI_SUCCESS, 24);
-            response_u32(0, u32::from(combined_votes() & VOTE_UART != 0));
-            response_name(4, b"rp1-uart");
+            response_u32(0, u32::from(combined_votes() & vote != 0));
+            response_name(4, name);
             response_u32(20, 0);
         }
         CLOCK_DESCRIBE_RATES if request_len == 8 => {
-            if request_u32(0) != SCMI_CLOCK_UART {
+            let Some(rate) = clock_rate(request_u32(0)) else {
                 finish_error(SCMI_INVALID_PARAMETERS);
-            } else if request_u32(4) == 0 {
+                return;
+            };
+            if request_u32(4) == 0 {
                 response_begin(SCMI_SUCCESS, 12);
                 response_u32(0, 1);
-                response_u64(4, UART_RATE);
+                response_u64(4, rate);
             } else {
                 finish_u32(SCMI_SUCCESS, 0);
             }
         }
         CLOCK_RATE_GET if request_len == 4 => {
-            if request_u32(0) == SCMI_CLOCK_UART {
-                response_begin(SCMI_SUCCESS, 8);
-                response_u64(0, UART_RATE);
-            } else {
-                finish_error(SCMI_INVALID_PARAMETERS);
-            }
-        }
-        CLOCK_CONFIG_SET if request_len >= 8 => {
-            if request_u32(0) != SCMI_CLOCK_UART {
+            let Some(rate) = clock_rate(request_u32(0)) else {
                 finish_error(SCMI_INVALID_PARAMETERS);
                 return;
-            }
+            };
+            response_begin(SCMI_SUCCESS, 8);
+            response_u64(0, rate);
+        }
+        CLOCK_CONFIG_SET if request_len >= 8 => {
+            let Some((_, vote)) = clock_name_vote(request_u32(0)) else {
+                finish_error(SCMI_INVALID_PARAMETERS);
+                return;
+            };
             match request_u32(4) & 0x3 {
                 0 => {
                     CLOCK_CONFIG_SET_COUNT.fetch_add(1, Ordering::Relaxed);
                     CLOCK_DISABLE_COUNT.fetch_add(1, Ordering::Relaxed);
-                    LINUX_VOTES.fetch_and(!VOTE_UART, Ordering::AcqRel);
+                    LINUX_VOTES.fetch_and(!vote, Ordering::AcqRel);
                     apply_clock_votes();
                     finish_error(SCMI_SUCCESS);
                 }
                 1 => {
                     CLOCK_CONFIG_SET_COUNT.fetch_add(1, Ordering::Relaxed);
                     CLOCK_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
-                    LINUX_VOTES.fetch_or(VOTE_UART, Ordering::AcqRel);
+                    LINUX_VOTES.fetch_or(vote, Ordering::AcqRel);
                     apply_clock_votes();
                     finish_error(SCMI_SUCCESS);
                 }
@@ -299,14 +312,39 @@ fn combined_votes() -> u32 {
 }
 
 fn apply_clock_votes() {
-    let mut value = read32(CLK_UART_CTRL);
-    if combined_votes() & VOTE_UART != 0 {
-        value |= CLK_CTRL_ENABLE;
+    let votes = combined_votes();
+    let mut uart = read32(CLK_UART_CTRL);
+    if votes & VOTE_UART != 0 {
+        uart |= CLK_CTRL_ENABLE;
     } else {
-        value &= !CLK_CTRL_ENABLE;
+        uart &= !CLK_CTRL_ENABLE;
     }
-    write32(CLK_UART_CTRL, value);
+    write32(CLK_UART_CTRL, uart);
+
+    let mut apb = read32(PLL_SYS_PRIM);
+    if votes & VOTE_UART_APB != 0 {
+        apb |= PLL_PH_EN;
+    } else {
+        apb &= !PLL_PH_EN;
+    }
+    write32(PLL_SYS_PRIM, apb);
     barrier();
+}
+
+fn clock_name_vote(id: u32) -> Option<(&'static [u8], u32)> {
+    match id {
+        SCMI_CLOCK_UART => Some((b"rp1-uart", VOTE_UART)),
+        SCMI_CLOCK_UART_APB => Some((b"rp1-uart-apb", VOTE_UART_APB)),
+        _ => None,
+    }
+}
+
+fn clock_rate(id: u32) -> Option<u64> {
+    match id {
+        SCMI_CLOCK_UART => Some(UART_RATE),
+        SCMI_CLOCK_UART_APB => Some(UART_APB_RATE),
+        _ => None,
+    }
 }
 
 fn finish_error(status: i32) {
@@ -395,9 +433,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_only_uart_clock_id_zero() {
-        assert_eq!(SCMI_CLOCK_COUNT, 1);
+    fn exposes_uart_functional_and_apb_clocks() {
+        assert_eq!(SCMI_CLOCK_COUNT, 2);
         assert_eq!(SCMI_CLOCK_UART, 0);
+        assert_eq!(SCMI_CLOCK_UART_APB, 1);
         assert_eq!(VOTE_UART, 1);
+        assert_eq!(VOTE_UART_APB, 2);
+        assert_eq!(ALL_UART_VOTES, 3);
     }
 }
