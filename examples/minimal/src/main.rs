@@ -1525,8 +1525,18 @@ fn main(mut p: Peripherals) -> ! {
             }
             #[cfg(feature = "scmi-uart-coexist")]
             if state5.decision == State5Decision::LinkUp {
-                if !enable_uart_apb_phase_bit4() || release_uart0_reset_bank1_bit26().is_err() {
-                    pulse_width(&mut gpio22, 121);
+                if !enable_uart_apb_phase_bit4() {
+                    pulse_width(&mut gpio22, 120);
+                    quiet_stop();
+                }
+                if let Err(error) = release_uart0_reset_bank1_bit26() {
+                    let marker = match error {
+                        Uart0ResetError::PreconditionMismatch => 121,
+                        Uart0ResetError::ClockReadbackMismatch => 122,
+                        Uart0ResetError::WriteRejected => 123,
+                        Uart0ResetError::Timeout => 124,
+                    };
+                    pulse_width(&mut gpio22, marker);
                     quiet_stop();
                 }
                 let mut uart0 = p.uart0.init_tx_115200_clock_ready();
