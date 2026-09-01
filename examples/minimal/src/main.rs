@@ -1380,6 +1380,38 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32) {
 }
 
 #[cfg(feature = "scmi-uart-coexist")]
+const fn scmi_endpoint_class_revision(current: u32) -> u32 {
+    (current & 0xff) | 0x0200_0000
+}
+
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+fn repair_scmi_endpoint_class_if_reset() -> Option<(u32, u32)> {
+    const DBI_SELECTOR: *mut u32 = 0x4010_8000 as *mut u32;
+    const DBI_BASE: usize = 0x4010_9000;
+    const CLASS_REVISION: *mut u32 = (DBI_BASE + 0x008) as *mut u32;
+    const DBI_RO_WR_EN: *mut u32 = (DBI_BASE + 0x8bc) as *mut u32;
+
+    unsafe {
+        let selector_before = core::ptr::read_volatile(DBI_SELECTOR);
+        core::ptr::write_volatile(DBI_SELECTOR, 0);
+        let before = core::ptr::read_volatile(CLASS_REVISION);
+        if before & 0xffff_ff00 != 0 {
+            core::ptr::write_volatile(DBI_SELECTOR, selector_before);
+            return None;
+        }
+
+        let ro_write_before = core::ptr::read_volatile(DBI_RO_WR_EN);
+        core::ptr::write_volatile(DBI_RO_WR_EN, ro_write_before | 1);
+        core::ptr::write_volatile(CLASS_REVISION, scmi_endpoint_class_revision(before));
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        let after = core::ptr::read_volatile(CLASS_REVISION);
+        core::ptr::write_volatile(DBI_RO_WR_EN, ro_write_before);
+        core::ptr::write_volatile(DBI_SELECTOR, selector_before);
+        Some((before, after))
+    }
+}
+
+#[cfg(feature = "scmi-uart-coexist")]
 const SCMI_WINDOW_US: u64 = 120_000_000;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_HEARTBEAT_PERIOD_US: u64 = 100_000;
@@ -1555,6 +1587,16 @@ fn main(mut p: Peripherals) -> ! {
                 let mut next_us = 0;
                 let mut off_periods = 0u32;
                 loop {
+                    if let Some((before, after)) = repair_scmi_endpoint_class_if_reset() {
+                        let _ = uart0.write_bytes(b"RP1SCMI|ENDPOINT_CLASS_REPAIR");
+                        write_field(&mut uart0, b"before", before);
+                        write_field(&mut uart0, b"after", after);
+                        let _ = uart0.write_bytes(b"\r\n");
+                        if after != scmi_endpoint_class_revision(before) {
+                            pulse_width(&mut gpio22, 125);
+                            quiet_stop();
+                        }
+                    }
                     rp1_hal::rpc::poll(&p.raw_timer);
 
                     let elapsed_us = p.raw_timer.elapsed_since(start);
@@ -1951,6 +1993,7 @@ mod tests {
         assert!(!scmi_telemetry_due(9));
         assert!(scmi_telemetry_due(10));
         assert!(!scmi_tick_due(SCMI_WINDOW_US, SCMI_WINDOW_US));
+        assert_eq!(scmi_endpoint_class_revision(0x0000_0002), 0x0200_0002);
     }
 }
 
