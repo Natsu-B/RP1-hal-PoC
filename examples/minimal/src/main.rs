@@ -538,6 +538,9 @@ fn state5_composite_boundary() -> State5Result {
     const INTE: *mut u32 = 0x4010_81ac as *mut u32;
     const DBI_BASE: usize = 0x4010_9000;
     const RDLH_LINK_UP: u32 = 1 << 20;
+    #[cfg(feature = "scmi-uart-coexist")]
+    const LINK_TIMEOUT_US: u64 = 1_000_000;
+    #[cfg(not(feature = "scmi-uart-coexist"))]
     const LINK_TIMEOUT_US: u64 = 24_000;
 
     unsafe {
