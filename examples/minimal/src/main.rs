@@ -1362,6 +1362,10 @@ fn write_field(uart: &mut Uart0Tx, name: &[u8], value: u32) {
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32) {
     let state = rp1_hal::scmi::telemetry();
+    let primask: u32;
+    unsafe {
+        core::arch::asm!("mrs {}, PRIMASK", out(reg) primask, options(nomem, nostack, preserves_flags));
+    }
     let _ = uart.write_bytes(b"RP1SCMI|TELEMETRY");
     write_field(uart, b"heartbeat", heartbeat);
     write_field(uart, b"irq", state.irq_count);
@@ -1376,6 +1380,34 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32) {
     write_field(uart, b"clk_uart_div_int", state.clk_uart_div_int);
     write_field(uart, b"clk_uart_sel", state.clk_uart_sel);
     write_field(uart, b"pll_sys_prim", state.pll_sys_prim);
+    write_field(uart, b"vtor", unsafe {
+        core::ptr::read_volatile(SCMI_SCB_VTOR)
+    });
+    write_field(uart, b"iser1", unsafe {
+        core::ptr::read_volatile(SCMI_NVIC_ISER1)
+    });
+    write_field(uart, b"ispr1", unsafe {
+        core::ptr::read_volatile(SCMI_NVIC_ISPR1)
+    });
+    write_field(uart, b"iabr1", unsafe {
+        core::ptr::read_volatile(SCMI_NVIC_IABR1)
+    });
+    write_field(uart, b"primask", primask);
+    write_field(uart, b"proc_raw", unsafe {
+        core::ptr::read_volatile(SCMI_PROC_EVENTS)
+    });
+    write_field(uart, b"sh_status", unsafe {
+        core::ptr::read_volatile(SCMI_SHMEM_CHANNEL_STATUS)
+    });
+    write_field(uart, b"sh_flags", unsafe {
+        core::ptr::read_volatile(SCMI_SHMEM_FLAGS)
+    });
+    write_field(uart, b"sh_len", unsafe {
+        core::ptr::read_volatile(SCMI_SHMEM_LENGTH)
+    });
+    write_field(uart, b"sh_header", unsafe {
+        core::ptr::read_volatile(SCMI_SHMEM_MSG_HEADER)
+    });
     let _ = uart.write_bytes(b"\r\n");
 }
 
@@ -1505,6 +1537,24 @@ const SCMI_GPIO_PULSE_US: u64 = 1_000;
 const SCMI_CLK_UART_CTRL: *const u32 = 0x4001_8054 as *const u32;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_CLK_UART_ENABLE: u32 = 1 << 11;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_SCB_VTOR: *const u32 = 0xe000_ed08 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_NVIC_ISER1: *const u32 = 0xe000_e104 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_NVIC_ISPR1: *const u32 = 0xe000_e204 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_NVIC_IABR1: *const u32 = 0xe000_e304 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_PROC_EVENTS: *const u32 = 0x4000_8008 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_SHMEM_CHANNEL_STATUS: *const u32 = (rp1_hal::scmi::SCMI_SHMEM_BASE + 0x04) as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_SHMEM_FLAGS: *const u32 = (rp1_hal::scmi::SCMI_SHMEM_BASE + 0x10) as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_SHMEM_LENGTH: *const u32 = (rp1_hal::scmi::SCMI_SHMEM_BASE + 0x14) as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_SHMEM_MSG_HEADER: *const u32 = (rp1_hal::scmi::SCMI_SHMEM_BASE + 0x18) as *const u32;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_HEARTBEAT_TEMPLATE: [u8; 54] =
     *b"RP1CLK seq=0x00000000 ctrl=0x00000000 off=0x00000000\r\n";
