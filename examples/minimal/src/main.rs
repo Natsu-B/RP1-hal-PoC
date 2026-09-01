@@ -237,7 +237,10 @@ enum PllSysPriPhError {
     ReadbackMismatch,
 }
 
-#[cfg(all(target_arch = "arm", feature = "uart0-reset-only"))]
+#[cfg(all(
+    target_arch = "arm",
+    any(feature = "uart0-reset-only", feature = "scmi-uart-coexist")
+))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Uart0ResetError {
     PreconditionMismatch,
@@ -770,7 +773,10 @@ fn enable_pll_sys_pri_ph_bit4() -> Result<(), PllSysPriPhError> {
     Ok(())
 }
 
-#[cfg(all(target_arch = "arm", feature = "uart0-reset-only"))]
+#[cfg(all(
+    target_arch = "arm",
+    any(feature = "uart0-reset-only", feature = "scmi-uart-coexist")
+))]
 fn release_uart0_reset_bank1_bit26() -> Result<(), Uart0ResetError> {
     const CTRL1: *const u32 = 0x4001_4004 as *const u32;
     const CLEAR1: *mut u32 = 0x4001_7004 as *mut u32;
@@ -778,15 +784,30 @@ fn release_uart0_reset_bank1_bit26() -> Result<(), Uart0ResetError> {
     const UART0_RESET: u32 = 1 << 26;
     const POLL_LIMIT: usize = 100_000;
 
-    #[cfg(feature = "uart0-functional-clock-before-reset-done")]
+    #[cfg(any(
+        feature = "uart0-functional-clock-before-reset-done",
+        feature = "scmi-uart-coexist"
+    ))]
     const CLK_UART_CTRL: *mut u32 = 0x4001_8054 as *mut u32;
-    #[cfg(feature = "uart0-functional-clock-before-reset-done")]
+    #[cfg(any(
+        feature = "uart0-functional-clock-before-reset-done",
+        feature = "scmi-uart-coexist"
+    ))]
     const CLK_UART_DIV_INT: *mut u32 = 0x4001_8058 as *mut u32;
-    #[cfg(feature = "uart0-functional-clock-before-reset-done")]
+    #[cfg(any(
+        feature = "uart0-functional-clock-before-reset-done",
+        feature = "scmi-uart-coexist"
+    ))]
     const CLK_UART_CTRL_RELEVANT: u32 = 0x0000_0fe0;
-    #[cfg(feature = "uart0-functional-clock-before-reset-done")]
+    #[cfg(any(
+        feature = "uart0-functional-clock-before-reset-done",
+        feature = "scmi-uart-coexist"
+    ))]
     const CLK_UART_SOURCE: u32 = 0x0000_0040;
-    #[cfg(feature = "uart0-functional-clock-before-reset-done")]
+    #[cfg(any(
+        feature = "uart0-functional-clock-before-reset-done",
+        feature = "scmi-uart-coexist"
+    ))]
     const CLK_UART_ENABLED: u32 = 0x0000_0840;
 
     unsafe {
@@ -796,7 +817,10 @@ fn release_uart0_reset_bank1_bit26() -> Result<(), Uart0ResetError> {
             return Err(Uart0ResetError::PreconditionMismatch);
         }
 
-        #[cfg(feature = "uart0-functional-clock-before-reset-done")]
+        #[cfg(any(
+            feature = "uart0-functional-clock-before-reset-done",
+            feature = "scmi-uart-coexist"
+        ))]
         {
             core::ptr::write_volatile(CLK_UART_DIV_INT, 1);
             let div = core::ptr::read_volatile(CLK_UART_DIV_INT);
@@ -836,6 +860,19 @@ fn release_uart0_reset_bank1_bit26() -> Result<(), Uart0ResetError> {
     }
 
     Err(Uart0ResetError::Timeout)
+}
+
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+fn enable_uart_apb_phase_bit4() -> bool {
+    const PLL_SYS_PRIM: *mut u32 = 0x4002_0010 as *mut u32;
+    const PHASE_ENABLE: u32 = 1 << 4;
+
+    unsafe {
+        let old = core::ptr::read_volatile(PLL_SYS_PRIM);
+        core::ptr::write_volatile(PLL_SYS_PRIM, old | PHASE_ENABLE);
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+        core::ptr::read_volatile(PLL_SYS_PRIM) & PHASE_ENABLE != 0
+    }
 }
 
 #[cfg(all(target_arch = "arm", feature = "pll-sys-core-lock-only"))]
@@ -1462,13 +1499,6 @@ fn main(mut p: Peripherals) -> ! {
         };
         result.pre_state1_observation = pre_state1.observation;
 
-        #[cfg(all(feature = "scmi-uart-coexist", feature = "pll-sys-core-lock-only"))]
-        if result.decision == State3Decision::CoreAlive {
-            // The endpoint must train against the final PLL state.  Re-locking
-            // PLL_SYS after State5 has reported LinkUp drops the host link.
-            prepare_pll_sys_uart0_chain(&mut gpio22);
-        }
-
         #[cfg(feature = "state5-composite-boundary")]
         if result.decision == State3Decision::CoreAlive {
             let state5 = state5_composite_boundary();
@@ -1495,17 +1525,21 @@ fn main(mut p: Peripherals) -> ! {
                 pulse_width(&mut gpio22, 416);
                 quiet_stop();
             }
-            #[cfg(all(feature = "pll-sys-core-lock-only", not(feature = "scmi-uart-coexist")))]
+            #[cfg(feature = "pll-sys-core-lock-only")]
             if state5.decision == State5Decision::LinkUp {
                 prepare_pll_sys_uart0_chain(&mut gpio22);
             }
             #[cfg(feature = "scmi-uart-coexist")]
             if state5.decision == State5Decision::LinkUp {
+                if !enable_uart_apb_phase_bit4() || release_uart0_reset_bank1_bit26().is_err() {
+                    pulse_width(&mut gpio22, 121);
+                    quiet_stop();
+                }
                 let mut uart0 = p.uart0.init_tx_115200_clock_ready();
                 let _ = uart0.write_bytes(b"RP1 SCMI UART clock server boot\r\n");
                 rp1_hal::rpc::init();
                 rp1_hal::scmi::init_uart_clock_server();
-                rp1_hal::scmi::set_firmware_uart_vote(true);
+                rp1_hal::scmi::set_firmware_uart_votes(true, true);
                 unsafe {
                     rp1_hal::scmi_irq::enable();
                 }

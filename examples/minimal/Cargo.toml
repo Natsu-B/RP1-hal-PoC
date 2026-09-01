@@ -22,10 +22,8 @@ pll-sys-core-lock-only = ["bar2-readonly-handshake"]
 uart0-reset-only = ["pll-sys-core-lock-only"]
 uart0-functional-clock-before-reset-done = ["uart0-reset-only"]
 scmi-uart-coexist = [
-    "uart0-functional-clock-before-reset-done",
-    "debug-mailbox-layout-v2",
+    "bar2-rpc-poll",
     "rp1-hal/scmi-uart-clock",
-    "rp1-hal/bar2-rpc-v2",
 ]
 uart0-tx-polling-only = ["uart0-functional-clock-before-reset-done"]
 uart0-polled-rx = ["uart0-tx-polling-only"]
