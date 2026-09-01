@@ -1411,6 +1411,22 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32) {
     let _ = uart.write_bytes(b"\r\n");
 }
 
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+fn scmi_local_doorbell_self_test() -> rp1_hal::scmi::Telemetry {
+    unsafe {
+        core::ptr::write_volatile(SCMI_PROC_EVENTS_SET, 1 << 1);
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+    for _ in 0..1_000_000 {
+        let state = rp1_hal::scmi::telemetry();
+        if state.proc_event_count != 0 {
+            return state;
+        }
+        core::hint::spin_loop();
+    }
+    rp1_hal::scmi::telemetry()
+}
+
 #[cfg(feature = "scmi-uart-coexist")]
 const fn scmi_endpoint_class_revision(current: u32) -> u32 {
     (current & 0xff) | 0x0200_0000
@@ -1547,6 +1563,8 @@ const SCMI_NVIC_ISPR1: *const u32 = 0xe000_e204 as *const u32;
 const SCMI_NVIC_IABR1: *const u32 = 0xe000_e304 as *const u32;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_PROC_EVENTS: *const u32 = 0x4000_8008 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_PROC_EVENTS_SET: *mut u32 = 0x4000_a008 as *mut u32;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_SHMEM_CHANNEL_STATUS: *const u32 = (rp1_hal::scmi::SCMI_SHMEM_BASE + 0x04) as *const u32;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -1712,6 +1730,24 @@ fn main(mut p: Peripherals) -> ! {
                 unsafe {
                     rp1_hal::scmi_irq::enable();
                 }
+                let self_test = scmi_local_doorbell_self_test();
+                let _ = uart0.write_bytes(b"RP1SCMI|LOCAL_DOORBELL_SELFTEST");
+                write_field(
+                    &mut uart0,
+                    b"result",
+                    u32::from(self_test.proc_event_count != 0),
+                );
+                write_field(&mut uart0, b"irq", self_test.irq_count);
+                write_field(&mut uart0, b"proc_event", self_test.proc_event_count);
+                write_field(&mut uart0, b"ispr1", unsafe {
+                    core::ptr::read_volatile(SCMI_NVIC_ISPR1)
+                });
+                write_field(&mut uart0, b"proc_raw", unsafe {
+                    core::ptr::read_volatile(SCMI_PROC_EVENTS)
+                });
+                let _ = uart0.write_bytes(b"\r\n");
+                rp1_hal::scmi::init_uart_clock_server();
+                rp1_hal::scmi::set_firmware_uart_votes(true, true);
 
                 let start = p.raw_timer.now();
                 let mut next_us = 0;
