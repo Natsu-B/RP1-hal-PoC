@@ -1384,8 +1384,24 @@ const fn scmi_endpoint_class_revision(current: u32) -> u32 {
     (current & 0xff) | 0x0200_0000
 }
 
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_IATU_SELECTORS: [u32; 2] = [0x23, 0x63];
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_IATU_OFFSETS: [usize; 4] = [0x114, 0x118, 0x100, 0x104];
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_IATU_EXPECTED: [u32; 8] = [
+    0x4000_0000,
+    0x0000_00c0,
+    0,
+    0xc000_0100,
+    0x2000_0000,
+    0x0000_00c0,
+    0,
+    0xc000_0200,
+];
+
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
-fn repair_scmi_endpoint_class_if_reset() -> Option<(u32, u32, [u32; 8])> {
+fn repair_scmi_endpoint_if_reset() -> Option<(u32, u32, [u32; 8], [u32; 8])> {
     const DBI_SELECTOR: *mut u32 = 0x4010_8000 as *mut u32;
     const DBI_BASE: usize = 0x4010_9000;
     const CLASS_REVISION: *mut u32 = (DBI_BASE + 0x008) as *mut u32;
@@ -1400,22 +1416,70 @@ fn repair_scmi_endpoint_class_if_reset() -> Option<(u32, u32, [u32; 8])> {
             return None;
         }
 
-        core::ptr::write_volatile(DBI_SELECTOR, 0x23);
-        let iatu = [
-            core::ptr::read_volatile((DBI_BASE + 0x114) as *const u32),
-            core::ptr::read_volatile((DBI_BASE + 0x118) as *const u32),
-            core::ptr::read_volatile((DBI_BASE + 0x100) as *const u32),
-            core::ptr::read_volatile((DBI_BASE + 0x104) as *const u32),
-            {
-                core::ptr::write_volatile(DBI_SELECTOR, 0x63);
-                core::ptr::read_volatile((DBI_BASE + 0x114) as *const u32)
-            },
-            core::ptr::read_volatile((DBI_BASE + 0x118) as *const u32),
-            core::ptr::read_volatile((DBI_BASE + 0x100) as *const u32),
-            core::ptr::read_volatile((DBI_BASE + 0x104) as *const u32),
-        ];
+        let mut iatu_before = [0; 8];
+        for (region, selector) in SCMI_IATU_SELECTORS.iter().enumerate() {
+            core::ptr::write_volatile(DBI_SELECTOR, *selector);
+            for (field, offset) in SCMI_IATU_OFFSETS.iter().enumerate() {
+                iatu_before[region * 4 + field] =
+                    core::ptr::read_volatile((DBI_BASE + *offset) as *const u32);
+            }
+        }
+        if iatu_before != [0; 8] {
+            core::ptr::write_volatile(DBI_SELECTOR, selector_before);
+            return Some((before, before, iatu_before, iatu_before));
+        }
+
+        let mut iatu_after = [0; 8];
+        let mut iatu_ok = true;
+        for (region, selector) in SCMI_IATU_SELECTORS.iter().enumerate() {
+            let base = region * 4;
+            core::ptr::write_volatile(DBI_SELECTOR, *selector);
+            for field in 0..3 {
+                core::ptr::write_volatile(
+                    (DBI_BASE + SCMI_IATU_OFFSETS[field]) as *mut u32,
+                    SCMI_IATU_EXPECTED[base + field],
+                );
+                iatu_after[base + field] =
+                    core::ptr::read_volatile((DBI_BASE + SCMI_IATU_OFFSETS[field]) as *const u32);
+            }
+            if iatu_after[base..base + 3] != SCMI_IATU_EXPECTED[base..base + 3] {
+                iatu_ok = false;
+                break;
+            }
+            core::ptr::write_volatile(
+                (DBI_BASE + SCMI_IATU_OFFSETS[3]) as *mut u32,
+                SCMI_IATU_EXPECTED[base + 3],
+            );
+            iatu_after[base + 3] =
+                core::ptr::read_volatile((DBI_BASE + SCMI_IATU_OFFSETS[3]) as *const u32);
+            if iatu_after[base + 3] != SCMI_IATU_EXPECTED[base + 3] {
+                iatu_ok = false;
+                break;
+            }
+        }
+
+        if !iatu_ok {
+            for (region, selector) in SCMI_IATU_SELECTORS.iter().enumerate() {
+                let base = region * 4;
+                core::ptr::write_volatile(DBI_SELECTOR, *selector);
+                core::ptr::write_volatile(
+                    (DBI_BASE + SCMI_IATU_OFFSETS[3]) as *mut u32,
+                    iatu_before[base + 3],
+                );
+                for field in 0..3 {
+                    core::ptr::write_volatile(
+                        (DBI_BASE + SCMI_IATU_OFFSETS[field]) as *mut u32,
+                        iatu_before[base + field],
+                    );
+                }
+            }
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            core::ptr::write_volatile(DBI_SELECTOR, selector_before);
+            return Some((before, before, iatu_before, iatu_after));
+        }
 
         core::ptr::write_volatile(DBI_SELECTOR, 0);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         let ro_write_before = core::ptr::read_volatile(DBI_RO_WR_EN);
         core::ptr::write_volatile(DBI_RO_WR_EN, ro_write_before | 1);
         core::ptr::write_volatile(CLASS_REVISION, scmi_endpoint_class_revision(before));
@@ -1423,7 +1487,7 @@ fn repair_scmi_endpoint_class_if_reset() -> Option<(u32, u32, [u32; 8])> {
         let after = core::ptr::read_volatile(CLASS_REVISION);
         core::ptr::write_volatile(DBI_RO_WR_EN, ro_write_before);
         core::ptr::write_volatile(DBI_SELECTOR, selector_before);
-        Some((before, after, iatu))
+        Some((before, after, iatu_before, iatu_after))
     }
 }
 
@@ -1603,20 +1667,32 @@ fn main(mut p: Peripherals) -> ! {
                 let mut next_us = 0;
                 let mut off_periods = 0u32;
                 loop {
-                    if let Some((before, after, iatu)) = repair_scmi_endpoint_class_if_reset() {
-                        let _ = uart0.write_bytes(b"RP1SCMI|ENDPOINT_CLASS_REPAIR");
+                    if let Some((before, after, iatu_before, iatu_after)) =
+                        repair_scmi_endpoint_if_reset()
+                    {
+                        let _ = uart0.write_bytes(b"RP1SCMI|ENDPOINT_RESET_REPAIR");
                         write_field(&mut uart0, b"before", before);
                         write_field(&mut uart0, b"after", after);
-                        write_field(&mut uart0, b"r23_target_lo", iatu[0]);
-                        write_field(&mut uart0, b"r23_target_hi", iatu[1]);
-                        write_field(&mut uart0, b"r23_ctrl1", iatu[2]);
-                        write_field(&mut uart0, b"r23_ctrl2", iatu[3]);
-                        write_field(&mut uart0, b"r63_target_lo", iatu[4]);
-                        write_field(&mut uart0, b"r63_target_hi", iatu[5]);
-                        write_field(&mut uart0, b"r63_ctrl1", iatu[6]);
-                        write_field(&mut uart0, b"r63_ctrl2", iatu[7]);
+                        write_field(&mut uart0, b"b23_tlo", iatu_before[0]);
+                        write_field(&mut uart0, b"b23_thi", iatu_before[1]);
+                        write_field(&mut uart0, b"b23_c1", iatu_before[2]);
+                        write_field(&mut uart0, b"b23_c2", iatu_before[3]);
+                        write_field(&mut uart0, b"b63_tlo", iatu_before[4]);
+                        write_field(&mut uart0, b"b63_thi", iatu_before[5]);
+                        write_field(&mut uart0, b"b63_c1", iatu_before[6]);
+                        write_field(&mut uart0, b"b63_c2", iatu_before[7]);
+                        write_field(&mut uart0, b"a23_tlo", iatu_after[0]);
+                        write_field(&mut uart0, b"a23_thi", iatu_after[1]);
+                        write_field(&mut uart0, b"a23_c1", iatu_after[2]);
+                        write_field(&mut uart0, b"a23_c2", iatu_after[3]);
+                        write_field(&mut uart0, b"a63_tlo", iatu_after[4]);
+                        write_field(&mut uart0, b"a63_thi", iatu_after[5]);
+                        write_field(&mut uart0, b"a63_c1", iatu_after[6]);
+                        write_field(&mut uart0, b"a63_c2", iatu_after[7]);
                         let _ = uart0.write_bytes(b"\r\n");
-                        if after != scmi_endpoint_class_revision(before) {
+                        if after != scmi_endpoint_class_revision(before)
+                            || iatu_after != SCMI_IATU_EXPECTED
+                        {
                             pulse_width(&mut gpio22, 125);
                             quiet_stop();
                         }
@@ -2018,6 +2094,9 @@ mod tests {
         assert!(scmi_telemetry_due(10));
         assert!(!scmi_tick_due(SCMI_WINDOW_US, SCMI_WINDOW_US));
         assert_eq!(scmi_endpoint_class_revision(0x0000_0002), 0x0200_0002);
+        assert_eq!(SCMI_IATU_SELECTORS, [0x23, 0x63]);
+        assert_eq!(SCMI_IATU_EXPECTED[3], 0xc000_0100);
+        assert_eq!(SCMI_IATU_EXPECTED[7], 0xc000_0200);
     }
 }
 
