@@ -23,6 +23,7 @@ uart0-reset-only = ["pll-sys-core-lock-only"]
 uart0-functional-clock-before-reset-done = ["uart0-reset-only"]
 scmi-uart-coexist = [
     "bar2-rpc-poll",
+    "pll-sys-core-lock-only",
     "rp1-hal/scmi-uart-clock",
 ]
 uart0-tx-polling-only = ["uart0-functional-clock-before-reset-done"]
