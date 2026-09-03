@@ -1358,6 +1358,13 @@ struct PcieTransitionSummary {
     monitor17_edges: u32,
     monitor17_high_after_low_us: u32,
     monitor17_last_high: bool,
+    nvic_ispr1_or: u32,
+    irq53_pending_samples: u32,
+    irq53_pending_low_samples: u32,
+    irq53_first_pending_us: u32,
+    irq53_first_pending_monitor2: u32,
+    irq53_edges: u32,
+    irq53_last_pending: bool,
     intr_or: u32,
     ints_or: u32,
     dbi_view_last: u32,
@@ -1383,6 +1390,13 @@ impl PcieTransitionSummary {
             monitor17_edges: 0,
             monitor17_high_after_low_us: u32::MAX,
             monitor17_last_high: false,
+            nvic_ispr1_or: 0,
+            irq53_pending_samples: 0,
+            irq53_pending_low_samples: 0,
+            irq53_first_pending_us: u32::MAX,
+            irq53_first_pending_monitor2: 0,
+            irq53_edges: 0,
+            irq53_last_pending: false,
             intr_or: 0,
             ints_or: 0,
             dbi_view_last: 0,
@@ -1395,17 +1409,20 @@ impl PcieTransitionSummary {
         &mut self,
         elapsed_us: u32,
         monitor2: u32,
+        nvic_ispr1: u32,
         intr: u32,
         ints: u32,
         dbi_view: u32,
         class_revision: Option<u32>,
     ) {
         let monitor17_high = monitor2 & (1 << 17) != 0;
+        let irq53_pending = nvic_ispr1 & PCIE_OUT_IRQ53_PENDING != 0;
         if self.samples == 0 {
             self.sample_first_us = elapsed_us;
             self.monitor_first = monitor2;
             self.monitor_and = monitor2;
             self.monitor17_last_high = monitor17_high;
+            self.irq53_last_pending = irq53_pending;
         } else {
             self.sample_max_gap_us = self
                 .sample_max_gap_us
@@ -1414,6 +1431,10 @@ impl PcieTransitionSummary {
             if monitor17_high != self.monitor17_last_high {
                 self.monitor17_edges = self.monitor17_edges.saturating_add(1);
                 self.monitor17_last_high = monitor17_high;
+            }
+            if irq53_pending != self.irq53_last_pending {
+                self.irq53_edges = self.irq53_edges.saturating_add(1);
+                self.irq53_last_pending = irq53_pending;
             }
         }
         self.samples = self.samples.saturating_add(1);
@@ -1428,6 +1449,17 @@ impl PcieTransitionSummary {
             self.monitor17_last_low_us = elapsed_us;
         } else if self.monitor17_low_samples != 0 && self.monitor17_high_after_low_us == u32::MAX {
             self.monitor17_high_after_low_us = elapsed_us;
+        }
+        self.nvic_ispr1_or |= nvic_ispr1;
+        if irq53_pending {
+            if self.irq53_pending_samples == 0 {
+                self.irq53_first_pending_us = elapsed_us;
+                self.irq53_first_pending_monitor2 = monitor2;
+            }
+            self.irq53_pending_samples = self.irq53_pending_samples.saturating_add(1);
+            if !monitor17_high {
+                self.irq53_pending_low_samples = self.irq53_pending_low_samples.saturating_add(1);
+            }
         }
         self.intr_or |= intr;
         self.ints_or |= ints;
@@ -1519,6 +1551,12 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32, pcie: &PcieTransitio
     write_field(uart, b"mon17_last_us", pcie.monitor17_last_low_us);
     write_field(uart, b"mon17_edges", pcie.monitor17_edges);
     write_field(uart, b"mon17_high_us", pcie.monitor17_high_after_low_us);
+    write_field(uart, b"nvic_ispr1_or", pcie.nvic_ispr1_or);
+    write_field(uart, b"irq53_samples", pcie.irq53_pending_samples);
+    write_field(uart, b"irq53_low", pcie.irq53_pending_low_samples);
+    write_field(uart, b"irq53_first_us", pcie.irq53_first_pending_us);
+    write_field(uart, b"irq53_first_mon", pcie.irq53_first_pending_monitor2);
+    write_field(uart, b"irq53_edges", pcie.irq53_edges);
     write_field(uart, b"intr_or", pcie.intr_or);
     write_field(uart, b"ints_or", pcie.ints_or);
     write_field(uart, b"dbi_view", pcie.dbi_view_last);
@@ -1531,6 +1569,8 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32, pcie: &PcieTransitio
 const SCMI_WINDOW_US: u64 = 120_000_000;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_HEARTBEAT_PERIOD_US: u64 = 100_000;
+#[cfg(feature = "scmi-uart-coexist")]
+const PCIE_OUT_IRQ53_PENDING: u32 = 1 << (53 - 32);
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_GPIO_PULSE_US: u64 = 1_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -1598,9 +1638,10 @@ fn sample_pcie_transition(
 ) {
     unsafe {
         let monitor2 = core::ptr::read_volatile(SCMI_PCIE_MONITOR2);
+        let nvic_ispr1 = core::ptr::read_volatile(SCMI_NVIC_ISPR1);
         if monitor_only {
             let dbi_view = summary.dbi_view_last;
-            summary.observe(elapsed_us, monitor2, 0, 0, dbi_view, None);
+            summary.observe(elapsed_us, monitor2, nvic_ispr1, 0, 0, dbi_view, None);
             return;
         }
         let dbi_view = core::ptr::read_volatile(SCMI_PCIE_DBI_SELECTOR);
@@ -1612,6 +1653,7 @@ fn sample_pcie_transition(
         summary.observe(
             elapsed_us,
             monitor2,
+            nvic_ispr1,
             core::ptr::read_volatile(SCMI_PCIE_INTR),
             core::ptr::read_volatile(SCMI_PCIE_INTS),
             dbi_view,
@@ -2116,9 +2158,9 @@ mod tests {
         assert!(SCMI_WINDOW_US <= u32::MAX as u64);
 
         let mut pcie = PcieTransitionSummary::new();
-        pcie.observe(100, 0xffff_ffff, 1, 2, 0, Some(0x0200_0002));
-        pcie.observe(107, 0xfffd_ffff, 4, 8, 3, None);
-        pcie.observe(109, 0xffff_ffff, 0, 0, 3, None);
+        pcie.observe(100, 0xffff_ffff, 0, 1, 2, 0, Some(0x0200_0002));
+        pcie.observe(107, 0xfffd_ffff, PCIE_OUT_IRQ53_PENDING, 4, 8, 3, None);
+        pcie.observe(109, 0xffff_ffff, PCIE_OUT_IRQ53_PENDING, 0, 0, 3, None);
         assert_eq!(pcie.samples, 3);
         assert_eq!(pcie.sample_first_us, 100);
         assert_eq!(pcie.sample_last_us, 109);
@@ -2132,6 +2174,12 @@ mod tests {
         assert_eq!(pcie.monitor17_last_low_us, 107);
         assert_eq!(pcie.monitor17_edges, 2);
         assert_eq!(pcie.monitor17_high_after_low_us, 109);
+        assert_eq!(pcie.nvic_ispr1_or, PCIE_OUT_IRQ53_PENDING);
+        assert_eq!(pcie.irq53_pending_samples, 2);
+        assert_eq!(pcie.irq53_pending_low_samples, 1);
+        assert_eq!(pcie.irq53_first_pending_us, 107);
+        assert_eq!(pcie.irq53_first_pending_monitor2, 0xfffd_ffff);
+        assert_eq!(pcie.irq53_edges, 1);
         assert_eq!(pcie.intr_or, 5);
         assert_eq!(pcie.ints_or, 10);
         assert_eq!(pcie.dbi_view_last, 3);
