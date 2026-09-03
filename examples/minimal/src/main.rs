@@ -1519,6 +1519,8 @@ const SCMI_HEARTBEAT_PERIOD_US: u64 = 100_000;
 const SCMI_GPIO_PERIOD_TICKS: u32 = 100;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_TELEMETRY_PERIOD_TICKS: u32 = 10;
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_PCIE_TIGHT_WINDOW_US: u64 = 10_000_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_GPIO_PULSE_US: u64 = 1_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -1744,6 +1746,10 @@ fn main(mut p: Peripherals) -> ! {
                         quiet_stop();
                     }
                     sample_pcie_transition(&mut pcie, elapsed_us as u32);
+                    if elapsed_us < SCMI_PCIE_TIGHT_WINDOW_US {
+                        core::hint::spin_loop();
+                        continue;
+                    }
                     if scmi_tick_due(elapsed_us, next_us) {
                         let sequence = (elapsed_us / SCMI_HEARTBEAT_PERIOD_US) as u32;
                         if scmi_gpio_marker_due(sequence) {
@@ -2134,6 +2140,7 @@ mod tests {
         assert!(scmi_telemetry_due(10));
         assert!(!scmi_tick_due(SCMI_WINDOW_US, SCMI_WINDOW_US));
         assert!(SCMI_WINDOW_US <= u32::MAX as u64);
+        assert!(SCMI_PCIE_TIGHT_WINDOW_US < SCMI_WINDOW_US);
 
         let mut pcie = PcieTransitionSummary::new();
         pcie.observe(100, 0xffff_ffff, 1, 2, 0, Some(0x0200_0002));
