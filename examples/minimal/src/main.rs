@@ -1601,8 +1601,18 @@ const fn scmi_telemetry_due(sequence: u32) -> bool {
 }
 
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
-fn sample_pcie_transition(summary: &mut PcieTransitionSummary, elapsed_us: u32) {
+fn sample_pcie_transition(
+    summary: &mut PcieTransitionSummary,
+    elapsed_us: u32,
+    monitor_only: bool,
+) {
     unsafe {
+        let monitor2 = core::ptr::read_volatile(SCMI_PCIE_MONITOR2);
+        if monitor_only {
+            let dbi_view = summary.dbi_view_last;
+            summary.observe(elapsed_us, monitor2, 0, 0, dbi_view, None);
+            return;
+        }
         let dbi_view = core::ptr::read_volatile(SCMI_PCIE_DBI_SELECTOR);
         let class_revision = if dbi_view & 3 == 0 {
             Some(core::ptr::read_volatile(SCMI_PCIE_CLASS_REVISION))
@@ -1611,7 +1621,7 @@ fn sample_pcie_transition(summary: &mut PcieTransitionSummary, elapsed_us: u32) 
         };
         summary.observe(
             elapsed_us,
-            core::ptr::read_volatile(SCMI_PCIE_MONITOR2),
+            monitor2,
             core::ptr::read_volatile(SCMI_PCIE_INTR),
             core::ptr::read_volatile(SCMI_PCIE_INTS),
             dbi_view,
@@ -1745,8 +1755,9 @@ fn main(mut p: Peripherals) -> ! {
                         gpio22.set_low();
                         quiet_stop();
                     }
-                    sample_pcie_transition(&mut pcie, elapsed_us as u32);
-                    if elapsed_us < SCMI_PCIE_TIGHT_WINDOW_US {
+                    let monitor_only = elapsed_us < SCMI_PCIE_TIGHT_WINDOW_US;
+                    sample_pcie_transition(&mut pcie, elapsed_us as u32, monitor_only);
+                    if monitor_only {
                         core::hint::spin_loop();
                         continue;
                     }
