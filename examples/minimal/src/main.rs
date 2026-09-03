@@ -1341,6 +1341,65 @@ fn emit_readback_frames(pin: &mut ConfiguredPin<22, Output>, uart0: &Uart0Tx) {
     }
 }
 
+#[cfg(feature = "scmi-uart-coexist")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PcieTransitionSummary {
+    samples: u32,
+    monitor_first: u32,
+    monitor_last: u32,
+    monitor_and: u32,
+    monitor_or: u32,
+    intr_or: u32,
+    ints_or: u32,
+    dbi_view_last: u32,
+    class_rev_last: u32,
+    class_valid_samples: u32,
+}
+
+#[cfg(feature = "scmi-uart-coexist")]
+impl PcieTransitionSummary {
+    const fn new() -> Self {
+        Self {
+            samples: 0,
+            monitor_first: 0,
+            monitor_last: 0,
+            monitor_and: u32::MAX,
+            monitor_or: 0,
+            intr_or: 0,
+            ints_or: 0,
+            dbi_view_last: 0,
+            class_rev_last: 0,
+            class_valid_samples: 0,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        monitor2: u32,
+        intr: u32,
+        ints: u32,
+        dbi_view: u32,
+        class_revision: Option<u32>,
+    ) {
+        if self.samples == 0 {
+            self.monitor_first = monitor2;
+            self.monitor_and = monitor2;
+        } else {
+            self.monitor_and &= monitor2;
+        }
+        self.samples = self.samples.saturating_add(1);
+        self.monitor_last = monitor2;
+        self.monitor_or |= monitor2;
+        self.intr_or |= intr;
+        self.ints_or |= ints;
+        self.dbi_view_last = dbi_view;
+        if let Some(value) = class_revision {
+            self.class_rev_last = value;
+            self.class_valid_samples = self.class_valid_samples.saturating_add(1);
+        }
+    }
+}
+
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 fn write_hex32(uart: &mut Uart0Tx, value: u32) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -1360,7 +1419,7 @@ fn write_field(uart: &mut Uart0Tx, name: &[u8], value: u32) {
 }
 
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
-fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32) {
+fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32, pcie: &PcieTransitionSummary) {
     let state = rp1_hal::scmi::telemetry();
     let primask: u32;
     unsafe {
@@ -1408,119 +1467,17 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32) {
     write_field(uart, b"sh_header", unsafe {
         core::ptr::read_volatile(SCMI_SHMEM_MSG_HEADER)
     });
+    write_field(uart, b"pcie_samples", pcie.samples);
+    write_field(uart, b"mon_first", pcie.monitor_first);
+    write_field(uart, b"mon_last", pcie.monitor_last);
+    write_field(uart, b"mon_and", pcie.monitor_and);
+    write_field(uart, b"mon_or", pcie.monitor_or);
+    write_field(uart, b"intr_or", pcie.intr_or);
+    write_field(uart, b"ints_or", pcie.ints_or);
+    write_field(uart, b"dbi_view", pcie.dbi_view_last);
+    write_field(uart, b"class_rev", pcie.class_rev_last);
+    write_field(uart, b"class_valid", pcie.class_valid_samples);
     let _ = uart.write_bytes(b"\r\n");
-}
-
-#[cfg(feature = "scmi-uart-coexist")]
-const fn scmi_endpoint_class_revision(current: u32) -> u32 {
-    (current & 0xff) | 0x0200_0000
-}
-
-#[cfg(feature = "scmi-uart-coexist")]
-const SCMI_IATU_SELECTORS: [u32; 2] = [0x23, 0x63];
-#[cfg(feature = "scmi-uart-coexist")]
-const SCMI_IATU_OFFSETS: [usize; 4] = [0x114, 0x118, 0x100, 0x104];
-#[cfg(feature = "scmi-uart-coexist")]
-const SCMI_IATU_EXPECTED: [u32; 8] = [
-    0x4000_0000,
-    0x0000_00c0,
-    0,
-    0xc000_0100,
-    0x2000_0000,
-    0x0000_00c0,
-    0,
-    0xc000_0200,
-];
-
-#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
-fn repair_scmi_endpoint_if_reset() -> Option<(u32, u32, [u32; 8], [u32; 8])> {
-    const DBI_SELECTOR: *mut u32 = 0x4010_8000 as *mut u32;
-    const DBI_BASE: usize = 0x4010_9000;
-    const CLASS_REVISION: *mut u32 = (DBI_BASE + 0x008) as *mut u32;
-    const DBI_RO_WR_EN: *mut u32 = (DBI_BASE + 0x8bc) as *mut u32;
-
-    unsafe {
-        let selector_before = core::ptr::read_volatile(DBI_SELECTOR);
-        core::ptr::write_volatile(DBI_SELECTOR, 0);
-        let before = core::ptr::read_volatile(CLASS_REVISION);
-        if before & 0xffff_ff00 != 0 {
-            core::ptr::write_volatile(DBI_SELECTOR, selector_before);
-            return None;
-        }
-
-        let mut iatu_before = [0; 8];
-        for (region, selector) in SCMI_IATU_SELECTORS.iter().enumerate() {
-            core::ptr::write_volatile(DBI_SELECTOR, *selector);
-            for (field, offset) in SCMI_IATU_OFFSETS.iter().enumerate() {
-                iatu_before[region * 4 + field] =
-                    core::ptr::read_volatile((DBI_BASE + *offset) as *const u32);
-            }
-        }
-        if iatu_before != [0; 8] {
-            core::ptr::write_volatile(DBI_SELECTOR, selector_before);
-            return Some((before, before, iatu_before, iatu_before));
-        }
-
-        let mut iatu_after = [0; 8];
-        let mut iatu_ok = true;
-        for (region, selector) in SCMI_IATU_SELECTORS.iter().enumerate() {
-            let base = region * 4;
-            core::ptr::write_volatile(DBI_SELECTOR, *selector);
-            for field in 0..3 {
-                core::ptr::write_volatile(
-                    (DBI_BASE + SCMI_IATU_OFFSETS[field]) as *mut u32,
-                    SCMI_IATU_EXPECTED[base + field],
-                );
-                iatu_after[base + field] =
-                    core::ptr::read_volatile((DBI_BASE + SCMI_IATU_OFFSETS[field]) as *const u32);
-            }
-            if iatu_after[base..base + 3] != SCMI_IATU_EXPECTED[base..base + 3] {
-                iatu_ok = false;
-                break;
-            }
-            core::ptr::write_volatile(
-                (DBI_BASE + SCMI_IATU_OFFSETS[3]) as *mut u32,
-                SCMI_IATU_EXPECTED[base + 3],
-            );
-            iatu_after[base + 3] =
-                core::ptr::read_volatile((DBI_BASE + SCMI_IATU_OFFSETS[3]) as *const u32);
-            if iatu_after[base + 3] != SCMI_IATU_EXPECTED[base + 3] {
-                iatu_ok = false;
-                break;
-            }
-        }
-
-        if !iatu_ok {
-            for (region, selector) in SCMI_IATU_SELECTORS.iter().enumerate() {
-                let base = region * 4;
-                core::ptr::write_volatile(DBI_SELECTOR, *selector);
-                core::ptr::write_volatile(
-                    (DBI_BASE + SCMI_IATU_OFFSETS[3]) as *mut u32,
-                    iatu_before[base + 3],
-                );
-                for field in 0..3 {
-                    core::ptr::write_volatile(
-                        (DBI_BASE + SCMI_IATU_OFFSETS[field]) as *mut u32,
-                        iatu_before[base + field],
-                    );
-                }
-            }
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-            core::ptr::write_volatile(DBI_SELECTOR, selector_before);
-            return Some((before, before, iatu_before, iatu_after));
-        }
-
-        core::ptr::write_volatile(DBI_SELECTOR, 0);
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        let ro_write_before = core::ptr::read_volatile(DBI_RO_WR_EN);
-        core::ptr::write_volatile(DBI_RO_WR_EN, ro_write_before | 1);
-        core::ptr::write_volatile(CLASS_REVISION, scmi_endpoint_class_revision(before));
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        let after = core::ptr::read_volatile(CLASS_REVISION);
-        core::ptr::write_volatile(DBI_RO_WR_EN, ro_write_before);
-        core::ptr::write_volatile(DBI_SELECTOR, selector_before);
-        Some((before, after, iatu_before, iatu_after))
-    }
 }
 
 #[cfg(feature = "scmi-uart-coexist")]
@@ -1531,6 +1488,8 @@ const SCMI_HEARTBEAT_PERIOD_US: u64 = 100_000;
 const SCMI_GPIO_PERIOD_TICKS: u32 = 100;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_TELEMETRY_PERIOD_TICKS: u32 = 10;
+#[cfg(feature = "scmi-uart-coexist")]
+const SCMI_PCIE_SAMPLE_PERIOD_US: u64 = 1_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_GPIO_PULSE_US: u64 = 1_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -1555,6 +1514,16 @@ const SCMI_SHMEM_FLAGS: *const u32 = (rp1_hal::scmi::SCMI_SHMEM_BASE + 0x10) as 
 const SCMI_SHMEM_LENGTH: *const u32 = (rp1_hal::scmi::SCMI_SHMEM_BASE + 0x14) as *const u32;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_SHMEM_MSG_HEADER: *const u32 = (rp1_hal::scmi::SCMI_SHMEM_BASE + 0x18) as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_PCIE_DBI_SELECTOR: *const u32 = 0x4010_8000 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_PCIE_MONITOR2: *const u32 = 0x4010_81a4 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_PCIE_INTR: *const u32 = 0x4010_81a8 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_PCIE_INTS: *const u32 = 0x4010_81b4 as *const u32;
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+const SCMI_PCIE_CLASS_REVISION: *const u32 = 0x4010_9008 as *const u32;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_HEARTBEAT_TEMPLATE: [u8; 54] =
     *b"RP1CLK seq=0x00000000 ctrl=0x00000000 off=0x00000000\r\n";
@@ -1598,6 +1567,30 @@ const fn scmi_gpio_marker_due(sequence: u32) -> bool {
 #[cfg(feature = "scmi-uart-coexist")]
 const fn scmi_telemetry_due(sequence: u32) -> bool {
     sequence % SCMI_TELEMETRY_PERIOD_TICKS == 0
+}
+
+#[cfg(feature = "scmi-uart-coexist")]
+const fn scmi_pcie_next_deadline(elapsed_us: u64) -> u64 {
+    (elapsed_us / SCMI_PCIE_SAMPLE_PERIOD_US + 1) * SCMI_PCIE_SAMPLE_PERIOD_US
+}
+
+#[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
+fn sample_pcie_transition(summary: &mut PcieTransitionSummary) {
+    unsafe {
+        let dbi_view = core::ptr::read_volatile(SCMI_PCIE_DBI_SELECTOR);
+        let class_revision = if dbi_view & 3 == 0 {
+            Some(core::ptr::read_volatile(SCMI_PCIE_CLASS_REVISION))
+        } else {
+            None
+        };
+        summary.observe(
+            core::ptr::read_volatile(SCMI_PCIE_MONITOR2),
+            core::ptr::read_volatile(SCMI_PCIE_INTR),
+            core::ptr::read_volatile(SCMI_PCIE_INTS),
+            dbi_view,
+            class_revision,
+        );
+    }
 }
 
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -1715,44 +1708,20 @@ fn main(mut p: Peripherals) -> ! {
 
                 let start = p.raw_timer.now();
                 let mut next_us = 0;
+                let mut next_pcie_sample_us = 0;
                 let mut off_periods = 0u32;
+                let mut pcie = PcieTransitionSummary::new();
                 loop {
-                    if let Some((before, after, iatu_before, iatu_after)) =
-                        repair_scmi_endpoint_if_reset()
-                    {
-                        let _ = uart0.write_bytes(b"RP1SCMI|ENDPOINT_RESET_REPAIR");
-                        write_field(&mut uart0, b"before", before);
-                        write_field(&mut uart0, b"after", after);
-                        write_field(&mut uart0, b"b23_tlo", iatu_before[0]);
-                        write_field(&mut uart0, b"b23_thi", iatu_before[1]);
-                        write_field(&mut uart0, b"b23_c1", iatu_before[2]);
-                        write_field(&mut uart0, b"b23_c2", iatu_before[3]);
-                        write_field(&mut uart0, b"b63_tlo", iatu_before[4]);
-                        write_field(&mut uart0, b"b63_thi", iatu_before[5]);
-                        write_field(&mut uart0, b"b63_c1", iatu_before[6]);
-                        write_field(&mut uart0, b"b63_c2", iatu_before[7]);
-                        write_field(&mut uart0, b"a23_tlo", iatu_after[0]);
-                        write_field(&mut uart0, b"a23_thi", iatu_after[1]);
-                        write_field(&mut uart0, b"a23_c1", iatu_after[2]);
-                        write_field(&mut uart0, b"a23_c2", iatu_after[3]);
-                        write_field(&mut uart0, b"a63_tlo", iatu_after[4]);
-                        write_field(&mut uart0, b"a63_thi", iatu_after[5]);
-                        write_field(&mut uart0, b"a63_c1", iatu_after[6]);
-                        write_field(&mut uart0, b"a63_c2", iatu_after[7]);
-                        let _ = uart0.write_bytes(b"\r\n");
-                        if after != scmi_endpoint_class_revision(before)
-                            || iatu_after != SCMI_IATU_EXPECTED
-                        {
-                            pulse_width(&mut gpio22, 125);
-                            quiet_stop();
-                        }
-                    }
                     rp1_hal::rpc::poll(&p.raw_timer);
 
                     let elapsed_us = p.raw_timer.elapsed_since(start);
                     if elapsed_us >= SCMI_WINDOW_US {
                         gpio22.set_low();
                         quiet_stop();
+                    }
+                    if scmi_tick_due(elapsed_us, next_pcie_sample_us) {
+                        sample_pcie_transition(&mut pcie);
+                        next_pcie_sample_us = scmi_pcie_next_deadline(elapsed_us);
                     }
                     if scmi_tick_due(elapsed_us, next_us) {
                         let sequence = (elapsed_us / SCMI_HEARTBEAT_PERIOD_US) as u32;
@@ -1767,7 +1736,7 @@ fn main(mut p: Peripherals) -> ! {
                             let line = scmi_heartbeat_line(sequence, ctrl, off_periods);
                             let _ = uart0.write_bytes(&line);
                             if scmi_telemetry_due(sequence) {
-                                write_scmi_telemetry(&mut uart0, sequence);
+                                write_scmi_telemetry(&mut uart0, sequence, &pcie);
                             }
                         } else {
                             off_periods = off_periods.wrapping_add(1);
@@ -2127,7 +2096,7 @@ mod tests {
 
     #[cfg(feature = "scmi-uart-coexist")]
     #[test]
-    fn scmi_heartbeat_encoding_and_schedule_are_fixed() {
+    fn scmi_heartbeat_schedule_and_pcie_summary_are_fixed() {
         assert_eq!(
             scmi_heartbeat_line(0x0123_abcd, 0x1000_0840, 0x55),
             *b"RP1CLK seq=0x0123abcd ctrl=0x10000840 off=0x00000055\r\n"
@@ -2143,10 +2112,21 @@ mod tests {
         assert!(!scmi_telemetry_due(9));
         assert!(scmi_telemetry_due(10));
         assert!(!scmi_tick_due(SCMI_WINDOW_US, SCMI_WINDOW_US));
-        assert_eq!(scmi_endpoint_class_revision(0x0000_0002), 0x0200_0002);
-        assert_eq!(SCMI_IATU_SELECTORS, [0x23, 0x63]);
-        assert_eq!(SCMI_IATU_EXPECTED[3], 0xc000_0100);
-        assert_eq!(SCMI_IATU_EXPECTED[7], 0xc000_0200);
+        assert_eq!(scmi_pcie_next_deadline(3_500), 4_000);
+
+        let mut pcie = PcieTransitionSummary::new();
+        pcie.observe(0xffff_ffff, 1, 2, 0, Some(0x0200_0002));
+        pcie.observe(0, 4, 8, 3, None);
+        assert_eq!(pcie.samples, 2);
+        assert_eq!(pcie.monitor_first, 0xffff_ffff);
+        assert_eq!(pcie.monitor_last, 0);
+        assert_eq!(pcie.monitor_and, 0);
+        assert_eq!(pcie.monitor_or, 0xffff_ffff);
+        assert_eq!(pcie.intr_or, 5);
+        assert_eq!(pcie.ints_or, 10);
+        assert_eq!(pcie.dbi_view_last, 3);
+        assert_eq!(pcie.class_rev_last, 0x0200_0002);
+        assert_eq!(pcie.class_valid_samples, 1);
     }
 }
 
