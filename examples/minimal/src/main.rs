@@ -1352,9 +1352,9 @@ struct PcieTransitionSummary {
     monitor_last: u32,
     monitor_and: u32,
     monitor_or: u32,
-    monitor23_low_samples: u32,
-    monitor23_first_low_us: u32,
-    monitor23_last_low_us: u32,
+    monitor17_low_samples: u32,
+    monitor17_first_low_us: u32,
+    monitor17_last_low_us: u32,
     intr_or: u32,
     ints_or: u32,
     dbi_view_last: u32,
@@ -1374,9 +1374,9 @@ impl PcieTransitionSummary {
             monitor_last: 0,
             monitor_and: u32::MAX,
             monitor_or: 0,
-            monitor23_low_samples: 0,
-            monitor23_first_low_us: u32::MAX,
-            monitor23_last_low_us: u32::MAX,
+            monitor17_low_samples: 0,
+            monitor17_first_low_us: u32::MAX,
+            monitor17_last_low_us: u32::MAX,
             intr_or: 0,
             ints_or: 0,
             dbi_view_last: 0,
@@ -1408,12 +1408,12 @@ impl PcieTransitionSummary {
         self.sample_last_us = elapsed_us;
         self.monitor_last = monitor2;
         self.monitor_or |= monitor2;
-        if monitor2 & (1 << 23) == 0 {
-            if self.monitor23_low_samples == 0 {
-                self.monitor23_first_low_us = elapsed_us;
+        if monitor2 & (1 << 17) == 0 {
+            if self.monitor17_low_samples == 0 {
+                self.monitor17_first_low_us = elapsed_us;
             }
-            self.monitor23_low_samples = self.monitor23_low_samples.saturating_add(1);
-            self.monitor23_last_low_us = elapsed_us;
+            self.monitor17_low_samples = self.monitor17_low_samples.saturating_add(1);
+            self.monitor17_last_low_us = elapsed_us;
         }
         self.intr_or |= intr;
         self.ints_or |= ints;
@@ -1500,9 +1500,9 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32, pcie: &PcieTransitio
     write_field(uart, b"mon_last", pcie.monitor_last);
     write_field(uart, b"mon_and", pcie.monitor_and);
     write_field(uart, b"mon_or", pcie.monitor_or);
-    write_field(uart, b"mon23_low", pcie.monitor23_low_samples);
-    write_field(uart, b"mon23_first_us", pcie.monitor23_first_low_us);
-    write_field(uart, b"mon23_last_us", pcie.monitor23_last_low_us);
+    write_field(uart, b"mon17_low", pcie.monitor17_low_samples);
+    write_field(uart, b"mon17_first_us", pcie.monitor17_first_low_us);
+    write_field(uart, b"mon17_last_us", pcie.monitor17_last_low_us);
     write_field(uart, b"intr_or", pcie.intr_or);
     write_field(uart, b"ints_or", pcie.ints_or);
     write_field(uart, b"dbi_view", pcie.dbi_view_last);
@@ -2144,18 +2144,18 @@ mod tests {
 
         let mut pcie = PcieTransitionSummary::new();
         pcie.observe(100, 0xffff_ffff, 1, 2, 0, Some(0x0200_0002));
-        pcie.observe(107, 0xff7f_ffff, 4, 8, 3, None);
+        pcie.observe(107, 0xfffd_ffff, 4, 8, 3, None);
         assert_eq!(pcie.samples, 2);
         assert_eq!(pcie.sample_first_us, 100);
         assert_eq!(pcie.sample_last_us, 107);
         assert_eq!(pcie.sample_max_gap_us, 7);
         assert_eq!(pcie.monitor_first, 0xffff_ffff);
-        assert_eq!(pcie.monitor_last, 0xff7f_ffff);
-        assert_eq!(pcie.monitor_and, 0xff7f_ffff);
+        assert_eq!(pcie.monitor_last, 0xfffd_ffff);
+        assert_eq!(pcie.monitor_and, 0xfffd_ffff);
         assert_eq!(pcie.monitor_or, 0xffff_ffff);
-        assert_eq!(pcie.monitor23_low_samples, 1);
-        assert_eq!(pcie.monitor23_first_low_us, 107);
-        assert_eq!(pcie.monitor23_last_low_us, 107);
+        assert_eq!(pcie.monitor17_low_samples, 1);
+        assert_eq!(pcie.monitor17_first_low_us, 107);
+        assert_eq!(pcie.monitor17_last_low_us, 107);
         assert_eq!(pcie.intr_or, 5);
         assert_eq!(pcie.ints_or, 10);
         assert_eq!(pcie.dbi_view_last, 3);
