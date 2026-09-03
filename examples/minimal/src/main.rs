@@ -1416,7 +1416,7 @@ impl PcieTransitionSummary {
         class_revision: Option<u32>,
     ) {
         let monitor17_high = monitor2 & (1 << 17) != 0;
-        let irq53_pending = nvic_ispr1 & PCIE_OUT_IRQ53_PENDING != 0;
+        let irq53_pending = nvic_ispr1 & LOCAL_IRQ53_PENDING != 0;
         if self.samples == 0 {
             self.sample_first_us = elapsed_us;
             self.monitor_first = monitor2;
@@ -1570,7 +1570,7 @@ const SCMI_WINDOW_US: u64 = 120_000_000;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_HEARTBEAT_PERIOD_US: u64 = 100_000;
 #[cfg(feature = "scmi-uart-coexist")]
-const PCIE_OUT_IRQ53_PENDING: u32 = 1 << (53 - 32);
+const LOCAL_IRQ53_PENDING: u32 = 1 << (53 - 32);
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_GPIO_PULSE_US: u64 = 1_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -2159,8 +2159,8 @@ mod tests {
 
         let mut pcie = PcieTransitionSummary::new();
         pcie.observe(100, 0xffff_ffff, 0, 1, 2, 0, Some(0x0200_0002));
-        pcie.observe(107, 0xfffd_ffff, PCIE_OUT_IRQ53_PENDING, 4, 8, 3, None);
-        pcie.observe(109, 0xffff_ffff, PCIE_OUT_IRQ53_PENDING, 0, 0, 3, None);
+        pcie.observe(107, 0xfffd_ffff, LOCAL_IRQ53_PENDING, 4, 8, 3, None);
+        pcie.observe(109, 0xffff_ffff, LOCAL_IRQ53_PENDING, 0, 0, 3, None);
         assert_eq!(pcie.samples, 3);
         assert_eq!(pcie.sample_first_us, 100);
         assert_eq!(pcie.sample_last_us, 109);
@@ -2174,7 +2174,7 @@ mod tests {
         assert_eq!(pcie.monitor17_last_low_us, 107);
         assert_eq!(pcie.monitor17_edges, 2);
         assert_eq!(pcie.monitor17_high_after_low_us, 109);
-        assert_eq!(pcie.nvic_ispr1_or, PCIE_OUT_IRQ53_PENDING);
+        assert_eq!(pcie.nvic_ispr1_or, LOCAL_IRQ53_PENDING);
         assert_eq!(pcie.irq53_pending_samples, 2);
         assert_eq!(pcie.irq53_pending_low_samples, 1);
         assert_eq!(pcie.irq53_first_pending_us, 107);
