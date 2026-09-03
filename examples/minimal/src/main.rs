@@ -1345,10 +1345,16 @@ fn emit_readback_frames(pin: &mut ConfiguredPin<22, Output>, uart0: &Uart0Tx) {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PcieTransitionSummary {
     samples: u32,
+    sample_first_us: u32,
+    sample_last_us: u32,
+    sample_max_gap_us: u32,
     monitor_first: u32,
     monitor_last: u32,
     monitor_and: u32,
     monitor_or: u32,
+    monitor23_low_samples: u32,
+    monitor23_first_low_us: u32,
+    monitor23_last_low_us: u32,
     intr_or: u32,
     ints_or: u32,
     dbi_view_last: u32,
@@ -1361,10 +1367,16 @@ impl PcieTransitionSummary {
     const fn new() -> Self {
         Self {
             samples: 0,
+            sample_first_us: 0,
+            sample_last_us: 0,
+            sample_max_gap_us: 0,
             monitor_first: 0,
             monitor_last: 0,
             monitor_and: u32::MAX,
             monitor_or: 0,
+            monitor23_low_samples: 0,
+            monitor23_first_low_us: u32::MAX,
+            monitor23_last_low_us: u32::MAX,
             intr_or: 0,
             ints_or: 0,
             dbi_view_last: 0,
@@ -1375,6 +1387,7 @@ impl PcieTransitionSummary {
 
     fn observe(
         &mut self,
+        elapsed_us: u32,
         monitor2: u32,
         intr: u32,
         ints: u32,
@@ -1382,14 +1395,26 @@ impl PcieTransitionSummary {
         class_revision: Option<u32>,
     ) {
         if self.samples == 0 {
+            self.sample_first_us = elapsed_us;
             self.monitor_first = monitor2;
             self.monitor_and = monitor2;
         } else {
+            self.sample_max_gap_us = self
+                .sample_max_gap_us
+                .max(elapsed_us.saturating_sub(self.sample_last_us));
             self.monitor_and &= monitor2;
         }
         self.samples = self.samples.saturating_add(1);
+        self.sample_last_us = elapsed_us;
         self.monitor_last = monitor2;
         self.monitor_or |= monitor2;
+        if monitor2 & (1 << 23) == 0 {
+            if self.monitor23_low_samples == 0 {
+                self.monitor23_first_low_us = elapsed_us;
+            }
+            self.monitor23_low_samples = self.monitor23_low_samples.saturating_add(1);
+            self.monitor23_last_low_us = elapsed_us;
+        }
         self.intr_or |= intr;
         self.ints_or |= ints;
         self.dbi_view_last = dbi_view;
@@ -1468,10 +1493,16 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32, pcie: &PcieTransitio
         core::ptr::read_volatile(SCMI_SHMEM_MSG_HEADER)
     });
     write_field(uart, b"pcie_samples", pcie.samples);
+    write_field(uart, b"sample_first_us", pcie.sample_first_us);
+    write_field(uart, b"sample_last_us", pcie.sample_last_us);
+    write_field(uart, b"sample_max_gap", pcie.sample_max_gap_us);
     write_field(uart, b"mon_first", pcie.monitor_first);
     write_field(uart, b"mon_last", pcie.monitor_last);
     write_field(uart, b"mon_and", pcie.monitor_and);
     write_field(uart, b"mon_or", pcie.monitor_or);
+    write_field(uart, b"mon23_low", pcie.monitor23_low_samples);
+    write_field(uart, b"mon23_first_us", pcie.monitor23_first_low_us);
+    write_field(uart, b"mon23_last_us", pcie.monitor23_last_low_us);
     write_field(uart, b"intr_or", pcie.intr_or);
     write_field(uart, b"ints_or", pcie.ints_or);
     write_field(uart, b"dbi_view", pcie.dbi_view_last);
@@ -1488,8 +1519,6 @@ const SCMI_HEARTBEAT_PERIOD_US: u64 = 100_000;
 const SCMI_GPIO_PERIOD_TICKS: u32 = 100;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_TELEMETRY_PERIOD_TICKS: u32 = 10;
-#[cfg(feature = "scmi-uart-coexist")]
-const SCMI_PCIE_SAMPLE_PERIOD_US: u64 = 1_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_GPIO_PULSE_US: u64 = 1_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -1569,13 +1598,8 @@ const fn scmi_telemetry_due(sequence: u32) -> bool {
     sequence % SCMI_TELEMETRY_PERIOD_TICKS == 0
 }
 
-#[cfg(feature = "scmi-uart-coexist")]
-const fn scmi_pcie_next_deadline(elapsed_us: u64) -> u64 {
-    (elapsed_us / SCMI_PCIE_SAMPLE_PERIOD_US + 1) * SCMI_PCIE_SAMPLE_PERIOD_US
-}
-
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
-fn sample_pcie_transition(summary: &mut PcieTransitionSummary) {
+fn sample_pcie_transition(summary: &mut PcieTransitionSummary, elapsed_us: u32) {
     unsafe {
         let dbi_view = core::ptr::read_volatile(SCMI_PCIE_DBI_SELECTOR);
         let class_revision = if dbi_view & 3 == 0 {
@@ -1584,6 +1608,7 @@ fn sample_pcie_transition(summary: &mut PcieTransitionSummary) {
             None
         };
         summary.observe(
+            elapsed_us,
             core::ptr::read_volatile(SCMI_PCIE_MONITOR2),
             core::ptr::read_volatile(SCMI_PCIE_INTR),
             core::ptr::read_volatile(SCMI_PCIE_INTS),
@@ -1708,7 +1733,6 @@ fn main(mut p: Peripherals) -> ! {
 
                 let start = p.raw_timer.now();
                 let mut next_us = 0;
-                let mut next_pcie_sample_us = 0;
                 let mut off_periods = 0u32;
                 let mut pcie = PcieTransitionSummary::new();
                 loop {
@@ -1719,10 +1743,7 @@ fn main(mut p: Peripherals) -> ! {
                         gpio22.set_low();
                         quiet_stop();
                     }
-                    if scmi_tick_due(elapsed_us, next_pcie_sample_us) {
-                        sample_pcie_transition(&mut pcie);
-                        next_pcie_sample_us = scmi_pcie_next_deadline(elapsed_us);
-                    }
+                    sample_pcie_transition(&mut pcie, elapsed_us as u32);
                     if scmi_tick_due(elapsed_us, next_us) {
                         let sequence = (elapsed_us / SCMI_HEARTBEAT_PERIOD_US) as u32;
                         if scmi_gpio_marker_due(sequence) {
@@ -2112,16 +2133,22 @@ mod tests {
         assert!(!scmi_telemetry_due(9));
         assert!(scmi_telemetry_due(10));
         assert!(!scmi_tick_due(SCMI_WINDOW_US, SCMI_WINDOW_US));
-        assert_eq!(scmi_pcie_next_deadline(3_500), 4_000);
+        assert!(SCMI_WINDOW_US <= u32::MAX as u64);
 
         let mut pcie = PcieTransitionSummary::new();
-        pcie.observe(0xffff_ffff, 1, 2, 0, Some(0x0200_0002));
-        pcie.observe(0, 4, 8, 3, None);
+        pcie.observe(100, 0xffff_ffff, 1, 2, 0, Some(0x0200_0002));
+        pcie.observe(107, 0xff7f_ffff, 4, 8, 3, None);
         assert_eq!(pcie.samples, 2);
+        assert_eq!(pcie.sample_first_us, 100);
+        assert_eq!(pcie.sample_last_us, 107);
+        assert_eq!(pcie.sample_max_gap_us, 7);
         assert_eq!(pcie.monitor_first, 0xffff_ffff);
-        assert_eq!(pcie.monitor_last, 0);
-        assert_eq!(pcie.monitor_and, 0);
+        assert_eq!(pcie.monitor_last, 0xff7f_ffff);
+        assert_eq!(pcie.monitor_and, 0xff7f_ffff);
         assert_eq!(pcie.monitor_or, 0xffff_ffff);
+        assert_eq!(pcie.monitor23_low_samples, 1);
+        assert_eq!(pcie.monitor23_first_low_us, 107);
+        assert_eq!(pcie.monitor23_last_low_us, 107);
         assert_eq!(pcie.intr_or, 5);
         assert_eq!(pcie.ints_or, 10);
         assert_eq!(pcie.dbi_view_last, 3);
