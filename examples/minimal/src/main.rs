@@ -1531,12 +1531,6 @@ fn write_scmi_telemetry(uart: &mut Uart0Tx, heartbeat: u32, pcie: &PcieTransitio
 const SCMI_WINDOW_US: u64 = 120_000_000;
 #[cfg(feature = "scmi-uart-coexist")]
 const SCMI_HEARTBEAT_PERIOD_US: u64 = 100_000;
-#[cfg(feature = "scmi-uart-coexist")]
-const SCMI_GPIO_PERIOD_TICKS: u32 = 100;
-#[cfg(feature = "scmi-uart-coexist")]
-const SCMI_TELEMETRY_PERIOD_TICKS: u32 = 10;
-#[cfg(feature = "scmi-uart-coexist")]
-const SCMI_PCIE_TIGHT_WINDOW_US: u64 = 10_000_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
 const SCMI_GPIO_PULSE_US: u64 = 1_000;
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -1594,26 +1588,6 @@ fn scmi_heartbeat_line(
     encode_hex_u32(&mut line, 29, ctrl);
     encode_hex_u32(&mut line, 44, off_periods);
     line
-}
-
-#[cfg(feature = "scmi-uart-coexist")]
-const fn scmi_tick_due(elapsed_us: u64, next_us: u64) -> bool {
-    elapsed_us < SCMI_WINDOW_US && elapsed_us >= next_us
-}
-
-#[cfg(feature = "scmi-uart-coexist")]
-const fn scmi_next_deadline(elapsed_us: u64) -> u64 {
-    (elapsed_us / SCMI_HEARTBEAT_PERIOD_US + 1) * SCMI_HEARTBEAT_PERIOD_US
-}
-
-#[cfg(feature = "scmi-uart-coexist")]
-const fn scmi_gpio_marker_due(sequence: u32) -> bool {
-    sequence % SCMI_GPIO_PERIOD_TICKS == 0
-}
-
-#[cfg(feature = "scmi-uart-coexist")]
-const fn scmi_telemetry_due(sequence: u32) -> bool {
-    sequence % SCMI_TELEMETRY_PERIOD_TICKS == 0
 }
 
 #[cfg(all(target_arch = "arm", feature = "scmi-uart-coexist"))]
@@ -1760,43 +1734,26 @@ fn main(mut p: Peripherals) -> ! {
                 }
 
                 let start = p.raw_timer.now();
-                let mut next_us = 0;
-                let mut off_periods = 0u32;
                 let mut pcie = PcieTransitionSummary::new();
                 loop {
                     rp1_hal::rpc::poll(&p.raw_timer);
 
                     let elapsed_us = p.raw_timer.elapsed_since(start);
                     if elapsed_us >= SCMI_WINDOW_US {
+                        sample_pcie_transition(&mut pcie, elapsed_us as u32, false);
+                        let sequence = (elapsed_us / SCMI_HEARTBEAT_PERIOD_US) as u32;
+                        let ctrl = read_scmi_clk_uart_ctrl();
+                        if ctrl & SCMI_CLK_UART_ENABLE != 0 {
+                            let line = scmi_heartbeat_line(sequence, ctrl, 0);
+                            let _ = uart0.write_bytes(&line);
+                            write_scmi_telemetry(&mut uart0, sequence, &pcie);
+                        }
+                        gpio22.set_high();
+                        p.raw_timer.delay_us(SCMI_GPIO_PULSE_US);
                         gpio22.set_low();
                         quiet_stop();
                     }
-                    let monitor_only = elapsed_us < SCMI_PCIE_TIGHT_WINDOW_US;
-                    sample_pcie_transition(&mut pcie, elapsed_us as u32, monitor_only);
-                    if monitor_only {
-                        core::hint::spin_loop();
-                        continue;
-                    }
-                    if scmi_tick_due(elapsed_us, next_us) {
-                        let sequence = (elapsed_us / SCMI_HEARTBEAT_PERIOD_US) as u32;
-                        if scmi_gpio_marker_due(sequence) {
-                            gpio22.set_high();
-                            p.raw_timer.delay_us(SCMI_GPIO_PULSE_US);
-                            gpio22.set_low();
-                        }
-
-                        let ctrl = read_scmi_clk_uart_ctrl();
-                        if ctrl & SCMI_CLK_UART_ENABLE != 0 {
-                            let line = scmi_heartbeat_line(sequence, ctrl, off_periods);
-                            let _ = uart0.write_bytes(&line);
-                            if scmi_telemetry_due(sequence) {
-                                write_scmi_telemetry(&mut uart0, sequence, &pcie);
-                            }
-                        } else {
-                            off_periods = off_periods.wrapping_add(1);
-                        }
-                        next_us = scmi_next_deadline(elapsed_us);
-                    }
+                    sample_pcie_transition(&mut pcie, elapsed_us as u32, true);
                     core::hint::spin_loop();
                 }
             }
@@ -2155,19 +2112,8 @@ mod tests {
             scmi_heartbeat_line(0x0123_abcd, 0x1000_0840, 0x55),
             *b"RP1CLK seq=0x0123abcd ctrl=0x10000840 off=0x00000055\r\n"
         );
-        assert!(scmi_tick_due(0, 0));
-        assert!(!scmi_tick_due(99_999, 100_000));
-        assert_eq!(scmi_next_deadline(350_000), 400_000);
-        assert!(scmi_gpio_marker_due(0));
-        assert!(!scmi_gpio_marker_due(99));
-        assert!(scmi_gpio_marker_due(100));
-        assert!(scmi_gpio_marker_due(1_100));
-        assert!(scmi_telemetry_due(0));
-        assert!(!scmi_telemetry_due(9));
-        assert!(scmi_telemetry_due(10));
-        assert!(!scmi_tick_due(SCMI_WINDOW_US, SCMI_WINDOW_US));
+        assert_eq!(SCMI_HEARTBEAT_PERIOD_US, 100_000);
         assert!(SCMI_WINDOW_US <= u32::MAX as u64);
-        assert!(SCMI_PCIE_TIGHT_WINDOW_US < SCMI_WINDOW_US);
 
         let mut pcie = PcieTransitionSummary::new();
         pcie.observe(100, 0xffff_ffff, 1, 2, 0, Some(0x0200_0002));
