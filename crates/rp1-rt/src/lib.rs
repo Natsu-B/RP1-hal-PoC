@@ -266,8 +266,13 @@ pub const UART5_IRQ_NUMBER: usize = 46;
 pub const UART5_VECTOR_INDEX: usize = 16 + UART5_IRQ_NUMBER;
 pub const PWM0_IRQ_NUMBER: usize = 5;
 pub const PWM0_VECTOR_INDEX: usize = 16 + PWM0_IRQ_NUMBER;
+/// Historical candidate retained for the bounded negative commissioning test.
+/// SPI0 source assertion did not produce NVIC19 delivery; this is NOT a proven
+/// local route. The host MSI-X ID alone cannot establish a Cortex-M IRQ number.
 pub const SPI0_IRQ_NUMBER: usize = 19;
 pub const SPI0_VECTOR_INDEX: usize = 16 + SPI0_IRQ_NUMBER;
+/// Historical negative candidate, NOT an established I2C1-to-local-NVIC route.
+/// Kept for reproducing the IRQ8 commissioning test without changing its ABI.
 pub const I2C1_IRQ_NUMBER: usize = 8;
 pub const I2C1_VECTOR_INDEX: usize = 16 + I2C1_IRQ_NUMBER;
 pub const TIMER0_ALARM0_IRQ26_CANDIDATE_NUMBER: usize = 26;
