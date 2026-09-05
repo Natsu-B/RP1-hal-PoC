@@ -7,6 +7,8 @@ const IC_TAR: usize = 0x04;
 const IC_DATA_CMD: usize = 0x10;
 const IC_SS_SCL_HCNT: usize = 0x14;
 const IC_SS_SCL_LCNT: usize = 0x18;
+#[cfg(any(target_arch = "arm", test))]
+const IC_INTR_STAT: usize = 0x2c;
 const IC_INTR_MASK: usize = 0x30;
 const IC_RAW_INTR_STAT: usize = 0x34;
 const IC_RX_TL: usize = 0x38;
@@ -75,6 +77,21 @@ pub struct I2c1Snapshot {
     pub abort_source: u32,
     pub tx_fifo_depth: u16,
     pub bytes_queued: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct I2c1IrqSnapshot {
+    pub interrupt_mask: u32,
+    pub raw_interrupt_status: u32,
+    pub masked_interrupt_status: u32,
+    pub abort_source: u32,
+    pub enable_status: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct I2c1QueuedWrite {
+    pub bytes_queued: u16,
+    pub last_command: u32,
 }
 
 impl I2c1 {
@@ -190,6 +207,121 @@ impl I2c1Host {
             bytes_queued,
         }
     }
+
+    #[cfg(target_arch = "arm")]
+    pub fn arm_stop_det_irq(&mut self, address: u8) -> Result<I2c1IrqSnapshot, I2c1Error> {
+        if address > 0x7f {
+            return Err(I2c1Error::InvalidAddress(address));
+        }
+
+        disable()?;
+        reg(IC_TAR).write(u32::from(address));
+        reg(IC_INTR_MASK).write(0);
+        let raw = reg(IC_RAW_INTR_STAT).read();
+        if raw & IC_INTR_STOP_DET != 0 {
+            let _ = reg(IC_CLR_STOP_DET).read();
+        }
+        if raw & IC_INTR_TX_ABRT != 0 {
+            let _ = reg(IC_TX_ABRT_SOURCE).read();
+            let _ = reg(IC_CLR_TX_ABRT).read();
+        }
+        reg(IC_ENABLE).write(IC_ENABLE_ENABLE);
+        if !poll_until(
+            || reg(IC_ENABLE_STATUS).read() & IC_ENABLE_ENABLE != 0,
+            CONTROL_POLL_LIMIT,
+        ) {
+            return Err(I2c1Error::EnableTimeout);
+        }
+        reg(IC_INTR_MASK).write(IC_INTR_STOP_DET);
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
+        Ok(i2c1_irq_snapshot())
+    }
+
+    #[cfg(target_arch = "arm")]
+    pub fn start_write(&mut self, payload: &[u8]) -> Result<I2c1QueuedWrite, I2c1Error> {
+        if payload.is_empty() {
+            return Err(I2c1Error::EmptyPayload);
+        }
+        if payload.len() > usize::from(self.tx_fifo_depth) {
+            return Err(I2c1Error::PayloadTooLong {
+                len: payload.len(),
+                fifo_depth: self.tx_fifo_depth,
+            });
+        }
+
+        let mut last_command = 0;
+        for (index, byte) in payload.iter().copied().enumerate() {
+            if !poll_until(
+                || reg(IC_TXFLR).read() < u32::from(self.tx_fifo_depth),
+                CONTROL_POLL_LIMIT,
+            ) {
+                return Err(I2c1Error::TxFifoTimeout);
+            }
+            let stop = if index + 1 == payload.len() {
+                IC_DATA_CMD_STOP
+            } else {
+                0
+            };
+            last_command = u32::from(byte) | stop;
+            reg(IC_DATA_CMD).write(last_command);
+        }
+
+        Ok(I2c1QueuedWrite {
+            bytes_queued: payload.len() as u16,
+            last_command,
+        })
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn i2c1_irq_snapshot() -> I2c1IrqSnapshot {
+    let raw_interrupt_status = reg(IC_RAW_INTR_STAT).read();
+    let masked_interrupt_status = reg(IC_INTR_STAT).read();
+    let interrupt_mask = reg(IC_INTR_MASK).read();
+    let abort_source = reg(IC_TX_ABRT_SOURCE).read();
+    I2c1IrqSnapshot {
+        interrupt_mask,
+        raw_interrupt_status,
+        masked_interrupt_status,
+        abort_source,
+        enable_status: reg(IC_ENABLE_STATUS).read(),
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn i2c1_mask_stop_det_irq() {
+    reg(IC_INTR_MASK).write(reg(IC_INTR_MASK).read() & !IC_INTR_STOP_DET);
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn i2c1_ack_stop_det_irq(snapshot: I2c1IrqSnapshot) {
+    if snapshot.raw_interrupt_status & IC_INTR_STOP_DET != 0
+        || snapshot.masked_interrupt_status & IC_INTR_STOP_DET != 0
+    {
+        let _ = reg(IC_CLR_STOP_DET).read();
+    }
+    if snapshot.raw_interrupt_status & IC_INTR_TX_ABRT != 0
+        || snapshot.masked_interrupt_status & IC_INTR_TX_ABRT != 0
+        || snapshot.abort_source != 0
+    {
+        let _ = reg(IC_CLR_TX_ABRT).read();
+    }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn i2c1_cleanup_stop_det_irq() -> I2c1IrqSnapshot {
+    let before = i2c1_irq_snapshot();
+    i2c1_mask_stop_det_irq();
+    i2c1_ack_stop_det_irq(before);
+    i2c1_irq_snapshot()
 }
 
 fn disable() -> Result<(), I2c1Error> {
@@ -232,6 +364,7 @@ mod tests {
         assert_eq!(I2C1_BASE, 0x4007_4000);
         assert_eq!(I2C1_BASE + IC_CON, 0x4007_4000);
         assert_eq!(I2C1_BASE + IC_DATA_CMD, 0x4007_4010);
+        assert_eq!(I2C1_BASE + IC_INTR_STAT, 0x4007_402c);
         assert_eq!(I2C1_BASE + IC_ENABLE, 0x4007_406c);
         assert_eq!(I2C1_BASE + IC_COMP_TYPE, 0x4007_40fc);
     }

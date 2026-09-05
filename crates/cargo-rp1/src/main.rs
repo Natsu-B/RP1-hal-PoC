@@ -57,7 +57,9 @@ fn build(args: BuildArgs) -> Result<()> {
 
     let root = std::env::current_dir().context("read current directory")?;
     let example_dir = root.join("examples").join("minimal");
-    let config_path = example_dir.join("rp1.toml");
+    let config_path = std::env::var_os("RP1_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| example_dir.join("rp1.toml"));
     let config = rp1_build::parse_config(&config_path)
         .map_err(|err| anyhow::anyhow!("parse {}: {err}", config_path.display()))?;
     let package = "rp1-example-minimal";

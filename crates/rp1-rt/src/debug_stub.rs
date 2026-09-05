@@ -18,7 +18,12 @@ const DEBUG_DIAG_ADDR: usize = 0x2000_f800;
 #[cfg(feature = "debug-stub")]
 const DIAG_MAGIC: u32 = u32::from_le_bytes(*b"P1DG");
 
-const _: () = assert!(core::mem::size_of::<DebugMailbox>() <= debug::MAILBOX_SIZE);
+const DEBUG_MAILBOX_LIMIT: usize = if cfg!(feature = "debug-mailbox-layout-v1") {
+    debug::COEXISTENCE_PRIVATE_SIZE
+} else {
+    debug::MAILBOX_SIZE
+};
+const _: () = assert!(core::mem::size_of::<DebugMailbox>() <= DEBUG_MAILBOX_LIMIT);
 
 #[cfg(feature = "debug-stub")]
 pub fn init() {

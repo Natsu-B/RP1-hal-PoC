@@ -12,6 +12,8 @@ const TXFLR: usize = 0x20;
 const RXFLR: usize = 0x24;
 const SR: usize = 0x28;
 const IMR: usize = 0x2c;
+const ISR: usize = 0x30;
+const RISR: usize = 0x34;
 const DMACR: usize = 0x4c;
 const IDR: usize = 0x58;
 const VERSION: usize = 0x5c;
@@ -22,6 +24,7 @@ const CS_OVERRIDE: usize = 0xf4;
 const VERSION_4_02: u32 = 0x3430_322a;
 const CTRLR0_DFS_8BIT_TX_ONLY_MODE0: u32 = (7 << 16) | (1 << 8);
 const SSI_ENABLE: u32 = 1;
+const IRQ_TXEI: u32 = 1 << 0;
 const SER_CS0: u32 = 1;
 const SR_BUSY: u32 = 1 << 0;
 const SR_TX_NOT_FULL: u32 = 1 << 1;
@@ -71,6 +74,24 @@ pub struct Spi0Snapshot {
     pub bytes_queued: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Spi0IrqSnapshot {
+    pub version: u32,
+    pub enable: u32,
+    pub tx_fifo_threshold: u32,
+    pub interrupt_mask: u32,
+    pub raw_interrupt_status: u32,
+    pub masked_interrupt_status: u32,
+    pub tx_fifo_level: u32,
+    pub status: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Spi0IrqSourceSnapshot {
+    pub raw_interrupt_status: u32,
+    pub masked_interrupt_status: u32,
+}
+
 impl Spi0 {
     pub(crate) const unsafe fn new() -> Self {
         Self { _private: () }
@@ -114,6 +135,29 @@ impl Spi0 {
             _sclk: sclk,
             fifo_depth,
         })
+    }
+
+    #[cfg(target_arch = "arm")]
+    pub fn prepare_tx_empty_irq(&mut self) -> Result<Spi0IrqSnapshot, Spi0Error> {
+        let version = reg(VERSION).read();
+        if version != VERSION_4_02 {
+            return Err(Spi0Error::Version(version));
+        }
+
+        disable()?;
+        reg(SER).write(0);
+        reg(CTRLR0).write(CTRLR0_DFS_8BIT_TX_ONLY_MODE0);
+        reg(BAUDR).write(BAUD_DIV_100KHZ_AT_200MHZ);
+        reg(TXFTLR).write(0);
+        reg(RXFTLR).write(0);
+        reg(IMR).write(0);
+        reg(DMACR).write(0);
+        reg(SSIENR).write(SSI_ENABLE);
+        if !poll_until(|| reg(SSIENR).read() & SSI_ENABLE != 0, CONTROL_POLL_LIMIT) {
+            stop();
+            return Err(Spi0Error::EnableTimeout);
+        }
+        Ok(spi0_irq_snapshot())
     }
 }
 
@@ -205,6 +249,51 @@ fn stop() {
     reg(SSIENR).write(0);
 }
 
+#[cfg(target_arch = "arm")]
+pub fn spi0_irq_snapshot() -> Spi0IrqSnapshot {
+    Spi0IrqSnapshot {
+        version: reg(VERSION).read(),
+        enable: reg(SSIENR).read(),
+        tx_fifo_threshold: reg(TXFTLR).read(),
+        interrupt_mask: reg(IMR).read(),
+        raw_interrupt_status: reg(RISR).read(),
+        masked_interrupt_status: reg(ISR).read(),
+        tx_fifo_level: reg(TXFLR).read(),
+        status: reg(SR).read(),
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn spi0_irq_source_snapshot() -> Spi0IrqSourceSnapshot {
+    Spi0IrqSourceSnapshot {
+        raw_interrupt_status: reg(RISR).read(),
+        masked_interrupt_status: reg(ISR).read(),
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn spi0_unmask_tx_empty_irq() -> Spi0IrqSnapshot {
+    reg(IMR).write(IRQ_TXEI);
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    spi0_irq_snapshot()
+}
+
+#[cfg(target_arch = "arm")]
+pub fn spi0_mask_tx_empty_irq() {
+    reg(IMR).write(0);
+}
+
+#[cfg(target_arch = "arm")]
+pub fn spi0_cleanup_tx_empty_irq() {
+    reg(IMR).write(0);
+    reg(SSIENR).write(0);
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
 fn poll_until(mut condition: impl FnMut() -> bool, limit: u32) -> bool {
     for _ in 0..limit {
         if condition() {
@@ -229,6 +318,9 @@ mod tests {
         assert_eq!(SPI0_BASE, 0x4005_0000);
         assert_eq!(SPI0_BASE + CTRLR0, 0x4005_0000);
         assert_eq!(SPI0_BASE + SR, 0x4005_0028);
+        assert_eq!(SPI0_BASE + IMR, 0x4005_002c);
+        assert_eq!(SPI0_BASE + ISR, 0x4005_0030);
+        assert_eq!(SPI0_BASE + RISR, 0x4005_0034);
         assert_eq!(SPI0_BASE + VERSION, 0x4005_005c);
         assert_eq!(SPI0_BASE + DR, 0x4005_0060);
         assert_eq!(SPI0_BASE + CS_OVERRIDE, 0x4005_00f4);
@@ -253,5 +345,16 @@ mod tests {
         assert_eq!(SR_BUSY, 1);
         assert_eq!(SR_TX_NOT_FULL, 2);
         assert_eq!(SR_TX_EMPTY, 4);
+    }
+
+    #[test]
+    fn tx_empty_irq_uses_only_designware_bit0() {
+        assert_eq!(IRQ_TXEI, 1);
+    }
+
+    #[test]
+    fn interrupt_source_offsets_are_adjacent_after_mask() {
+        assert_eq!(ISR, IMR + 4);
+        assert_eq!(RISR, ISR + 4);
     }
 }

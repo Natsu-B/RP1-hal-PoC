@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_STACK_LOW");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_SNAPSHOT");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_MAILBOX_INIT");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_STUB");
 
@@ -16,6 +17,7 @@ fn main() {
     let stack_low = env::var_os("CARGO_FEATURE_DEBUG_STACK_LOW").is_some();
     let snapshot = env::var_os("CARGO_FEATURE_DEBUG_SNAPSHOT").is_some();
     let mailbox_layout = env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT").is_some();
+    let mailbox_layout_v1 = env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1").is_some();
 
     let app_len = if stack_low { "62K" } else { "64K" };
     let stack_start = if stack_low {
@@ -28,7 +30,9 @@ fn main() {
     } else {
         "  RP1_DEBUG_DIAG (rwx)  : ORIGIN = 0x2000f800, LENGTH = 0\n"
     };
-    let stub_region = if mailbox_layout {
+    let stub_region = if mailbox_layout_v1 {
+        "  RP1_DEBUG_STUB (rwx)  : ORIGIN = 0x2000fc00, LENGTH = 0x300\n"
+    } else if mailbox_layout {
         "  RP1_DEBUG_STUB (rwx)  : ORIGIN = 0x2000fc00, LENGTH = 1K\n"
     } else if stack_low {
         "  RP1_DEBUG_STUB (rwx)  : ORIGIN = 0x2000fc00, LENGTH = 0\n"

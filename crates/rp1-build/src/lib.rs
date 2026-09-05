@@ -4,8 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rp1_abi::note::{
-    RP1_NOTE_ABI_VERSION, RP1_NOTE_MAGIC, RP1_NOTE_NAME, RP1_NOTE_TYPE_BOOT_V1,
-    RP1_VERSION_NON_PIO, Rp1BootInfoV1,
+    RP1_MAILBOX_FLAG_ENABLE, RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1, RP1_NOTE_ABI_VERSION,
+    RP1_NOTE_MAGIC, RP1_NOTE_NAME, RP1_NOTE_TYPE_BOOT_V1, RP1_VERSION_NON_PIO, Rp1BootInfoV1,
 };
 use rp1_abi::owner::{
     DEV_DMA, DEV_GPIO, DEV_I2C0, DEV_I2C1, DEV_PIO0, DEV_PIO1, DEV_SPI0, DEV_TIMER, DEV_UART0,
@@ -23,6 +23,8 @@ struct Rp1Toml {
 #[derive(Debug, Deserialize)]
 struct Firmware {
     name: String,
+    #[serde(default)]
+    mailbox_layout_v1: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,11 +52,35 @@ pub struct OwnerBitmap {
 pub fn generate() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
-    let config_path = manifest_dir.join("rp1.toml");
+    let config_path = std::env::var_os("RP1_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("rp1.toml"));
+    println!("cargo:rerun-if-env-changed=RP1_CONFIG");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1");
     println!("cargo:rerun-if-changed={}", config_path.display());
-    let note_path = generate_from_paths(&config_path, &out_dir)?;
+    let config = parse_config(&config_path)?;
+    validate_mailbox_layout_v1_feature(
+        &config,
+        std::env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1").is_some(),
+    )?;
+    fs::create_dir_all(&out_dir)?;
+    let note_path = out_dir.join("rp1_note.bin");
+    write_note_bin(&config, &note_path)?;
     println!("cargo:rustc-env=RP1_NOTE_BIN={}", note_path.display());
     Ok(note_path)
+}
+
+fn validate_mailbox_layout_v1_feature(
+    config: &Rp1BuildConfig,
+    feature_enabled: bool,
+) -> Result<(), Box<dyn Error>> {
+    let config_enabled = config.mailbox_flags & RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 != 0;
+    if config_enabled != feature_enabled {
+        return Err(
+            "[firmware] mailbox_layout_v1 must match feature debug-mailbox-layout-v1".into(),
+        );
+    }
+    Ok(())
 }
 
 pub fn generate_from_paths(config_path: &Path, out_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
@@ -67,7 +93,11 @@ pub fn generate_from_paths(config_path: &Path, out_dir: &Path) -> Result<PathBuf
 
 pub fn parse_config(path: impl AsRef<Path>) -> Result<Rp1BuildConfig, Box<dyn Error>> {
     let config_text = fs::read_to_string(path)?;
-    let config: Rp1Toml = toml::from_str(&config_text)?;
+    parse_config_text(&config_text)
+}
+
+fn parse_config_text(config_text: &str) -> Result<Rp1BuildConfig, Box<dyn Error>> {
+    let config: Rp1Toml = toml::from_str(config_text)?;
     let owners = owner_bitmap(&config.owner)?;
     let _ = config.firmware.name.as_str();
     let _ = config.linux.pio;
@@ -75,7 +105,8 @@ pub fn parse_config(path: impl AsRef<Path>) -> Result<Rp1BuildConfig, Box<dyn Er
         owner_rp1: owners.owner_rp1,
         owner_linux: owners.owner_linux,
         owner_disabled: owners.owner_disabled,
-        mailbox_flags: u32::from(config.linux.mailbox),
+        mailbox_flags: u32::from(config.linux.mailbox) * RP1_MAILBOX_FLAG_ENABLE
+            | u32::from(config.firmware.mailbox_layout_v1) * RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1,
         firmware_version_kind: RP1_VERSION_NON_PIO,
     })
 }
@@ -181,6 +212,7 @@ fn put_u64(out: &mut [u8], offset: usize, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rp1_abi::note::RP1_MAILBOX_FLAGS_SUPPORTED_MASK;
 
     #[test]
     fn minimal_owner_bitmap_matches_expected_values() {
@@ -234,5 +266,71 @@ mod tests {
         assert_eq!(config.owner_disabled, 0x0);
         assert_eq!(config.mailbox_flags, 1);
         assert_eq!(config.firmware_version_kind, 0);
+    }
+
+    fn note_with_mailbox_options(mailbox: bool, layout_v1: Option<bool>) -> Vec<u8> {
+        let layout_v1 = layout_v1
+            .map(|value| format!("mailbox_layout_v1 = {value}\n"))
+            .unwrap_or_default();
+        let config = parse_config_text(&format!(
+            "[firmware]\nname = \"test\"\n{layout_v1}[linux]\nmailbox = {mailbox}\npio = false\n[owner]\n"
+        ))
+        .unwrap();
+        encode_note(&config)
+    }
+
+    fn encoded_mailbox_flags(note: &[u8]) -> u32 {
+        u32::from_le_bytes(note[88..92].try_into().unwrap())
+    }
+
+    #[test]
+    fn mailbox_layout_v1_is_explicit_opt_in() {
+        assert_eq!(
+            encoded_mailbox_flags(&note_with_mailbox_options(false, None)),
+            0
+        );
+
+        let absent = note_with_mailbox_options(true, None);
+        let explicit_false = note_with_mailbox_options(true, Some(false));
+        assert_eq!(absent, explicit_false);
+        assert_eq!(encoded_mailbox_flags(&absent), RP1_MAILBOX_FLAG_ENABLE);
+
+        let layout_only = note_with_mailbox_options(false, Some(true));
+        assert_eq!(
+            encoded_mailbox_flags(&layout_only),
+            RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1
+        );
+
+        let enabled_layout = note_with_mailbox_options(true, Some(true));
+        assert_eq!(
+            encoded_mailbox_flags(&enabled_layout),
+            RP1_MAILBOX_FLAGS_SUPPORTED_MASK
+        );
+        assert_eq!(
+            encoded_mailbox_flags(&enabled_layout) & !RP1_MAILBOX_FLAGS_SUPPORTED_MASK,
+            0
+        );
+    }
+
+    #[test]
+    fn mailbox_layout_v1_feature_config_truth_table() {
+        for (config_enabled, feature_enabled, expected) in [
+            (false, false, true),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            let config = Rp1BuildConfig {
+                owner_rp1: 0,
+                owner_linux: 0,
+                owner_disabled: 0,
+                mailbox_flags: u32::from(config_enabled) * RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1,
+                firmware_version_kind: RP1_VERSION_NON_PIO,
+            };
+            assert_eq!(
+                validate_mailbox_layout_v1_feature(&config, feature_enabled).is_ok(),
+                expected
+            );
+        }
     }
 }

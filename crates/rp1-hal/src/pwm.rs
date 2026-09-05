@@ -29,9 +29,15 @@ const PWM_GLOBAL_CTRL: usize = PWM0_BASE;
 const PWM_CH0_CTRL: usize = PWM0_BASE + 0x14;
 const PWM_CH0_RANGE: usize = PWM0_BASE + 0x18;
 const PWM_CH0_DUTY: usize = PWM0_BASE + 0x20;
+const PWM_INTR: usize = PWM0_BASE + 0x54;
+const PWM_INTE: usize = PWM0_BASE + 0x58;
+#[allow(dead_code)]
+const PWM_INTF: usize = PWM0_BASE + 0x5c;
+const PWM_INTS: usize = PWM0_BASE + 0x60;
 const PWM_GLOBAL_SET_UPDATE: u32 = 1 << 31;
 const PWM_GLOBAL_CH0_ENABLE: u32 = 1;
 const PWM_CH0_TRAILING_EDGE_MARK_SPACE: u32 = (1 << 8) | 1;
+pub const PWM0_CH0_RELOAD_IRQ: u32 = 1 << 5;
 const POLL_LIMIT: usize = 100_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,14 +106,17 @@ impl Pwm0 {
         configure_pwm0_clock_50mhz()?;
         release_pwm0_reset()?;
 
-        reg(PWM_GLOBAL_CTRL).modify(|value| value & !PWM_GLOBAL_CH0_ENABLE);
+        disable_pwm0_ch0();
         reg(PWM_CH0_CTRL).write(PWM_CH0_TRAILING_EDGE_MARK_SPACE);
         reg(PWM_CH0_DUTY).write(config.duty);
         reg(PWM_CH0_RANGE).write(config.range);
         configure_gpio12_pwm0()?;
 
         reg(PWM_GLOBAL_CTRL).modify(|value| value | PWM_GLOBAL_CH0_ENABLE | PWM_GLOBAL_SET_UPDATE);
-        wait_for_update()?;
+        if let Err(error) = wait_for_update() {
+            disable_pwm0_ch0();
+            return Err(error);
+        }
 
         let channel = Pwm0Channel0 { _private: () };
         let snapshot = channel.snapshot();
@@ -116,6 +125,7 @@ impl Pwm0 {
             || snapshot.duty != config.duty
             || snapshot.global_ctrl & PWM_GLOBAL_CH0_ENABLE == 0
         {
+            disable_pwm0_ch0();
             return Err(Pwm0Error::PwmReadback);
         }
         Ok(channel)
@@ -146,6 +156,33 @@ impl Pwm0Channel0 {
     pub fn snapshot(&self) -> Pwm0Snapshot {
         snapshot_pwm0()
     }
+
+    pub fn stop(&mut self) -> Result<(), Pwm0Error> {
+        disable_pwm0_ch0();
+        if reg(PWM_GLOBAL_CTRL).read() & PWM_GLOBAL_CH0_ENABLE != 0 {
+            return Err(Pwm0Error::PwmReadback);
+        }
+        Ok(())
+    }
+
+    pub fn enable_reload_interrupt(&mut self) {
+        reg(PWM_INTE).modify(|value| value | PWM0_CH0_RELOAD_IRQ);
+        dsb_sy();
+    }
+
+    pub fn mask_reload_interrupt(&mut self) {
+        reg(PWM_INTE).modify(|value| value & !PWM0_CH0_RELOAD_IRQ);
+        dsb_sy();
+    }
+}
+
+pub fn pwm0_raw_irq_status() -> (u32, u32) {
+    (reg(PWM_INTR).read(), reg(PWM_INTS).read())
+}
+
+pub fn pwm0_ack_reload_interrupt() {
+    reg(PWM_INTR).write(PWM0_CH0_RELOAD_IRQ);
+    dsb_sy();
 }
 
 fn snapshot_pwm0() -> Pwm0Snapshot {
@@ -238,6 +275,11 @@ fn wait_for_update() -> Result<(), Pwm0Error> {
     Err(Pwm0Error::UpdateTimeout)
 }
 
+fn disable_pwm0_ch0() {
+    reg(PWM_GLOBAL_CTRL).modify(clear_pwm0_ch0_enable);
+    dsb_sy();
+}
+
 #[inline(always)]
 fn gpio12_ctrl_value(current: u32) -> u32 {
     (current & !(GPIO_CTRL_FUNCSEL_MASK | GPIO_CTRL_OVERRIDE_MASK)) | GPIO_FUNCSEL_PWM0_CH0
@@ -246,6 +288,11 @@ fn gpio12_ctrl_value(current: u32) -> u32 {
 #[inline(always)]
 fn gpio12_pad_value(current: u32) -> u32 {
     (current & !(PAD_PULL_MASK | PAD_OUTPUT_DISABLE)) | PAD_INPUT_ENABLE
+}
+
+#[inline(always)]
+fn clear_pwm0_ch0_enable(current: u32) -> u32 {
+    current & !PWM_GLOBAL_CH0_ENABLE
 }
 
 #[inline(always)]
@@ -292,6 +339,11 @@ mod tests {
         assert_eq!(PWM_CH0_CTRL, 0x4009_8014);
         assert_eq!(PWM_CH0_RANGE, 0x4009_8018);
         assert_eq!(PWM_CH0_DUTY, 0x4009_8020);
+        assert_eq!(PWM_INTR, 0x4009_8054);
+        assert_eq!(PWM_INTE, 0x4009_8058);
+        assert_eq!(PWM_INTF, 0x4009_805c);
+        assert_eq!(PWM_INTS, 0x4009_8060);
+        assert_eq!(PWM0_CH0_RELOAD_IRQ, 1 << 5);
     }
 
     #[test]
@@ -321,5 +373,15 @@ mod tests {
         assert_eq!(low.duty * 100 / low.range, 25);
         assert_eq!(50_000_000 / high.range, 1_000);
         assert_eq!(high.duty * 100 / high.range, 75);
+    }
+
+    #[test]
+    fn pwm0_ch0_disable_preserves_other_global_bits() {
+        let original = 0xa5a5_0001 | PWM_GLOBAL_SET_UPDATE;
+        assert_eq!(
+            clear_pwm0_ch0_enable(original),
+            original & !PWM_GLOBAL_CH0_ENABLE
+        );
+        assert_eq!(clear_pwm0_ch0_enable(PWM_GLOBAL_CH0_ENABLE), 0);
     }
 }

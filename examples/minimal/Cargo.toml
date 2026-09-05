@@ -13,18 +13,118 @@ rp1-build = { path = "../../crates/rp1-build" }
 
 [features]
 default = []
+gpio22-start-proof = []
 endpoint-clock-only = []
 state3-composite-boundary = ["endpoint-clock-only"]
 state5-composite-boundary = ["state3-composite-boundary"]
 bar2-readonly-handshake = ["state5-composite-boundary", "debug-mailbox-layout"]
+inbound-monitor-block-proof = ["bar2-readonly-handshake"]
+rp1-axishim-focused-sampling-proof = ["inbound-monitor-block-proof"]
+rp1-pcie-4k-protection-proof = ["inbound-monitor-block-proof"]
+rp1-pcie-64k-hole-proof = ["rp1-pcie-4k-protection-proof"]
+rp1-iatu-second-spare-programming-proof = ["rp1-pcie-4k-protection-proof"]
+rp1-iatu-64k-address-mask-characterization = ["rp1-iatu-second-spare-programming-proof"]
+rp1-bar1-interior-64k-hole-proof = ["rp1-pcie-4k-protection-proof"]
+rp1-bar1-second-interior-64k-page-proof = ["rp1-bar1-interior-64k-hole-proof"]
+rp1-bar1-hole-write-effect-proof = [
+    "rp1-bar1-interior-64k-hole-proof",
+    "uart0-functional-clock-before-reset-done",
+]
+cortex-m3-option-proof = ["bar2-readonly-handshake"]
+boot-rom-readonly-proof = ["bar2-readonly-handshake"]
+boot-rom-dump-proof = ["boot-rom-readonly-proof"]
+boot-rom-boundary-proof = ["bar2-readonly-handshake"]
+proc1-boot-rom-proof = ["bar2-readonly-handshake"]
+dual-core-memory-proof = ["bar2-readonly-handshake"]
+proc-local-memory-proof = ["bar2-readonly-handshake"]
+expected-fault-recovery-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-identity-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-reset-state-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-active-identity-proof = [
+    "pll-sys-core-lock-only",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-internal-reset-identity-proof = [
+    "pll-sys-core-lock-only",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-global-enable-identity-proof = [
+    "pll-sys-core-lock-only",
+    "rp1-rt/expected-fault-recovery",
+]
+shared-sram-bitband-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+internal-memory-boundary-read-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+shared-sram-64k-mirror-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+shared-sram-alias-window-extent-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+shared-sram-system-region-alias-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+mpu-fault-enforcement-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
 raw-timer-proof = ["bar2-readonly-handshake"]
+watchdog-proof = ["bar2-readonly-handshake"]
+watchdog-scratch-proof = ["bar2-readonly-handshake"]
+watchdog-expiry-reason-proof = ["bar2-readonly-handshake"]
+rp1-adc-one-shot-proof = ["bar2-readonly-handshake"]
+rp1-i2s-readonly-prerequisite-snapshot = ["bar2-readonly-handshake"]
+timer-register-proof = ["bar2-readonly-handshake"]
+timer-writable-time-proof = ["bar2-readonly-handshake"]
+timer0-inte-ints-proof = ["bar2-readonly-handshake"]
+timer0-alarm0-local-irq26-candidate = [
+    "bar2-readonly-handshake",
+    "rp1-rt/timer0-alarm0-irq26-candidate",
+]
+uart-reset-irq-map-proof = ["pll-sys-core-lock-only"]
+uart1-local-nvic42-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart1-local-irq"]
+uart2-local-nvic43-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart2-local-irq"]
+uart3-local-nvic44-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart3-local-irq"]
+uart4-local-nvic45-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart4-local-irq"]
+uart5-local-nvic46-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart5-local-irq"]
 pll-sys-core-lock-only = ["bar2-readonly-handshake"]
 uart0-reset-only = ["pll-sys-core-lock-only"]
 uart0-functional-clock-before-reset-done = ["uart0-reset-only"]
+rp1-clock-independence-proof = ["uart0-functional-clock-before-reset-done", "spi0-reset-only"]
+rp1-linux-clk-uart-ownership-conflict = ["uart0-functional-clock-before-reset-done"]
+rp1-linux-pcie-dbi-transition-monitor = ["rp1-linux-clk-uart-ownership-conflict"]
 uart0-tx-polling-only = ["uart0-functional-clock-before-reset-done"]
 uart0-polled-rx = ["uart0-tx-polling-only"]
 uart0-rx-irq = ["uart0-polled-rx", "rp1-rt/uart0-rx-irq"]
 pwm-gpio12-proof = ["pll-sys-core-lock-only"]
+pwm0-local-irq-proof = ["pwm-gpio12-proof", "rp1-rt/pwm0-local-irq"]
+spi0-local-irq-proof = ["spi0-reset-only", "rp1-rt/spi0-local-irq"]
+spi0-local-irq-bank1-passive-scout = [
+    "spi0-reset-only",
+    "rp1-rt/spi0-local-irq-bank1-passive-scout",
+]
+i2c1-local-irq-proof = ["i2c1-reset-only", "rp1-rt/i2c1-local-irq"]
+i2c1-local-irq-bank1-passive-scout = [
+    "i2c1-reset-only",
+    "rp1-rt/i2c1-local-irq-bank1-passive-scout",
+]
 pcie-ep-init = ["rp1-hal/pcie-ep-init", "rp1-rt/pcie-ep-init"]
 debug-stack-low = ["rp1-hal/debug-stack-low", "rp1-rt/debug-stack-low"]
 debug-snapshot = ["debug-stack-low", "rp1-hal/debug-snapshot", "rp1-rt/debug-snapshot"]
@@ -32,6 +132,11 @@ debug-mailbox-layout = [
     "debug-stack-low",
     "rp1-hal/debug-mailbox-layout",
     "rp1-rt/debug-mailbox-layout",
+]
+debug-mailbox-layout-v1 = [
+    "debug-mailbox-layout",
+    "rp1-hal/debug-mailbox-layout-v1",
+    "rp1-rt/debug-mailbox-layout-v1",
 ]
 debug-mailbox-init = [
     "debug-mailbox-layout",

@@ -28,6 +28,13 @@ SECTIONS
     __ebss = .;
   } > RP1_APP_SRAM
 
+  .inbound_dummy_page (NOLOAD) : ALIGN(4096)
+  {
+    __inbound_dummy_page_start = .;
+    KEEP(*(.inbound_dummy_page));
+    __inbound_dummy_page_end = .;
+  } > RP1_APP_SRAM
+
   __image_end = .;
 
 }

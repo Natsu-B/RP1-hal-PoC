@@ -1,5 +1,10 @@
 pub const MAILBOX_ADDR: u32 = 0x2000_fc00;
 pub const MAILBOX_SIZE: usize = 1024;
+pub const COEXISTENCE_PRIVATE_SIZE: usize = 0x300;
+pub const OFFICIAL_MAILBOX_ADDR: u32 = 0x2000_ff00;
+pub const OFFICIAL_MAILBOX_SIZE: usize = 0x100;
+pub const OFFICIAL_MAILBOX_HEADER_SIZE: usize = 4;
+pub const OFFICIAL_MAILBOX_PAYLOAD_SIZE: usize = 252;
 pub const MAILBOX_DATA_LEN: usize = 256;
 pub const MAILBOX_REG_COUNT: usize = 18;
 
@@ -254,6 +259,19 @@ mod tests {
     #[test]
     fn mailbox_v1_layout_is_unchanged() {
         assert_eq!(core::mem::size_of::<DebugMailbox>(), 380);
+        assert!(core::mem::size_of::<DebugMailbox>() <= COEXISTENCE_PRIVATE_SIZE);
+        assert_eq!(
+            MAILBOX_ADDR + COEXISTENCE_PRIVATE_SIZE as u32,
+            OFFICIAL_MAILBOX_ADDR
+        );
+        assert_eq!(
+            OFFICIAL_MAILBOX_ADDR + OFFICIAL_MAILBOX_SIZE as u32,
+            0x2001_0000
+        );
+        assert_eq!(
+            OFFICIAL_MAILBOX_HEADER_SIZE + OFFICIAL_MAILBOX_PAYLOAD_SIZE,
+            OFFICIAL_MAILBOX_SIZE
+        );
         assert_eq!(core::mem::offset_of!(DebugMailbox, seq), 16);
         assert_eq!(core::mem::offset_of!(DebugMailbox, ack), 20);
         assert_eq!(core::mem::offset_of!(DebugMailbox, command), 32);
