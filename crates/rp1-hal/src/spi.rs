@@ -2,6 +2,9 @@ use crate::addr::SPI0_BASE;
 use crate::gpio::{ConfiguredPin, Function, Pin, configure_spi_cs_pin, configure_spi_data_pin};
 use crate::mmio::Reg;
 
+mod receive;
+pub use receive::{Spi0IrqTransfer, Spi0RxError, Spi0RxState};
+
 const CTRLR0: usize = 0x00;
 const SSIENR: usize = 0x08;
 const SER: usize = 0x10;
