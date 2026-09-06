@@ -1,8 +1,11 @@
 //! A bounded RXFI source observation, never an IRQ-handler or payload proof.
-use rp1_hal::spi::{Spi0Host, Spi0IrqSnapshot};
+use rp1_hal::spi::{Spi0Host, Spi0IrqSnapshot, Spi0IrqTransfer};
 use rp1_rt::Spi0IrqRouteSnapshot;
 
+#[cfg(not(feature = "spi0-rxfi-wrapper-readonly"))]
 const MAGIC: u32 = u32::from_le_bytes(*b"S0R1");
+#[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+const MAGIC: u32 = u32::from_le_bytes(*b"S0W1");
 const RXFI: u32 = 0x10;
 const ERRORS: u32 = 0x0e;
 const RX_MASK: u32 = RXFI | ERRORS;
@@ -37,6 +40,29 @@ fn configured(s: &Spi) -> bool {
     s.control == 7 << 16 && s.baud == 2_000 && s.rx_threshold == 0
 }
 
+fn prepared_state(s: &Spi) -> bool {
+    configured(s)
+        && s.irq.enable == 1
+        && s.selected == 0
+        && s.irq.interrupt_mask == 0
+        && s.irq.masked_interrupt_status == 0
+        && s.irq.raw_interrupt_status & (ERRORS | RXFI) == 0
+        && s.rx == 0
+        && s.irq.tx_fifo_level == 1
+}
+
+fn source_state(s: &Spi) -> bool {
+    configured(s)
+        && s.irq.enable == 1
+        && s.selected == 1
+        && s.irq.interrupt_mask == RX_MASK
+        && s.irq.raw_interrupt_status == RXFI | 1
+        && s.irq.masked_interrupt_status == RXFI
+        && s.rx == 1
+        && s.irq.tx_fifo_level == 0
+        && s.irq.status & 5 == 4
+}
+
 fn clean(s: &Spi) -> bool {
     s.irq.enable == 0
         && s.selected == 0
@@ -51,10 +77,36 @@ fn route_quiet(r: Spi0IrqRouteSnapshot) -> bool {
     r.iser0 == 0 && r.iser1 == 0 && r.iabr0 == 0 && r.iabr1 == 0
 }
 
+#[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+fn read_wrapper() -> u32 {
+    // Only the stock-consumer-aligned read, with no inferred bit semantics.
+    unsafe { core::ptr::read_volatile((rp1_hal::addr::SPI0_BASE + 0x108) as *const u32) }
+}
+
+#[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+fn wait_interval() -> bool {
+    const LOW: *const u32 = 0x400a_c028 as *const u32;
+    let start = unsafe { core::ptr::read_volatile(LOW) };
+    // A frozen timer must reach abort. An MMIO bus stall is outside this bound.
+    for _ in 0..1_000_000 {
+        if unsafe { core::ptr::read_volatile(LOW) }.wrapping_sub(start) >= OBSERVE_US as u32 {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
 pub fn publish_setup_error(code: u32) {
     let mut words = [0; 16];
     words[1] = code;
     publish(words);
+}
+
+fn abort_and_publish_error(transfer: &mut Spi0IrqTransfer<'_>, code: u32) -> u32 {
+    let code = if transfer.abort().is_ok() { code } else { 0x325 };
+    publish_setup_error(code);
+    code
 }
 
 pub fn run(host: &mut Spi0Host) -> u32 {
@@ -72,50 +124,70 @@ pub fn run(host: &mut Spi0Host) -> u32 {
         }
     };
     let prepared = snapshot();
-    let prepared_ok = configured(&prepared)
-        && prepared.irq.enable == 1
-        && prepared.selected == 0
-        && prepared.irq.interrupt_mask == 0
-        && prepared.irq.masked_interrupt_status == 0
-        && prepared.irq.raw_interrupt_status & (ERRORS | RXFI) == 0
-        && prepared.rx == 0
-        && prepared.irq.tx_fifo_level == 1;
+    let prepared_ok = prepared_state(&prepared);
     if !prepared_ok {
-        let code = if transfer.abort().is_ok() {
-            0x323
-        } else {
-            0x325
-        };
-        publish_setup_error(code);
-        return code;
+        return abort_and_publish_error(&mut transfer, 0x323);
     }
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    let wrapper_prepared = {
+        let value = read_wrapper();
+        if !prepared_state(&snapshot()) {
+            return abort_and_publish_error(&mut transfer, 0x350);
+        }
+        value
+    };
     if transfer.start().is_err() {
-        let code = if transfer.abort().is_ok() {
-            0x326
-        } else {
-            0x325
-        };
-        publish_setup_error(code);
-        return code;
+        return abort_and_publish_error(&mut transfer, 0x326);
     }
     unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
+    #[cfg(not(feature = "spi0-rxfi-wrapper-readonly"))]
     super::busy_wait_us(OBSERVE_US);
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    if !wait_interval() {
+        return abort_and_publish_error(&mut transfer, 0x351);
+    }
     let observed = snapshot();
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    let wrapper_active = {
+        if !source_state(&observed) {
+            return abort_and_publish_error(&mut transfer, 0x352);
+        }
+        let value = read_wrapper();
+        if !source_state(&snapshot()) {
+            return abort_and_publish_error(&mut transfer, 0x353);
+        }
+        value
+    };
     let during = rp1_rt::spi0_irq_route_snapshot();
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    if !route_quiet(during) || before.vtor != during.vtor || before.primask != during.primask {
+        return abort_and_publish_error(&mut transfer, 0x355);
+    }
     // Deliberately do not call on_interrupt or read DR: no payload claim.
     let abort_ok = transfer.abort().is_ok();
+    #[cfg(not(feature = "spi0-rxfi-wrapper-readonly"))]
     drop(transfer);
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    if !abort_ok {
+        publish_setup_error(0x325);
+        return 0x325;
+    }
     let final_spi = snapshot();
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    let wrapper_final = {
+        if !clean(&final_spi) {
+            return abort_and_publish_error(&mut transfer, 0x354);
+        }
+        read_wrapper()
+    };
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    let final_spi = snapshot();
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    if !clean(&final_spi) {
+        return abort_and_publish_error(&mut transfer, 0x354);
+    }
     let after = rp1_rt::spi0_irq_route_snapshot();
-    let source_ok = configured(&observed)
-        && observed.irq.enable == 1
-        && observed.selected == 1
-        && observed.irq.interrupt_mask == RX_MASK
-        && observed.irq.raw_interrupt_status == RXFI | 1
-        && observed.irq.masked_interrupt_status == RXFI
-        && observed.rx == 1
-        && observed.irq.tx_fifo_level == 0
-        && observed.irq.status & 5 == 4;
+    let source_ok = source_state(&observed);
     let routes_ok = route_quiet(during) && route_quiet(after);
     let context_ok = before.vtor == during.vtor
         && before.vtor == after.vtor
@@ -127,7 +199,19 @@ pub fn run(host: &mut Spi0Host) -> u32 {
         | ((clean(&final_spi) as u32) << 3)
         | ((routes_ok as u32) << 4)
         | ((context_ok as u32) << 5);
+    #[cfg(not(feature = "spi0-rxfi-wrapper-readonly"))]
     let decision = if flags == 0x3f { 1 } else { 0x324 };
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    if flags != 0x3f {
+        return abort_and_publish_error(&mut transfer, 0x355);
+    }
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    drop(transfer);
+    // Reaching here proves every guarded recheck and the bounded wait completed.
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    let flags = flags | (1 << 6) | (1 << 7);
+    #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+    let decision = 1;
     let words = [
         0,
         decision,
@@ -139,9 +223,18 @@ pub fn run(host: &mut Spi0Host) -> u32 {
         after.ispr1,
         before.iser0 | before.iser1 | during.iser0 | during.iser1 | after.iser0 | after.iser1,
         before.iabr0 | before.iabr1 | during.iabr0 | during.iabr1 | after.iabr0 | after.iabr1,
+        #[cfg(not(feature = "spi0-rxfi-wrapper-readonly"))]
         observed.irq.interrupt_mask,
+        #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+        wrapper_prepared,
+        #[cfg(not(feature = "spi0-rxfi-wrapper-readonly"))]
         observed.irq.raw_interrupt_status,
+        #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+        wrapper_active,
+        #[cfg(not(feature = "spi0-rxfi-wrapper-readonly"))]
         observed.irq.masked_interrupt_status,
+        #[cfg(feature = "spi0-rxfi-wrapper-readonly")]
+        wrapper_final,
         observed.rx,
         final_spi.irq.interrupt_mask
             | final_spi.irq.masked_interrupt_status
