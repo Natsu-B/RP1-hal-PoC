@@ -116,6 +116,7 @@ uart0-rx-irq = ["uart0-polled-rx", "rp1-rt/uart0-rx-irq"]
 pwm-gpio12-proof = ["pll-sys-core-lock-only"]
 pwm0-local-irq-proof = ["pwm-gpio12-proof", "rp1-rt/pwm0-local-irq"]
 spi0-local-irq-proof = ["spi0-reset-only", "rp1-rt/spi0-local-irq"]
+spi0-rxfi-passive-scout = ["spi0-local-irq-bank1-passive-scout"]
 spi0-local-irq-bank1-passive-scout = [
     "spi0-reset-only",
     "rp1-rt/spi0-local-irq-bank1-passive-scout",

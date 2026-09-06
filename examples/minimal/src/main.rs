@@ -29,6 +29,9 @@ mod adc_one_shot;
 ))]
 mod i2s_readonly;
 
+#[cfg(all(target_arch = "arm", feature = "spi0-rxfi-passive-scout"))]
+mod spi0_rxfi_passive_scout;
+
 #[cfg(all(
     feature = "rp1-clock-independence-proof",
     feature = "inbound-monitor-block-proof"
@@ -6097,7 +6100,11 @@ mod spi0_local_irq_proof {
     }
 }
 
-#[cfg(all(target_arch = "arm", feature = "spi0-local-irq-bank1-passive-scout"))]
+#[cfg(all(
+    target_arch = "arm",
+    feature = "spi0-local-irq-bank1-passive-scout",
+    not(feature = "spi0-rxfi-passive-scout")
+))]
 mod spi0_local_irq_bank1_passive_scout {
     const MAGIC: u32 = u32::from_le_bytes(*b"S0P1");
     const PASS: u32 = 1;
@@ -11011,10 +11018,30 @@ fn main(mut p: Peripherals) -> ! {
                     pulse_width(&mut gpio22, if decision == 1 { 409 } else { 537 });
                     quiet_stop();
                 }
-                #[cfg(feature = "spi0-local-irq-bank1-passive-scout")]
+                #[cfg(all(
+                    feature = "spi0-local-irq-bank1-passive-scout",
+                    not(feature = "spi0-rxfi-passive-scout")
+                ))]
                 {
                     let decision = spi0_local_irq_bank1_passive_scout::run(&mut p.spi0);
                     pulse_width(&mut gpio22, if decision == 1 { 411 } else { 539 });
+                    quiet_stop();
+                }
+                #[cfg(feature = "spi0-rxfi-passive-scout")]
+                {
+                    let decision = match p.spi0.into_host_mode0_100khz(
+                        p.gpio.pin::<8>(),
+                        p.gpio.pin::<9>(),
+                        p.gpio.pin::<10>(),
+                        p.gpio.pin::<11>(),
+                    ) {
+                        Ok(mut host) => spi0_rxfi_passive_scout::run(&mut host),
+                        Err(_) => {
+                            spi0_rxfi_passive_scout::publish_setup_error(0x320);
+                            0x320
+                        }
+                    };
+                    pulse_width(&mut gpio22, if decision == 1 { 413 } else { 541 });
                     quiet_stop();
                 }
                 #[cfg(not(any(
