@@ -32,6 +32,15 @@ mod i2s_readonly;
 #[cfg(all(target_arch = "arm", feature = "spi0-rxfi-passive-scout"))]
 mod spi0_rxfi_passive_scout;
 
+#[cfg(all(target_arch = "arm", feature = "spi0-nvic53-latch-scout"))]
+mod spi0_nvic53_latch_scout;
+
+#[cfg(all(
+    feature = "spi0-rxfi-passive-scout",
+    feature = "spi0-nvic53-latch-scout"
+))]
+compile_error!("RXFI and pending-latch scouts require separate cohorts");
+
 #[cfg(all(
     feature = "rp1-clock-independence-proof",
     feature = "inbound-monitor-block-proof"
@@ -6103,7 +6112,10 @@ mod spi0_local_irq_proof {
 #[cfg(all(
     target_arch = "arm",
     feature = "spi0-local-irq-bank1-passive-scout",
-    not(feature = "spi0-rxfi-passive-scout")
+    not(any(
+        feature = "spi0-rxfi-passive-scout",
+        feature = "spi0-nvic53-latch-scout"
+    ))
 ))]
 mod spi0_local_irq_bank1_passive_scout {
     const MAGIC: u32 = u32::from_le_bytes(*b"S0P1");
@@ -11020,11 +11032,31 @@ fn main(mut p: Peripherals) -> ! {
                 }
                 #[cfg(all(
                     feature = "spi0-local-irq-bank1-passive-scout",
-                    not(feature = "spi0-rxfi-passive-scout")
+                    not(any(
+                        feature = "spi0-rxfi-passive-scout",
+                        feature = "spi0-nvic53-latch-scout"
+                    ))
                 ))]
                 {
                     let decision = spi0_local_irq_bank1_passive_scout::run(&mut p.spi0);
                     pulse_width(&mut gpio22, if decision == 1 { 411 } else { 539 });
+                    quiet_stop();
+                }
+                #[cfg(feature = "spi0-nvic53-latch-scout")]
+                {
+                    let decision = match p.spi0.into_host_mode0_100khz(
+                        p.gpio.pin::<8>(),
+                        p.gpio.pin::<9>(),
+                        p.gpio.pin::<10>(),
+                        p.gpio.pin::<11>(),
+                    ) {
+                        Ok(_host) => spi0_nvic53_latch_scout::run(),
+                        Err(_) => {
+                            spi0_nvic53_latch_scout::publish_setup_error(0x330);
+                            0x330
+                        }
+                    };
+                    pulse_width(&mut gpio22, if decision == 1 { 415 } else { 543 });
                     quiet_stop();
                 }
                 #[cfg(feature = "spi0-rxfi-passive-scout")]
