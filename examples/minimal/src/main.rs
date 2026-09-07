@@ -42,12 +42,69 @@ mod spi0_nvic53_latch_scout;
 #[cfg(feature = "spi0-irq19-one-entry-rx-proof")]
 mod spi0_irq19_one_entry_rx_proof;
 
+#[cfg(feature = "spi0-timed-peer-zero-irq-proof")]
+mod spi0_timed_peer_zero_irq_proof;
+
 #[cfg(any(
     feature = "spi0-miso-input-observation",
     feature = "spi0-miso-configured-hold",
-    feature = "spi0-miso-guarded-input-bias"
+    feature = "spi0-miso-guarded-input-bias",
+    feature = "spi0-timed-peer-zero-irq-proof"
 ))]
 mod spi0_miso_input_observation;
+
+#[cfg(all(
+    feature = "spi0-timed-peer-zero-irq-proof",
+    any(
+        feature = "spi0-miso-input-observation",
+        feature = "spi0-miso-configured-hold",
+        feature = "spi0-miso-guarded-input-bias",
+        feature = "gpio22-start-proof",
+        feature = "inbound-monitor-block-proof",
+        feature = "cortex-m3-option-proof",
+        feature = "boot-rom-readonly-proof",
+        feature = "boot-rom-boundary-proof",
+        feature = "proc1-boot-rom-proof",
+        feature = "dual-core-memory-proof",
+        feature = "proc-local-memory-proof",
+        feature = "expected-fault-recovery-proof",
+        feature = "rp1-axi-dmac-identity-readonly-proof",
+        feature = "rp1-axi-dmac-reset-state-readonly-proof",
+        feature = "rp1-axi-dmac-active-identity-proof",
+        feature = "rp1-axi-dmac-internal-reset-identity-proof",
+        feature = "rp1-axi-dmac-global-enable-identity-proof",
+        feature = "shared-sram-bitband-proof",
+        feature = "internal-memory-boundary-read-proof",
+        feature = "shared-sram-64k-mirror-readonly-proof",
+        feature = "shared-sram-alias-window-extent-readonly-proof",
+        feature = "shared-sram-system-region-alias-readonly-proof",
+        feature = "mpu-fault-enforcement-proof",
+        feature = "raw-timer-proof",
+        feature = "watchdog-proof",
+        feature = "watchdog-scratch-proof",
+        feature = "watchdog-expiry-reason-proof",
+        feature = "rp1-adc-one-shot-proof",
+        feature = "rp1-i2s-readonly-prerequisite-snapshot",
+        feature = "timer-register-proof",
+        feature = "timer-writable-time-proof",
+        feature = "timer0-inte-ints-proof",
+        feature = "timer0-alarm0-local-irq26-candidate",
+        feature = "uart-reset-irq-map-proof",
+        feature = "uart1-local-nvic42-delivery",
+        feature = "uart2-local-nvic43-delivery",
+        feature = "uart3-local-nvic44-delivery",
+        feature = "uart4-local-nvic45-delivery",
+        feature = "uart5-local-nvic46-delivery",
+        feature = "uart0-reset-only",
+        feature = "pwm-gpio12-proof",
+        feature = "i2c1-reset-only",
+        feature = "gpio-wiring-proof",
+        feature = "debug-mailbox-ping",
+        feature = "debug-stub",
+        feature = "debug-mailbox-layout-v1"
+    )
+))]
+compile_error!("spi0-timed-peer-zero-irq-proof cannot share another GPIO/mailbox/terminal proof");
 
 #[cfg(all(
     feature = "spi0-miso-guarded-input-bias",
@@ -424,6 +481,7 @@ fn delay_readback_units(units: u32) {
 }
 
 #[cfg(target_arch = "arm")]
+#[inline(never)] // Keep every marker on the same dynamic loop; constant inlining changes unrolling/timing.
 fn pulse_width(pin: &mut ConfiguredPin<22, Output>, units: u32) {
     pin.set_high();
     delay_readback_units(units);
@@ -11118,6 +11176,29 @@ fn main(mut p: Peripherals) -> ! {
                         quiet_stop();
                     }
                 }
+                #[cfg(feature = "spi0-timed-peer-zero-irq-proof")]
+                {
+                    match p.spi0.into_host_mode0_100khz(
+                        p.gpio.pin::<8>(),
+                        p.gpio.pin::<9>(),
+                        p.gpio.pin::<10>(),
+                        p.gpio.pin::<11>(),
+                    ) {
+                        Ok(mut host) => {
+                            let decision = spi0_timed_peer_zero_irq_proof::run(&mut host, || {
+                                pulse_width(&mut gpio22, 425);
+                            });
+                            pulse_width(&mut gpio22, if decision == 1 { 427 } else { 555 });
+                            // Retain guarded host/pins on every outcome, including timeout.
+                            quiet_stop();
+                        }
+                        Err(_) => {
+                            spi0_timed_peer_zero_irq_proof::publish_setup_error();
+                            pulse_width(&mut gpio22, 555);
+                            quiet_stop();
+                        }
+                    }
+                }
                 #[cfg(feature = "spi0-miso-guarded-input-bias")]
                 {
                     let mut observation = spi0_miso_input_observation::Snapshot::new();
@@ -11213,7 +11294,10 @@ fn main(mut p: Peripherals) -> ! {
                     pulse_width(&mut gpio22, if decision == 1 { 415 } else { 543 });
                     quiet_stop();
                 }
-                #[cfg(feature = "spi0-irq19-one-entry-rx-proof")]
+                #[cfg(all(
+                    feature = "spi0-irq19-one-entry-rx-proof",
+                    not(feature = "spi0-timed-peer-zero-irq-proof")
+                ))]
                 {
                     #[cfg(feature = "spi0-miso-input-observation")]
                     let mut observation = spi0_miso_input_observation::Snapshot::new();

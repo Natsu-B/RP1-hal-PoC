@@ -128,12 +128,12 @@ pub fn publish_hold(setup_ok: bool, snapshot: Snapshot) -> bool {
 #[cfg(feature = "spi0-miso-guarded-input-bias")]
 pub const BIAS_MAGIC: u32 = u32::from_le_bytes(*b"S0B1");
 
-#[cfg(feature = "spi0-miso-guarded-input-bias")]
+#[cfg(any(feature = "spi0-miso-guarded-input-bias", feature = "spi0-timed-peer-zero-irq-proof"))]
 fn input_route_disabled(regs: [u32; REG_COUNT]) -> bool {
     regs[0] == 0x80 && regs[2] & (1 << 13) == 0 && regs[3] & (1 << 9) == 0
 }
 
-#[cfg(feature = "spi0-miso-guarded-input-bias")]
+#[cfg(any(feature = "spi0-miso-guarded-input-bias", feature = "spi0-timed-peer-zero-irq-proof"))]
 fn guarded_pad(regs: [u32; REG_COUNT]) -> Option<u32> {
     if !input_route_disabled(regs) || regs[1] & 0xff != 0x73 {
         return None;
@@ -143,7 +143,7 @@ fn guarded_pad(regs: [u32; REG_COUNT]) -> Option<u32> {
     Some((regs[1] & !(1 << 2)) | (1 << 7) | (1 << 6) | (1 << 3))
 }
 
-#[cfg(all(target_arch = "arm", feature = "spi0-miso-guarded-input-bias"))]
+#[cfg(all(target_arch = "arm", any(feature = "spi0-miso-guarded-input-bias", feature = "spi0-timed-peer-zero-irq-proof")))]
 #[inline(never)]
 pub fn apply_guarded_bias() -> Result<u32, u32> {
     let expected_pad = guarded_pad(read_observation_regs()).ok_or(0x391u32)?;
