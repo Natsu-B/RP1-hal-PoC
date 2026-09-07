@@ -125,15 +125,158 @@ pub fn publish_hold(setup_ok: bool, snapshot: Snapshot) -> bool {
     words[12] == 1
 }
 
+#[cfg(feature = "spi0-miso-guarded-input-bias")]
+pub const BIAS_MAGIC: u32 = u32::from_le_bytes(*b"S0B1");
+
+#[cfg(feature = "spi0-miso-guarded-input-bias")]
+fn input_route_disabled(regs: [u32; REG_COUNT]) -> bool {
+    regs[0] == 0x80 && regs[2] & (1 << 13) == 0 && regs[3] & (1 << 9) == 0
+}
+
+#[cfg(feature = "spi0-miso-guarded-input-bias")]
+fn guarded_pad(regs: [u32; REG_COUNT]) -> Option<u32> {
+    if !input_route_disabled(regs) || regs[1] & 0xff != 0x73 {
+        return None;
+    }
+    // Existing GPIO input_pull_up contract: OD=1, IE=1, PUE=1, PDE=0.
+    // Preserve drive strength, Schmitt, slew and all fields outside this mask.
+    Some((regs[1] & !(1 << 2)) | (1 << 7) | (1 << 6) | (1 << 3))
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-miso-guarded-input-bias"))]
+#[inline(never)]
+pub fn apply_guarded_bias() -> Result<u32, u32> {
+    let expected_pad = guarded_pad(read_observation_regs()).ok_or(0x391u32)?;
+    const GPIO9_PAD: *mut u32 = 0x400f_0028 as *mut u32;
+    unsafe {
+        core::ptr::write_volatile(GPIO9_PAD, expected_pad);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    Ok(expected_pad)
+}
+
+#[cfg(feature = "spi0-miso-guarded-input-bias")]
+pub fn bias_readback_decision(expected_pad: u32, snapshot: Snapshot) -> u32 {
+    if snapshot.valid != 0b111 {
+        0x393 // INCOMPLETE_SNAPSHOT
+    } else if guarded_pad(snapshot.regs[1]) != Some(expected_pad)
+        || !input_route_disabled(snapshot.regs[2])
+        || snapshot.regs[2][1] != expected_pad
+    {
+        0x392 // GUARD_READBACK_FAILED (includes changes outside the allowed PAD mask)
+    } else {
+        1 // GUARD_READY: configuration/readback only, never a required input HIGH.
+    }
+}
+
+#[cfg(feature = "spi0-miso-guarded-input-bias")]
+pub fn pack_bias(decision: u32, snapshot: Snapshot) -> [u32; WORDS] {
+    let decision = if decision == 1 && snapshot.valid != 0b111 {
+        0x393
+    } else {
+        decision
+    };
+    let mut words = pack(decision, snapshot);
+    words[0] = BIAS_MAGIC;
+    words
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-miso-guarded-input-bias"))]
+pub fn publish_bias(decision: u32, snapshot: Snapshot) -> bool {
+    const _: () = assert!(WORDS * 4 <= rp1_hal::debug::MAILBOX_SIZE);
+    let out = rp1_hal::debug::MAILBOX_ADDR as *mut u32;
+    let words = pack_bias(decision, snapshot);
+    unsafe {
+        core::ptr::write_volatile(out, 0);
+        for (i, word) in words.iter().enumerate().skip(1) {
+            core::ptr::write_volatile(out.add(i), *word);
+        }
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        core::ptr::write_volatile(out, words[0]);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    words[2] == 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "spi0-miso-guarded-input-bias")]
+    #[test]
+    fn bias_guard_and_schema_require_all_stages_without_requiring_high() {
+        let normal = [0x80, 0xabcd_0073, 0x0440_0000, 0x0040_0000];
+        let expected = guarded_pad(normal).unwrap();
+        assert_eq!(expected, 0xabcd_00fb);
+        assert_eq!((expected ^ normal[1]) & !0xcc, 0);
+        for (reg, bit) in [
+            (0, 0),
+            (0, 12),
+            (1, 2),
+            (1, 3),
+            (1, 6),
+            (1, 7),
+            (2, 13),
+            (3, 9),
+        ] {
+            let mut unexpected = normal;
+            unexpected[reg] ^= 1 << bit;
+            assert_eq!(guarded_pad(unexpected), None);
+        }
+        let mut snapshot = Snapshot::new();
+        assert_eq!(
+            &pack_bias(0x390, snapshot)[0..4],
+            &[BIAS_MAGIC, 1, 0x390, 0]
+        );
+        assert_eq!(&pack_bias(0x391, snapshot)[4..], &[UNAVAILABLE; 12]);
+        assert_eq!(pack_bias(1, snapshot)[2], 0x393);
+        snapshot.record(0, [0x9f, 0x96, 0x0440_0000, 0x0040_0000]);
+        snapshot.record(1, normal);
+        assert_eq!(bias_readback_decision(expected, snapshot), 0x393);
+        assert_eq!(&pack_bias(0x391, snapshot)[12..], &[UNAVAILABLE; 4]);
+        let mut guarded = normal;
+        guarded[1] = expected;
+        for level in [0, (1 << 17) | (1 << 18) | (1 << 19)] {
+            guarded[2] = 0x0440_0000 | level;
+            snapshot.record(2, guarded);
+            assert_eq!(bias_readback_decision(expected, snapshot), 1);
+            let words = pack_bias(1, snapshot);
+            assert_eq!(&words[0..4], &[0x3142_3053, VERSION, 1, 7]);
+            assert_eq!(&words[4..], &pack(1, snapshot)[4..]);
+            assert_ne!(words[0], MAGIC);
+        }
+        for (reg, bit) in [
+            (0, 0),
+            (1, 0),
+            (1, 2),
+            (1, 3),
+            (1, 6),
+            (1, 7),
+            (1, 31),
+            (2, 13),
+            (3, 9),
+        ] {
+            let mut unexpected = guarded;
+            unexpected[reg] ^= 1 << bit;
+            snapshot.record(2, unexpected);
+            assert_eq!(bias_readback_decision(expected, snapshot), 0x392);
+        }
+        snapshot.record(2, guarded);
+        assert_eq!(
+            bias_readback_decision(expected ^ (1 << 31), snapshot),
+            0x392
+        );
+        assert_eq!(pack_bias(0x390, snapshot)[2], 0x390);
+    }
 
     #[cfg(feature = "spi0-miso-configured-hold")]
     #[test]
     fn hold_schema_never_promotes_missing_or_extra_stages_to_ready() {
         let mut snapshot = Snapshot::new();
-        assert_eq!(&pack_hold(false, snapshot)[0..4], &[HOLD_MAGIC, 1, 0x380, 0]);
+        assert_eq!(
+            &pack_hold(false, snapshot)[0..4],
+            &[HOLD_MAGIC, 1, 0x380, 0]
+        );
         assert_eq!(pack_hold(true, snapshot)[2], 0x381);
         snapshot.record(0, [0x9f, 0x96, 0x0440_0000, 0x0040_0000]);
         assert_eq!(pack_hold(true, snapshot)[12], 0);

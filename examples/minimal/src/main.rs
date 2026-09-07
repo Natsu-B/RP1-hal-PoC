@@ -44,9 +44,64 @@ mod spi0_irq19_one_entry_rx_proof;
 
 #[cfg(any(
     feature = "spi0-miso-input-observation",
-    feature = "spi0-miso-configured-hold"
+    feature = "spi0-miso-configured-hold",
+    feature = "spi0-miso-guarded-input-bias"
 ))]
 mod spi0_miso_input_observation;
+
+#[cfg(all(
+    feature = "spi0-miso-guarded-input-bias",
+    any(
+        feature = "spi0-miso-configured-hold",
+        feature = "spi0-host-proof",
+        feature = "spi0-local-irq-proof",
+        feature = "spi0-local-irq-bank1-passive-scout",
+        feature = "gpio22-start-proof",
+        feature = "inbound-monitor-block-proof",
+        feature = "cortex-m3-option-proof",
+        feature = "boot-rom-readonly-proof",
+        feature = "boot-rom-boundary-proof",
+        feature = "proc1-boot-rom-proof",
+        feature = "dual-core-memory-proof",
+        feature = "proc-local-memory-proof",
+        feature = "expected-fault-recovery-proof",
+        feature = "rp1-axi-dmac-identity-readonly-proof",
+        feature = "rp1-axi-dmac-reset-state-readonly-proof",
+        feature = "rp1-axi-dmac-active-identity-proof",
+        feature = "rp1-axi-dmac-internal-reset-identity-proof",
+        feature = "rp1-axi-dmac-global-enable-identity-proof",
+        feature = "shared-sram-bitband-proof",
+        feature = "internal-memory-boundary-read-proof",
+        feature = "shared-sram-64k-mirror-readonly-proof",
+        feature = "shared-sram-alias-window-extent-readonly-proof",
+        feature = "shared-sram-system-region-alias-readonly-proof",
+        feature = "mpu-fault-enforcement-proof",
+        feature = "raw-timer-proof",
+        feature = "watchdog-proof",
+        feature = "watchdog-scratch-proof",
+        feature = "watchdog-expiry-reason-proof",
+        feature = "rp1-adc-one-shot-proof",
+        feature = "rp1-i2s-readonly-prerequisite-snapshot",
+        feature = "timer-register-proof",
+        feature = "timer-writable-time-proof",
+        feature = "timer0-inte-ints-proof",
+        feature = "timer0-alarm0-local-irq26-candidate",
+        feature = "uart-reset-irq-map-proof",
+        feature = "uart1-local-nvic42-delivery",
+        feature = "uart2-local-nvic43-delivery",
+        feature = "uart3-local-nvic44-delivery",
+        feature = "uart4-local-nvic45-delivery",
+        feature = "uart5-local-nvic46-delivery",
+        feature = "uart0-reset-only",
+        feature = "pwm-gpio12-proof",
+        feature = "i2c1-reset-only",
+        feature = "gpio-wiring-proof",
+        feature = "debug-mailbox-ping",
+        feature = "debug-stub",
+        feature = "debug-mailbox-layout-v1"
+    )
+))]
+compile_error!("spi0-miso-guarded-input-bias cannot share another SPI/HOLD/terminal proof");
 
 #[cfg(all(
     feature = "spi0-miso-configured-hold",
@@ -11063,6 +11118,42 @@ fn main(mut p: Peripherals) -> ! {
                         quiet_stop();
                     }
                 }
+                #[cfg(feature = "spi0-miso-guarded-input-bias")]
+                {
+                    let mut observation = spi0_miso_input_observation::Snapshot::new();
+                    spi0_miso_input_observation::record(&mut observation, 0);
+                    match p.spi0.into_host_mode0_100khz(
+                        p.gpio.pin::<8>(),
+                        p.gpio.pin::<9>(),
+                        p.gpio.pin::<10>(),
+                        p.gpio.pin::<11>(),
+                    ) {
+                        Ok(_host) => {
+                            spi0_miso_input_observation::record(&mut observation, 1);
+                            let decision = match spi0_miso_input_observation::apply_guarded_bias() {
+                                Ok(expected_pad) => {
+                                    delay_readback_units(8); // Bounded settling, not a HIGH poll.
+                                    spi0_miso_input_observation::record(&mut observation, 2);
+                                    spi0_miso_input_observation::bias_readback_decision(
+                                        expected_pad,
+                                        observation,
+                                    )
+                                }
+                                Err(decision) => decision,
+                            };
+                            let ready =
+                                spi0_miso_input_observation::publish_bias(decision, observation);
+                            pulse_width(&mut gpio22, if ready { 423 } else { 551 });
+                            // Retain the host/pins; no transfer, ACK gate or ownership handoff.
+                            quiet_stop();
+                        }
+                        Err(_) => {
+                            spi0_miso_input_observation::publish_bias(0x390, observation);
+                            pulse_width(&mut gpio22, 551);
+                            quiet_stop();
+                        }
+                    }
+                }
                 #[cfg(feature = "spi0-miso-configured-hold")]
                 {
                     let mut observation = spi0_miso_input_observation::Snapshot::new();
@@ -11182,6 +11273,7 @@ fn main(mut p: Peripherals) -> ! {
                 }
                 #[cfg(not(any(
                     feature = "spi0-miso-configured-hold",
+                    feature = "spi0-miso-guarded-input-bias",
                     feature = "spi0-host-proof",
                     feature = "spi0-local-irq-proof",
                     feature = "spi0-local-irq-bank1-passive-scout"
