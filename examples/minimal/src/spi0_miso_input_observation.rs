@@ -133,6 +133,7 @@ pub const BIAS_MAGIC: u32 = u32::from_le_bytes(*b"S0B1");
     feature = "spi0-timed-peer-zero-irq-proof",
     feature = "spi0-low-high-irq-rearm-proof",
     feature = "spi0-retained-rx-ser-proof",
+    feature = "spi0-rx-overflow-irq-proof",
     feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
 ))]
 fn input_route_disabled(regs: [u32; REG_COUNT]) -> bool {
@@ -144,6 +145,7 @@ fn input_route_disabled(regs: [u32; REG_COUNT]) -> bool {
     feature = "spi0-timed-peer-zero-irq-proof",
     feature = "spi0-low-high-irq-rearm-proof",
     feature = "spi0-retained-rx-ser-proof",
+    feature = "spi0-rx-overflow-irq-proof",
     feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
 ))]
 fn guarded_pad(regs: [u32; REG_COUNT]) -> Option<u32> {
@@ -162,6 +164,7 @@ fn guarded_pad(regs: [u32; REG_COUNT]) -> Option<u32> {
         feature = "spi0-timed-peer-zero-irq-proof",
         feature = "spi0-low-high-irq-rearm-proof",
         feature = "spi0-retained-rx-ser-proof",
+        feature = "spi0-rx-overflow-irq-proof",
         feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
     )
 ))]

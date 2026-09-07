@@ -94,7 +94,7 @@ static HANDLER_ROUTE: AtomicU32 = AtomicU32::new(UNAVAILABLE);
 static HANDLER_ERROR: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_arch = "arm")]
-struct TransferSlot {
+pub(super) struct TransferSlot {
     ptr: UnsafeCell<usize>,
     armed: AtomicU32,
 }
@@ -104,7 +104,7 @@ unsafe impl Sync for TransferSlot {}
 
 #[cfg(target_arch = "arm")]
 impl TransferSlot {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             ptr: UnsafeCell::new(0),
             armed: AtomicU32::new(0),
@@ -115,19 +115,19 @@ impl TransferSlot {
     /// or access the transfer. Host, TX/RX buffers and the transfer live until
     /// IRQ19 is masked, barriers complete, and `withdraw()` runs. The ISR is
     /// the only mutator during that interval; it masks IRQ19 before service.
-    unsafe fn publish(&self, transfer: &mut rp1_hal::spi::Spi0IrqTransfer<'_>) {
+    pub(super) unsafe fn publish(&self, transfer: &mut rp1_hal::spi::Spi0IrqTransfer<'_>) {
         unsafe { *self.ptr.get() = transfer as *mut _ as usize };
         compiler_fence(Ordering::Release);
         self.armed.store(1, Ordering::Release);
     }
 
-    unsafe fn withdraw(&self) {
+    pub(super) unsafe fn withdraw(&self) {
         self.armed.store(0, Ordering::Release);
         compiler_fence(Ordering::SeqCst);
         unsafe { *self.ptr.get() = 0 };
     }
 
-    unsafe fn get_for_isr(&self) -> Option<*mut rp1_hal::spi::Spi0IrqTransfer<'_>> {
+    pub(super) unsafe fn get_for_isr(&self) -> Option<*mut rp1_hal::spi::Spi0IrqTransfer<'_>> {
         if self.armed.load(Ordering::Acquire) != 1 {
             return None;
         }
@@ -436,6 +436,11 @@ fn state_code(state: rp1_hal::spi::Spi0RxState) -> u32 {
 #[cfg(target_arch = "arm")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SPI0_IRQHandler() {
+    #[cfg(feature = "spi0-rx-overflow-irq-proof")]
+    if crate::spi0_rx_overflow_irq_proof::error_round_active() {
+        unsafe { crate::spi0_rx_overflow_irq_proof::on_irq() };
+        return;
+    }
     let ipsr: u32;
     unsafe {
         core::arch::asm!("mrs {}, IPSR", out(reg) ipsr, options(nomem, nostack, preserves_flags));
@@ -485,7 +490,7 @@ pub fn publish_setup_error(code: u32) {
     publish(code, t);
 }
 
-#[cfg(all(target_arch = "arm", not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof"))))]
+#[cfg(all(target_arch = "arm", not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof"))))]
 pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     run_with_wrapper::<false>(host)
 }
@@ -493,6 +498,11 @@ pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
 #[cfg(all(target_arch = "arm", feature = "spi0-retained-rx-ser-proof"))]
 pub fn run_retained_rearm(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8; 1]) -> u32 {
     run_with_wrapper::<false>(host, rx)
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-rx-overflow-irq-proof"))]
+pub fn run_overflow_rearm(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8; 1]) -> u32 {
+    run_with_wrapper::<true>(host, rx)
 }
 
 #[cfg(all(
@@ -519,7 +529,7 @@ pub fn run_fifo_high(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8]) -> u32 {
 fn run_with_wrapper<const REARMED: bool>(
     host: &mut rp1_hal::spi::Spi0Host,
     #[cfg(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))] rx: &mut [u8],
-    #[cfg(feature = "spi0-retained-rx-ser-proof")] rx: &mut [u8; 1],
+    #[cfg(any(feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof"))] rx: &mut [u8; 1],
 ) -> u32 {
     unsafe { SLOT.withdraw() };
     COUNT.store(0, Ordering::Relaxed);
@@ -551,14 +561,14 @@ fn run_with_wrapper<const REARMED: bool>(
     };
     t.flags |= FLAG_PREPARED;
 
-    #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof")))]
+    #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof")))]
     let mut rx = [0; 1];
     let mut transfer = match {
-        #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof")))]
+        #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof")))]
         {
             host.prepare_irq_transfer(&[0xa5], &mut rx)
         }
-        #[cfg(feature = "spi0-retained-rx-ser-proof")]
+        #[cfg(any(feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof"))]
         {
             host.prepare_irq_transfer(&[0xa5], rx)
         }
