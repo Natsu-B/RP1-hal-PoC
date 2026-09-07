@@ -423,6 +423,17 @@ pub fn publish_setup_error(code: u32) {
 
 #[cfg(target_arch = "arm")]
 pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
+    run_with_wrapper::<false>(host)
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-low-high-irq-rearm-proof"))]
+pub fn run_rearmed(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
+    run_with_wrapper::<true>(host)
+}
+
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+fn run_with_wrapper<const REARMED: bool>(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     unsafe { SLOT.withdraw() };
     COUNT.store(0, Ordering::Relaxed);
     FIRST_IPSR.store(0, Ordering::Relaxed);
@@ -465,15 +476,17 @@ pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     t.wrapper_pre = read_wrapper();
     t.stage = 1;
     publish(FAIL_SETUP, t);
-    if t.wrapper_pre != 0 {
+    if t.wrapper_pre != REARMED as u32 {
         let code = abort_record(&mut transfer, FAIL_WRAPPER_PRE);
         unsafe { rp1_rt::restore_spi0_irq19_one_entry(saved) };
         t.final_route = route_pack(rp1_rt::spi0_irq_route_snapshot());
         return publish(code, t);
     }
-    unsafe {
-        core::ptr::write_volatile((rp1_hal::addr::SPI0_BASE + 0x108) as *mut u32, 1);
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    if !REARMED {
+        unsafe {
+            core::ptr::write_volatile((rp1_hal::addr::SPI0_BASE + 0x108) as *mut u32, 1);
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
     }
     t.stage = 2;
     publish(FAIL_SETUP, t);
@@ -559,7 +572,7 @@ pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     } else if !finish_ok {
         FAIL_FINISH
     } else if t.flags & PASS_FLAGS == PASS_FLAGS
-        && t.wrapper_pre == 0
+        && t.wrapper_pre == REARMED as u32
         && t.wrapper_post == 1
         && t.wrapper_final == 1
         && COUNT.load(Ordering::Relaxed) == 1

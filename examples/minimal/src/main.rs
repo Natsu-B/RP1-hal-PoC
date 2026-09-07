@@ -45,16 +45,23 @@ mod spi0_irq19_one_entry_rx_proof;
 #[cfg(feature = "spi0-timed-peer-zero-irq-proof")]
 mod spi0_timed_peer_zero_irq_proof;
 
+#[cfg(feature = "spi0-low-high-irq-rearm-proof")]
+mod spi0_low_high_irq_rearm_proof;
+
 #[cfg(any(
     feature = "spi0-miso-input-observation",
     feature = "spi0-miso-configured-hold",
     feature = "spi0-miso-guarded-input-bias",
-    feature = "spi0-timed-peer-zero-irq-proof"
+    feature = "spi0-timed-peer-zero-irq-proof",
+    feature = "spi0-low-high-irq-rearm-proof"
 ))]
 mod spi0_miso_input_observation;
 
 #[cfg(all(
-    feature = "spi0-timed-peer-zero-irq-proof",
+    any(
+        feature = "spi0-timed-peer-zero-irq-proof",
+        feature = "spi0-low-high-irq-rearm-proof"
+    ),
     any(
         feature = "spi0-miso-input-observation",
         feature = "spi0-miso-configured-hold",
@@ -104,7 +111,10 @@ mod spi0_miso_input_observation;
         feature = "debug-mailbox-layout-v1"
     )
 ))]
-compile_error!("spi0-timed-peer-zero-irq-proof cannot share another GPIO/mailbox/terminal proof");
+compile_error!("SPI0 timed-peer proofs cannot share another GPIO/mailbox/terminal proof");
+
+#[cfg(all(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof"))]
+compile_error!("SPI0 timed-peer final schemas are mutually exclusive");
 
 #[cfg(all(
     feature = "spi0-miso-guarded-input-bias",
@@ -11176,7 +11186,7 @@ fn main(mut p: Peripherals) -> ! {
                         quiet_stop();
                     }
                 }
-                #[cfg(feature = "spi0-timed-peer-zero-irq-proof")]
+                #[cfg(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof"))]
                 {
                     match p.spi0.into_host_mode0_100khz(
                         p.gpio.pin::<8>(),
@@ -11185,15 +11195,26 @@ fn main(mut p: Peripherals) -> ! {
                         p.gpio.pin::<11>(),
                     ) {
                         Ok(mut host) => {
+                            #[cfg(feature = "spi0-timed-peer-zero-irq-proof")]
                             let decision = spi0_timed_peer_zero_irq_proof::run(&mut host, || {
                                 pulse_width(&mut gpio22, 425);
                             });
+                            #[cfg(feature = "spi0-timed-peer-zero-irq-proof")]
                             pulse_width(&mut gpio22, if decision == 1 { 427 } else { 555 });
+                            #[cfg(feature = "spi0-low-high-irq-rearm-proof")]
+                            let decision = spi0_low_high_irq_rearm_proof::run(&mut host, || {
+                                pulse_width(&mut gpio22, 425);
+                            });
+                            #[cfg(feature = "spi0-low-high-irq-rearm-proof")]
+                            pulse_width(&mut gpio22, if decision == 1 { 429 } else { 555 });
                             // Retain guarded host/pins on every outcome, including timeout.
                             quiet_stop();
                         }
                         Err(_) => {
+                            #[cfg(feature = "spi0-timed-peer-zero-irq-proof")]
                             spi0_timed_peer_zero_irq_proof::publish_setup_error();
+                            #[cfg(feature = "spi0-low-high-irq-rearm-proof")]
+                            spi0_low_high_irq_rearm_proof::publish_setup_error();
                             pulse_width(&mut gpio22, 555);
                             quiet_stop();
                         }
@@ -11296,7 +11317,7 @@ fn main(mut p: Peripherals) -> ! {
                 }
                 #[cfg(all(
                     feature = "spi0-irq19-one-entry-rx-proof",
-                    not(feature = "spi0-timed-peer-zero-irq-proof")
+                    not(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof"))
                 ))]
                 {
                     #[cfg(feature = "spi0-miso-input-observation")]

@@ -124,6 +124,7 @@ spi0-miso-input-observation = ["spi0-irq19-one-entry-rx-proof"]
 spi0-miso-configured-hold = ["spi0-reset-only"]
 spi0-miso-guarded-input-bias = ["spi0-reset-only"]
 spi0-timed-peer-zero-irq-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-low-high-irq-rearm-proof = ["spi0-irq19-one-entry-rx-proof"]
 spi0-nvic53-latch-scout = ["spi0-local-irq-bank1-passive-scout"]
 spi0-local-irq-bank1-passive-scout = [
     "spi0-reset-only",
