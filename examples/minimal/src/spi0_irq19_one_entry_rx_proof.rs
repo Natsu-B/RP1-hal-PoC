@@ -217,6 +217,14 @@ fn primask_unchanged(actual: u32, expected: u32) -> bool {
     expected <= 1 && actual == expected
 }
 
+// ponytail: one IRQ19 writer while active; this is not a multi-writer CAS.
+// Keep plain atomic accesses: RP1 shared-SRAM STREX success is not guaranteed.
+fn record_first_error(error: &AtomicU32, code: u32) {
+    if error.load(Ordering::Relaxed) == 0 {
+        error.store(code, Ordering::Relaxed);
+    }
+}
+
 fn handler_precheck(
     old_count: u32,
     ipsr: u32,
@@ -372,7 +380,10 @@ pub unsafe extern "C" fn SPI0_IRQHandler() {
 
     let route = rp1_rt::spi0_irq_route_snapshot();
     let spi = snapshot();
-    let old = COUNT.fetch_add(1, Ordering::Relaxed);
+    // Foreground resets only before enable; IRQ19 cannot preempt itself.
+    // An exclusive RMW retry here would make handler progress unbounded.
+    let old = COUNT.load(Ordering::Relaxed);
+    COUNT.store(old.wrapping_add(1), Ordering::Relaxed);
     // Entry count, not the sampled value, owns the first record. A real zero
     // source on the first (failed) entry must survive a later replay.
     if old == 0 {
@@ -385,9 +396,7 @@ pub unsafe extern "C" fn SPI0_IRQHandler() {
 
     let ptr = unsafe { SLOT.get_for_isr() };
     if let Err(code) = handler_precheck(old, ipsr, spi.irq.masked_interrupt_status, ptr.is_some()) {
-        HANDLER_ERROR
-            .compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed)
-            .ok();
+        record_first_error(&HANDLER_ERROR, code);
         return;
     }
 
@@ -401,14 +410,7 @@ pub unsafe extern "C" fn SPI0_IRQHandler() {
         Ordering::Relaxed,
     );
     if !matches!(state, rp1_hal::spi::Spi0RxState::RxComplete) {
-        HANDLER_ERROR
-            .compare_exchange(
-                0,
-                FAIL_HANDLER_STATE + state_code(state),
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
-            .ok();
+        record_first_error(&HANDLER_ERROR, FAIL_HANDLER_STATE + state_code(state));
     }
 }
 
@@ -603,6 +605,14 @@ mod tests {
         assert!(!primask_unchanged(1, 0));
         assert!(!primask_unchanged(2, 2));
         assert!(!primask_unchanged(3, 0));
+    }
+
+    #[test]
+    fn single_writer_error_retains_first_failure() {
+        let error = AtomicU32::new(0);
+        record_first_error(&error, FAIL_HANDLER_SOURCE);
+        record_first_error(&error, FAIL_HANDLER_REPLAY);
+        assert_eq!(error.load(Ordering::Relaxed), FAIL_HANDLER_SOURCE);
     }
 
     #[test]
