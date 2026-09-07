@@ -3,7 +3,10 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
+#[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
 pub const MAGIC: u32 = u32::from_le_bytes(*b"S0I2");
+#[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+pub const MAGIC: u32 = u32::from_le_bytes(*b"S0D2");
 pub const IRQ_NUMBER: u32 = 19;
 pub const VECTOR_INDEX: u32 = 35;
 pub const WORDS: usize = 16;
@@ -14,6 +17,22 @@ const RX_MASK: u32 = RXFI | ERRORS;
 const IRQ_BIT: u32 = 1 << IRQ_NUMBER;
 const INHERITED_PENDING1: u32 = 1 << 21;
 const WAIT_US: u64 = 4_000;
+
+#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+static FIFO_LEN: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+fn expected_len() -> u32 {
+    #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+    {
+        FIFO_LEN.load(Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+    {
+        1
+    }
+}
 
 const FLAG_PREPARED: u32 = 1 << 0;
 const FLAG_WRAPPER: u32 = 1 << 1;
@@ -180,6 +199,34 @@ fn read_wrapper() -> u32 {
     read32(0x108)
 }
 
+#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+pub fn fifo_api_snapshot() -> ([u32; 14], [u32; 8]) {
+    let s = snapshot();
+    let wrapper = read_wrapper();
+    let r = rp1_rt::spi0_irq_route_snapshot();
+    (
+        [
+            s.irq.version,
+            s.irq.enable,
+            s.irq.tx_fifo_threshold,
+            s.irq.interrupt_mask,
+            s.irq.raw_interrupt_status,
+            s.irq.masked_interrupt_status,
+            s.irq.tx_fifo_level,
+            s.irq.status,
+            s.rx,
+            s.control,
+            s.selected,
+            s.baud,
+            s.rx_threshold,
+            wrapper,
+        ],
+        [
+            r.vtor, r.iser0, r.iser1, r.ispr0, r.ispr1, r.iabr0, r.iabr1, r.primask,
+        ],
+    )
+}
+
 #[cfg(target_arch = "arm")]
 fn prepared_state(s: Spi) -> bool {
     s.control == 7 << 16
@@ -191,7 +238,7 @@ fn prepared_state(s: Spi) -> bool {
         && s.irq.masked_interrupt_status == 0
         && s.irq.raw_interrupt_status & (ERRORS | RXFI) == 0
         && s.rx == 0
-        && s.irq.tx_fifo_level == 1
+        && s.irq.tx_fifo_level == expected_len()
 }
 
 #[cfg(target_arch = "arm")]
@@ -204,13 +251,30 @@ fn source_state(s: Spi) -> bool {
         && s.irq.interrupt_mask == RX_MASK
         && s.irq.raw_interrupt_status == RXFI | 1
         && s.irq.masked_interrupt_status == RXFI
-        && s.rx == 1
+        && s.rx == expected_len()
         && s.irq.tx_fifo_level == 0
         && s.irq.status & 5 == 4
 }
 
 fn no_storm_ok(timer_progressed: bool, count_after_mask: u32, count_after_interval: u32) -> bool {
     timer_progressed && count_after_mask == 1 && count_after_interval == 1
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+fn wait_fifo_source(mut ready: impl FnMut() -> bool) -> bool {
+    const LOW: *const u32 = 0x400a_c028 as *const u32;
+    let start = unsafe { core::ptr::read_volatile(LOW) };
+    // Existing timer only; first bound wins, including finite stalled-timer cap.
+    for _ in 0..12_500_000 {
+        if unsafe { core::ptr::read_volatile(LOW) }.wrapping_sub(start) >= 50_000 {
+            return false;
+        }
+        if ready() {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
 }
 
 fn primask_unchanged(actual: u32, expected: u32) -> bool {
@@ -421,19 +485,36 @@ pub fn publish_setup_error(code: u32) {
     publish(code, t);
 }
 
-#[cfg(target_arch = "arm")]
+#[cfg(all(target_arch = "arm", not(feature = "spi0-fifo-capacity-irq-proof")))]
 pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     run_with_wrapper::<false>(host)
 }
 
-#[cfg(all(target_arch = "arm", feature = "spi0-low-high-irq-rearm-proof"))]
+#[cfg(all(
+    target_arch = "arm",
+    feature = "spi0-low-high-irq-rearm-proof",
+    not(feature = "spi0-fifo-capacity-irq-proof")
+))]
 pub fn run_rearmed(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     run_with_wrapper::<true>(host)
 }
 
+#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+pub fn run_fifo_low(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8]) -> u32 {
+    run_with_wrapper::<false>(host, rx)
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+pub fn run_fifo_high(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8]) -> u32 {
+    run_with_wrapper::<true>(host, rx)
+}
+
 #[cfg(target_arch = "arm")]
 #[inline(always)]
-fn run_with_wrapper<const REARMED: bool>(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
+fn run_with_wrapper<const REARMED: bool>(
+    host: &mut rp1_hal::spi::Spi0Host,
+    #[cfg(feature = "spi0-fifo-capacity-irq-proof")] rx: &mut [u8],
+) -> u32 {
     unsafe { SLOT.withdraw() };
     COUNT.store(0, Ordering::Relaxed);
     FIRST_IPSR.store(0, Ordering::Relaxed);
@@ -445,6 +526,13 @@ fn run_with_wrapper<const REARMED: bool>(host: &mut rp1_hal::spi::Spi0Host) -> u
     HANDLER_ERROR.store(0, Ordering::Relaxed);
 
     let mut t = Telemetry::new();
+    #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+    {
+        if !(2..=255).contains(&rx.len()) {
+            return publish(FAIL_SETUP, t);
+        }
+        FIFO_LEN.store(rx.len() as u32, Ordering::Relaxed);
+    }
     publish(FAIL_SETUP, t);
     let before = rp1_rt::spi0_irq_route_snapshot();
     t.before_route = route_pack(before);
@@ -457,8 +545,18 @@ fn run_with_wrapper<const REARMED: bool>(host: &mut rp1_hal::spi::Spi0Host) -> u
     };
     t.flags |= FLAG_PREPARED;
 
+    #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
     let mut rx = [0; 1];
-    let mut transfer = match host.prepare_irq_transfer(&[0xa5], &mut rx) {
+    let mut transfer = match {
+        #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+        {
+            host.prepare_irq_transfer(&[0xa5], &mut rx)
+        }
+        #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+        {
+            host.prepare_irq_transfer(&[0xa5; 256][..rx.len()], rx)
+        }
+    } {
         Ok(transfer) => transfer,
         Err(_) => {
             unsafe { rp1_rt::restore_spi0_irq19_one_entry(saved) };
@@ -467,7 +565,9 @@ fn run_with_wrapper<const REARMED: bool>(host: &mut rp1_hal::spi::Spi0Host) -> u
         }
     };
 
-    if !prepared_state(snapshot()) || !route_exact(rp1_rt::spi0_irq_route_snapshot(), before.primask) {
+    if !prepared_state(snapshot())
+        || !route_exact(rp1_rt::spi0_irq_route_snapshot(), before.primask)
+    {
         let code = abort_record(&mut transfer, FAIL_SPI);
         unsafe { rp1_rt::restore_spi0_irq19_one_entry(saved) };
         t.final_route = route_pack(rp1_rt::spi0_irq_route_snapshot());
@@ -503,7 +603,17 @@ fn run_with_wrapper<const REARMED: bool>(host: &mut rp1_hal::spi::Spi0Host) -> u
     t.stage = 3;
     t.flags |= FLAG_WRAPPER;
 
-    if transfer.start().is_err() || !wait_until(|| source_state(snapshot()) && read_wrapper() == 1)
+    if transfer.start().is_err()
+        || !{
+            #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+            {
+                wait_fifo_source(|| source_state(snapshot()) && read_wrapper() == 1)
+            }
+            #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+            {
+                wait_until(|| source_state(snapshot()) && read_wrapper() == 1)
+            }
+        }
     {
         unsafe { rp1_rt::mask_spi0_irq19_one_entry() };
         let code = abort_record(&mut transfer, FAIL_SOURCE_TIMEOUT);
@@ -579,8 +689,8 @@ fn run_with_wrapper<const REARMED: bool>(host: &mut rp1_hal::spi::Spi0Host) -> u
         && FIRST_IPSR.load(Ordering::Relaxed) == VECTOR_INDEX
         && FIRST_ISR.load(Ordering::Relaxed) == RXFI
         && FIRST_RISR.load(Ordering::Relaxed) == RXFI | 1
-        && FIRST_RXFLR.load(Ordering::Relaxed) == 1
-        && RECEIVED.load(Ordering::Relaxed) >> 16 == 1
+        && FIRST_RXFLR.load(Ordering::Relaxed) == expected_len()
+        && RECEIVED.load(Ordering::Relaxed) >> 16 == expected_len()
         && route_exact(final_route, before.primask)
     {
         1
@@ -596,7 +706,10 @@ mod tests {
 
     #[test]
     fn abi_is_irq19_vector35_s0i2_sixteen_words() {
+        #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
         assert_eq!(MAGIC, u32::from_le_bytes(*b"S0I2"));
+        #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+        assert_eq!(MAGIC, u32::from_le_bytes(*b"S0D2"));
         assert_eq!(IRQ_NUMBER, 19);
         assert_eq!(VECTOR_INDEX, 35);
         assert_eq!(WORDS, 16);
