@@ -1236,6 +1236,68 @@ pub unsafe fn disable_spi0_irq() {
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "spi0-local-irq"))]
+#[derive(Clone, Copy)]
+pub struct Spi0Irq19OneEntrySaved {
+    pub before: Spi0IrqRouteSnapshot,
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-local-irq"))]
+pub unsafe fn prepare_spi0_irq19_one_entry(expected_primask: u32) -> Option<Spi0Irq19OneEntrySaved> {
+    const INHERITED_PENDING1: u32 = 1 << 21;
+
+    let before = spi0_irq_route_snapshot();
+    if expected_primask > 1
+        || before.primask != expected_primask
+        || before.vtor != VECTOR_TABLE_BASE
+        || before.iser0 != 0
+        || before.iser1 != 0
+        || before.iabr0 != 0
+        || before.iabr1 != 0
+        || before.ispr0 != 0
+        || before.ispr1 != INHERITED_PENDING1
+    {
+        return None;
+    }
+
+    unsafe {
+        core::ptr::write_volatile(NVIC_ICER0, SPI0_IRQ_BIT);
+        core::ptr::write_volatile(NVIC_ICPR0, SPI0_IRQ_BIT);
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+    Some(Spi0Irq19OneEntrySaved { before })
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-local-irq"))]
+pub unsafe fn enable_spi0_irq19_one_entry_after_source_asserted(saved: Spi0Irq19OneEntrySaved) {
+    unsafe {
+        core::ptr::write_volatile(NVIC_ISER0, SPI0_IRQ_BIT);
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+        if saved.before.primask & 1 != 0 {
+            core::arch::asm!("cpsie i", options(nostack, preserves_flags));
+        }
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-local-irq"))]
+pub unsafe fn mask_spi0_irq19_one_entry() {
+    unsafe {
+        core::ptr::write_volatile(NVIC_ICER0, SPI0_IRQ_BIT);
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-local-irq"))]
+pub unsafe fn restore_spi0_irq19_one_entry(saved: Spi0Irq19OneEntrySaved) {
+    unsafe {
+        core::ptr::write_volatile(NVIC_ICER0, SPI0_IRQ_BIT);
+        core::ptr::write_volatile(NVIC_ICPR0, SPI0_IRQ_BIT);
+        core::arch::asm!("msr PRIMASK, {}", in(reg) saved.before.primask & 1, options(nostack, preserves_flags));
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+}
+
 #[cfg(all(target_arch = "arm", feature = "i2c1-local-irq"))]
 pub unsafe fn prepare_i2c1_irq() -> bool {
     let before = i2c1_irq_route_snapshot();

@@ -29,11 +29,18 @@ mod adc_one_shot;
 ))]
 mod i2s_readonly;
 
-#[cfg(all(target_arch = "arm", feature = "spi0-rxfi-passive-scout"))]
+#[cfg(all(
+    target_arch = "arm",
+    feature = "spi0-rxfi-passive-scout",
+    not(feature = "spi0-irq19-one-entry-rx-proof")
+))]
 mod spi0_rxfi_passive_scout;
 
 #[cfg(all(target_arch = "arm", feature = "spi0-nvic53-latch-scout"))]
 mod spi0_nvic53_latch_scout;
+
+#[cfg(feature = "spi0-irq19-one-entry-rx-proof")]
+mod spi0_irq19_one_entry_rx_proof;
 
 #[cfg(all(
     feature = "spi0-rxfi-passive-scout",
@@ -81,6 +88,16 @@ compile_error!("spi0-local-irq-proof is terminal and cannot share the SPI host p
     any(feature = "spi0-local-irq-proof", feature = "spi0-host-proof")
 ))]
 compile_error!("spi0-local-irq-bank1-passive-scout cannot share another SPI proof");
+
+#[cfg(all(
+    feature = "spi0-irq19-one-entry-rx-proof",
+    any(
+        feature = "spi0-local-irq-proof",
+        feature = "spi0-host-proof",
+        feature = "spi0-nvic53-latch-scout"
+    )
+))]
+compile_error!("spi0-irq19-one-entry-rx-proof cannot share another SPI proof");
 
 #[cfg(all(feature = "i2c1-local-irq-proof", feature = "i2c1-host-proof"))]
 compile_error!("i2c1-local-irq-proof is terminal and cannot share the I2C1 host polling proof");
@@ -11059,7 +11076,27 @@ fn main(mut p: Peripherals) -> ! {
                     pulse_width(&mut gpio22, if decision == 1 { 415 } else { 543 });
                     quiet_stop();
                 }
-                #[cfg(feature = "spi0-rxfi-passive-scout")]
+                #[cfg(feature = "spi0-irq19-one-entry-rx-proof")]
+                {
+                    let decision = match p.spi0.into_host_mode0_100khz(
+                        p.gpio.pin::<8>(),
+                        p.gpio.pin::<9>(),
+                        p.gpio.pin::<10>(),
+                        p.gpio.pin::<11>(),
+                    ) {
+                        Ok(mut host) => spi0_irq19_one_entry_rx_proof::run(&mut host),
+                        Err(_) => {
+                            spi0_irq19_one_entry_rx_proof::publish_setup_error(0x380);
+                            0x380
+                        }
+                    };
+                    pulse_width(&mut gpio22, if decision == 1 { 419 } else { 547 });
+                    quiet_stop();
+                }
+                #[cfg(all(
+                    feature = "spi0-rxfi-passive-scout",
+                    not(feature = "spi0-irq19-one-entry-rx-proof")
+                ))]
                 {
                     let decision = match p.spi0.into_host_mode0_100khz(
                         p.gpio.pin::<8>(),
