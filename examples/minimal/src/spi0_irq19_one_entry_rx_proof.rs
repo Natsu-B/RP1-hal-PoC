@@ -490,13 +490,23 @@ pub fn publish_setup_error(code: u32) {
     publish(code, t);
 }
 
-#[cfg(all(target_arch = "arm", not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof"))))]
+#[cfg(all(target_arch = "arm", not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof", feature = "spi0-caller-deadline-abort-proof"))))]
 pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     run_with_wrapper::<false>(host)
 }
 
 #[cfg(all(target_arch = "arm", feature = "spi0-retained-rx-ser-proof"))]
 pub fn run_retained_rearm(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8; 1]) -> u32 {
+    run_with_wrapper::<false>(host, rx)
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-caller-deadline-abort-proof"))]
+pub fn deadline_irq_observation() -> (u32, u32) {
+    (COUNT.load(Ordering::Relaxed), SLOT.armed.load(Ordering::Acquire))
+}
+
+#[cfg(all(target_arch = "arm", feature = "spi0-caller-deadline-abort-proof"))]
+pub fn run_deadline_rearm(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8; 1]) -> u32 {
     run_with_wrapper::<false>(host, rx)
 }
 
@@ -529,7 +539,7 @@ pub fn run_fifo_high(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8]) -> u32 {
 fn run_with_wrapper<const REARMED: bool>(
     host: &mut rp1_hal::spi::Spi0Host,
     #[cfg(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))] rx: &mut [u8],
-    #[cfg(any(feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof"))] rx: &mut [u8; 1],
+    #[cfg(any(feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof", feature = "spi0-caller-deadline-abort-proof"))] rx: &mut [u8; 1],
 ) -> u32 {
     unsafe { SLOT.withdraw() };
     COUNT.store(0, Ordering::Relaxed);
@@ -561,14 +571,14 @@ fn run_with_wrapper<const REARMED: bool>(
     };
     t.flags |= FLAG_PREPARED;
 
-    #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof")))]
+    #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof", feature = "spi0-caller-deadline-abort-proof")))]
     let mut rx = [0; 1];
     let mut transfer = match {
-        #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof")))]
+        #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof", feature = "spi0-caller-deadline-abort-proof")))]
         {
             host.prepare_irq_transfer(&[0xa5], &mut rx)
         }
-        #[cfg(any(feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof"))]
+        #[cfg(any(feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof", feature = "spi0-caller-deadline-abort-proof"))]
         {
             host.prepare_irq_transfer(&[0xa5], rx)
         }

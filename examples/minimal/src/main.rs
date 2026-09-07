@@ -60,6 +60,9 @@ mod spi0_retained_rx_ser_proof;
 #[cfg(feature = "spi0-rx-overflow-irq-proof")]
 mod spi0_rx_overflow_irq_proof;
 
+#[cfg(feature = "spi0-caller-deadline-abort-proof")]
+mod spi0_caller_deadline_abort_proof;
+
 #[cfg(any(
     feature = "spi0-miso-input-observation",
     feature = "spi0-miso-configured-hold",
@@ -68,6 +71,7 @@ mod spi0_rx_overflow_irq_proof;
     feature = "spi0-low-high-irq-rearm-proof",
     feature = "spi0-retained-rx-ser-proof",
     feature = "spi0-rx-overflow-irq-proof",
+    feature = "spi0-caller-deadline-abort-proof",
     feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
 ))]
 mod spi0_miso_input_observation;
@@ -78,6 +82,7 @@ mod spi0_miso_input_observation;
         feature = "spi0-low-high-irq-rearm-proof",
         feature = "spi0-retained-rx-ser-proof",
         feature = "spi0-rx-overflow-irq-proof",
+        feature = "spi0-caller-deadline-abort-proof",
         feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
     ),
     any(
@@ -145,6 +150,9 @@ compile_error!("SPI0 retained RX and other transaction proofs are mutually exclu
 
 #[cfg(all(feature = "spi0-rx-overflow-irq-proof", any(feature = "spi0-retained-rx-ser-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-host-proof", feature = "spi0-local-irq-proof", feature = "spi0-nvic53-latch-scout")))]
 compile_error!("SPI0 overflow RX and other transaction proofs are mutually exclusive");
+
+#[cfg(all(feature = "spi0-caller-deadline-abort-proof", any(feature = "spi0-rx-overflow-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-host-proof", feature = "spi0-local-irq-proof", feature = "spi0-nvic53-latch-scout")))]
+compile_error!("SPI0 caller deadline and other transaction proofs are mutually exclusive");
 
 #[cfg(all(
     feature = "spi0-miso-guarded-input-bias",
@@ -11216,7 +11224,7 @@ fn main(mut p: Peripherals) -> ! {
                         quiet_stop();
                     }
                 }
-                #[cfg(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof"))]
+                #[cfg(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof", feature = "spi0-caller-deadline-abort-proof"))]
                 {
                     match p.spi0.into_host_mode0_100khz(
                         p.gpio.pin::<8>(),
@@ -11261,6 +11269,12 @@ fn main(mut p: Peripherals) -> ! {
                             });
                             #[cfg(feature = "spi0-rx-overflow-irq-proof")]
                             pulse_width(&mut gpio22, if decision == 1 { 455 } else { 559 });
+                            #[cfg(feature = "spi0-caller-deadline-abort-proof")]
+                            let decision = spi0_caller_deadline_abort_proof::run(&mut host, |stage| {
+                                pulse_width(&mut gpio22, [457, 459, 461][stage]);
+                            });
+                            #[cfg(feature = "spi0-caller-deadline-abort-proof")]
+                            pulse_width(&mut gpio22, if decision == 1 { 463 } else { 561 });
                             // Retain guarded host/pins on every outcome, including timeout.
                             quiet_stop();
                         }
@@ -11279,7 +11293,11 @@ fn main(mut p: Peripherals) -> ! {
                             spi0_rx_overflow_irq_proof::publish_setup_error();
                             #[cfg(feature = "spi0-rx-overflow-irq-proof")]
                             pulse_width(&mut gpio22, 559);
-                            #[cfg(not(feature = "spi0-rx-overflow-irq-proof"))]
+                            #[cfg(feature = "spi0-caller-deadline-abort-proof")]
+                            spi0_caller_deadline_abort_proof::publish_setup_error();
+                            #[cfg(feature = "spi0-caller-deadline-abort-proof")]
+                            pulse_width(&mut gpio22, 561);
+                            #[cfg(not(any(feature = "spi0-rx-overflow-irq-proof", feature = "spi0-caller-deadline-abort-proof")))]
                             pulse_width(&mut gpio22, if cfg!(feature = "spi0-retained-rx-ser-proof") { 557 } else { 555 });
                             quiet_stop();
                         }
@@ -11382,7 +11400,7 @@ fn main(mut p: Peripherals) -> ! {
                 }
                 #[cfg(all(
                     feature = "spi0-irq19-one-entry-rx-proof",
-                    not(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof"))
+                    not(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof", feature = "spi0-retained-rx-ser-proof", feature = "spi0-rx-overflow-irq-proof", feature = "spi0-caller-deadline-abort-proof"))
                 ))]
                 {
                     #[cfg(feature = "spi0-miso-input-observation")]

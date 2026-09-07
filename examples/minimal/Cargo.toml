@@ -129,6 +129,7 @@ spi0-fifo-capacity-irq-proof = ["spi0-irq19-one-entry-rx-proof"]
 spi0-varied-peer-irq-proof = ["spi0-irq19-one-entry-rx-proof"]
 spi0-retained-rx-ser-proof = ["spi0-irq19-one-entry-rx-proof"]
 spi0-rx-overflow-irq-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-caller-deadline-abort-proof = ["spi0-irq19-one-entry-rx-proof"]
 spi0-nvic53-latch-scout = ["spi0-local-irq-bank1-passive-scout"]
 spi0-local-irq-bank1-passive-scout = [
     "spi0-reset-only",
