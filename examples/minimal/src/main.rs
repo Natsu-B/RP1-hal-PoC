@@ -42,8 +42,27 @@ mod spi0_nvic53_latch_scout;
 #[cfg(feature = "spi0-irq19-one-entry-rx-proof")]
 mod spi0_irq19_one_entry_rx_proof;
 
-#[cfg(feature = "spi0-miso-input-observation")]
+#[cfg(any(
+    feature = "spi0-miso-input-observation",
+    feature = "spi0-miso-configured-hold"
+))]
 mod spi0_miso_input_observation;
+
+#[cfg(all(
+    feature = "spi0-miso-configured-hold",
+    any(
+        feature = "spi0-host-proof",
+        feature = "spi0-local-irq-proof",
+        feature = "spi0-local-irq-bank1-passive-scout",
+        feature = "rp1-clock-independence-proof",
+        feature = "rp1-linux-clk-uart-ownership-conflict",
+        feature = "pwm0-local-irq-proof",
+        feature = "i2c1-local-irq-proof",
+        feature = "i2c1-local-irq-bank1-passive-scout",
+        feature = "uart0-rx-irq"
+    )
+))]
+compile_error!("spi0-miso-configured-hold cannot share another SPI/terminal proof");
 
 #[cfg(all(
     feature = "spi0-rxfi-passive-scout",
@@ -11044,6 +11063,30 @@ fn main(mut p: Peripherals) -> ! {
                         quiet_stop();
                     }
                 }
+                #[cfg(feature = "spi0-miso-configured-hold")]
+                {
+                    let mut observation = spi0_miso_input_observation::Snapshot::new();
+                    spi0_miso_input_observation::record(&mut observation, 0);
+                    match p.spi0.into_host_mode0_100khz(
+                        p.gpio.pin::<8>(),
+                        p.gpio.pin::<9>(),
+                        p.gpio.pin::<10>(),
+                        p.gpio.pin::<11>(),
+                    ) {
+                        Ok(_host) => {
+                            spi0_miso_input_observation::record(&mut observation, 1);
+                            let ready = spi0_miso_input_observation::publish_hold(true, observation);
+                            pulse_width(&mut gpio22, if ready { 421 } else { 549 });
+                            // Retain the host/pins here: no prepare, transfer, ACK gate or handoff.
+                            quiet_stop();
+                        }
+                        Err(_) => {
+                            spi0_miso_input_observation::publish_hold(false, observation);
+                            pulse_width(&mut gpio22, 549);
+                            quiet_stop();
+                        }
+                    }
+                }
                 #[cfg(feature = "spi0-local-irq-proof")]
                 {
                     let decision = spi0_local_irq_proof::run(&mut p.spi0);
@@ -11138,6 +11181,7 @@ fn main(mut p: Peripherals) -> ! {
                     quiet_stop();
                 }
                 #[cfg(not(any(
+                    feature = "spi0-miso-configured-hold",
                     feature = "spi0-host-proof",
                     feature = "spi0-local-irq-proof",
                     feature = "spi0-local-irq-bank1-passive-scout"
