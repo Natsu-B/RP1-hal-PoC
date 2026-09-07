@@ -42,6 +42,9 @@ mod spi0_nvic53_latch_scout;
 #[cfg(feature = "spi0-irq19-one-entry-rx-proof")]
 mod spi0_irq19_one_entry_rx_proof;
 
+#[cfg(feature = "spi0-miso-input-observation")]
+mod spi0_miso_input_observation;
+
 #[cfg(all(
     feature = "spi0-rxfi-passive-scout",
     feature = "spi0-nvic53-latch-scout"
@@ -11078,18 +11081,39 @@ fn main(mut p: Peripherals) -> ! {
                 }
                 #[cfg(feature = "spi0-irq19-one-entry-rx-proof")]
                 {
+                    #[cfg(feature = "spi0-miso-input-observation")]
+                    let mut observation = spi0_miso_input_observation::Snapshot::new();
+                    #[cfg(feature = "spi0-miso-input-observation")]
+                    spi0_miso_input_observation::record(&mut observation, 0);
+
                     let decision = match p.spi0.into_host_mode0_100khz(
                         p.gpio.pin::<8>(),
                         p.gpio.pin::<9>(),
                         p.gpio.pin::<10>(),
                         p.gpio.pin::<11>(),
                     ) {
-                        Ok(mut host) => spi0_irq19_one_entry_rx_proof::run(&mut host),
+                        Ok(mut host) => {
+                            #[cfg(feature = "spi0-miso-input-observation")]
+                            spi0_miso_input_observation::record(&mut observation, 1);
+
+                            let decision = spi0_irq19_one_entry_rx_proof::run(&mut host);
+
+                            #[cfg(feature = "spi0-miso-input-observation")]
+                            spi0_miso_input_observation::record(&mut observation, 2);
+
+                            decision
+                        }
                         Err(_) => {
                             spi0_irq19_one_entry_rx_proof::publish_setup_error(0x380);
                             0x380
                         }
                     };
+                    #[cfg(feature = "spi0-miso-input-observation")]
+                    spi0_miso_input_observation::publish(decision, observation);
+
+                    #[cfg(feature = "spi0-miso-input-observation")]
+                    pulse_width(&mut gpio22, if decision == 1 { 421 } else { 549 });
+                    #[cfg(not(feature = "spi0-miso-input-observation"))]
                     pulse_width(&mut gpio22, if decision == 1 { 419 } else { 547 });
                     quiet_stop();
                 }
