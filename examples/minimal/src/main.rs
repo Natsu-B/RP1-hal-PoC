@@ -51,13 +51,16 @@ mod spi0_low_high_irq_rearm_proof;
 #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
 mod spi0_fifo_capacity_irq_proof;
 
+#[cfg(feature = "spi0-varied-peer-irq-proof")]
+mod spi0_varied_peer_irq_proof;
+
 #[cfg(any(
     feature = "spi0-miso-input-observation",
     feature = "spi0-miso-configured-hold",
     feature = "spi0-miso-guarded-input-bias",
     feature = "spi0-timed-peer-zero-irq-proof",
     feature = "spi0-low-high-irq-rearm-proof",
-    feature = "spi0-fifo-capacity-irq-proof"
+    feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
 ))]
 mod spi0_miso_input_observation;
 
@@ -65,7 +68,7 @@ mod spi0_miso_input_observation;
     any(
         feature = "spi0-timed-peer-zero-irq-proof",
         feature = "spi0-low-high-irq-rearm-proof",
-        feature = "spi0-fifo-capacity-irq-proof"
+        feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
     ),
     any(
         feature = "spi0-miso-input-observation",
@@ -123,6 +126,9 @@ compile_error!("SPI0 timed-peer final schemas are mutually exclusive");
 
 #[cfg(all(feature = "spi0-fifo-capacity-irq-proof", any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof")))]
 compile_error!("SPI0 FIFO and timed-peer final schemas are mutually exclusive");
+
+#[cfg(all(feature = "spi0-varied-peer-irq-proof", any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof")))]
+compile_error!("SPI0 varied and prior final schemas are mutually exclusive");
 
 #[cfg(all(
     feature = "spi0-miso-guarded-input-bias",
@@ -11194,7 +11200,7 @@ fn main(mut p: Peripherals) -> ! {
                         quiet_stop();
                     }
                 }
-                #[cfg(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-fifo-capacity-irq-proof"))]
+                #[cfg(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))]
                 {
                     match p.spi0.into_host_mode0_100khz(
                         p.gpio.pin::<8>(),
@@ -11221,6 +11227,12 @@ fn main(mut p: Peripherals) -> ! {
                             });
                             #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
                             pulse_width(&mut gpio22, if decision == 1 { 433 } else { 555 });
+                            #[cfg(feature = "spi0-varied-peer-irq-proof")]
+                            let decision = spi0_varied_peer_irq_proof::run(&mut host, |round| {
+                                pulse_width(&mut gpio22, if round == 0 { 435 } else { 437 });
+                            });
+                            #[cfg(feature = "spi0-varied-peer-irq-proof")]
+                            pulse_width(&mut gpio22, if decision == 1 { 439 } else { 555 });
                             // Retain guarded host/pins on every outcome, including timeout.
                             quiet_stop();
                         }
@@ -11231,6 +11243,8 @@ fn main(mut p: Peripherals) -> ! {
                             spi0_low_high_irq_rearm_proof::publish_setup_error();
                             #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
                             spi0_fifo_capacity_irq_proof::publish_setup_error();
+                            #[cfg(feature = "spi0-varied-peer-irq-proof")]
+                            spi0_varied_peer_irq_proof::publish_setup_error();
                             pulse_width(&mut gpio22, 555);
                             quiet_stop();
                         }
@@ -11333,7 +11347,7 @@ fn main(mut p: Peripherals) -> ! {
                 }
                 #[cfg(all(
                     feature = "spi0-irq19-one-entry-rx-proof",
-                    not(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-fifo-capacity-irq-proof"))
+                    not(any(feature = "spi0-timed-peer-zero-irq-proof", feature = "spi0-low-high-irq-rearm-proof", feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))
                 ))]
                 {
                     #[cfg(feature = "spi0-miso-input-observation")]

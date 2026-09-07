@@ -132,7 +132,7 @@ pub const BIAS_MAGIC: u32 = u32::from_le_bytes(*b"S0B1");
     feature = "spi0-miso-guarded-input-bias",
     feature = "spi0-timed-peer-zero-irq-proof",
     feature = "spi0-low-high-irq-rearm-proof",
-    feature = "spi0-fifo-capacity-irq-proof"
+    feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
 ))]
 fn input_route_disabled(regs: [u32; REG_COUNT]) -> bool {
     regs[0] == 0x80 && regs[2] & (1 << 13) == 0 && regs[3] & (1 << 9) == 0
@@ -142,7 +142,7 @@ fn input_route_disabled(regs: [u32; REG_COUNT]) -> bool {
     feature = "spi0-miso-guarded-input-bias",
     feature = "spi0-timed-peer-zero-irq-proof",
     feature = "spi0-low-high-irq-rearm-proof",
-    feature = "spi0-fifo-capacity-irq-proof"
+    feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
 ))]
 fn guarded_pad(regs: [u32; REG_COUNT]) -> Option<u32> {
     if !input_route_disabled(regs) || regs[1] & 0xff != 0x73 {
@@ -159,7 +159,7 @@ fn guarded_pad(regs: [u32; REG_COUNT]) -> Option<u32> {
         feature = "spi0-miso-guarded-input-bias",
         feature = "spi0-timed-peer-zero-irq-proof",
         feature = "spi0-low-high-irq-rearm-proof",
-        feature = "spi0-fifo-capacity-irq-proof"
+        feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"
     )
 ))]
 #[inline(never)]

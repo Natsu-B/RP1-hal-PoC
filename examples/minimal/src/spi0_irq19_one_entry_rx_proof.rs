@@ -3,9 +3,9 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
-#[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+#[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
 pub const MAGIC: u32 = u32::from_le_bytes(*b"S0I2");
-#[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+#[cfg(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))]
 pub const MAGIC: u32 = u32::from_le_bytes(*b"S0D2");
 pub const IRQ_NUMBER: u32 = 19;
 pub const VECTOR_INDEX: u32 = 35;
@@ -18,17 +18,17 @@ const IRQ_BIT: u32 = 1 << IRQ_NUMBER;
 const INHERITED_PENDING1: u32 = 1 << 21;
 const WAIT_US: u64 = 4_000;
 
-#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+#[cfg(all(target_arch = "arm", any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
 static FIFO_LEN: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_arch = "arm")]
 #[inline(always)]
 fn expected_len() -> u32 {
-    #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+    #[cfg(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))]
     {
         FIFO_LEN.load(Ordering::Relaxed)
     }
-    #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+    #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
     {
         1
     }
@@ -199,7 +199,7 @@ fn read_wrapper() -> u32 {
     read32(0x108)
 }
 
-#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+#[cfg(all(target_arch = "arm", any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
 pub fn fifo_api_snapshot() -> ([u32; 14], [u32; 8]) {
     let s = snapshot();
     let wrapper = read_wrapper();
@@ -260,7 +260,7 @@ fn no_storm_ok(timer_progressed: bool, count_after_mask: u32, count_after_interv
     timer_progressed && count_after_mask == 1 && count_after_interval == 1
 }
 
-#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+#[cfg(all(target_arch = "arm", any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
 fn wait_fifo_source(mut ready: impl FnMut() -> bool) -> bool {
     const LOW: *const u32 = 0x400a_c028 as *const u32;
     let start = unsafe { core::ptr::read_volatile(LOW) };
@@ -485,7 +485,7 @@ pub fn publish_setup_error(code: u32) {
     publish(code, t);
 }
 
-#[cfg(all(target_arch = "arm", not(feature = "spi0-fifo-capacity-irq-proof")))]
+#[cfg(all(target_arch = "arm", not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))))]
 pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     run_with_wrapper::<false>(host)
 }
@@ -493,18 +493,18 @@ pub fn run(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
 #[cfg(all(
     target_arch = "arm",
     feature = "spi0-low-high-irq-rearm-proof",
-    not(feature = "spi0-fifo-capacity-irq-proof")
+    not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))
 ))]
 pub fn run_rearmed(host: &mut rp1_hal::spi::Spi0Host) -> u32 {
     run_with_wrapper::<true>(host)
 }
 
-#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+#[cfg(all(target_arch = "arm", any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
 pub fn run_fifo_low(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8]) -> u32 {
     run_with_wrapper::<false>(host, rx)
 }
 
-#[cfg(all(target_arch = "arm", feature = "spi0-fifo-capacity-irq-proof"))]
+#[cfg(all(target_arch = "arm", any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
 pub fn run_fifo_high(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8]) -> u32 {
     run_with_wrapper::<true>(host, rx)
 }
@@ -513,7 +513,7 @@ pub fn run_fifo_high(host: &mut rp1_hal::spi::Spi0Host, rx: &mut [u8]) -> u32 {
 #[inline(always)]
 fn run_with_wrapper<const REARMED: bool>(
     host: &mut rp1_hal::spi::Spi0Host,
-    #[cfg(feature = "spi0-fifo-capacity-irq-proof")] rx: &mut [u8],
+    #[cfg(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))] rx: &mut [u8],
 ) -> u32 {
     unsafe { SLOT.withdraw() };
     COUNT.store(0, Ordering::Relaxed);
@@ -526,7 +526,7 @@ fn run_with_wrapper<const REARMED: bool>(
     HANDLER_ERROR.store(0, Ordering::Relaxed);
 
     let mut t = Telemetry::new();
-    #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+    #[cfg(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))]
     {
         if !(2..=255).contains(&rx.len()) {
             return publish(FAIL_SETUP, t);
@@ -545,16 +545,20 @@ fn run_with_wrapper<const REARMED: bool>(
     };
     t.flags |= FLAG_PREPARED;
 
-    #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+    #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
     let mut rx = [0; 1];
     let mut transfer = match {
-        #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+        #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
         {
             host.prepare_irq_transfer(&[0xa5], &mut rx)
         }
         #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
         {
             host.prepare_irq_transfer(&[0xa5; 256][..rx.len()], rx)
+        }
+        #[cfg(feature = "spi0-varied-peer-irq-proof")]
+        {
+            host.prepare_irq_transfer(&[0; 4], rx)
         }
     } {
         Ok(transfer) => transfer,
@@ -605,11 +609,11 @@ fn run_with_wrapper<const REARMED: bool>(
 
     if transfer.start().is_err()
         || !{
-            #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+            #[cfg(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))]
             {
                 wait_fifo_source(|| source_state(snapshot()) && read_wrapper() == 1)
             }
-            #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+            #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
             {
                 wait_until(|| source_state(snapshot()) && read_wrapper() == 1)
             }
@@ -706,9 +710,9 @@ mod tests {
 
     #[test]
     fn abi_is_irq19_vector35_s0i2_sixteen_words() {
-        #[cfg(not(feature = "spi0-fifo-capacity-irq-proof"))]
+        #[cfg(not(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof")))]
         assert_eq!(MAGIC, u32::from_le_bytes(*b"S0I2"));
-        #[cfg(feature = "spi0-fifo-capacity-irq-proof")]
+        #[cfg(any(feature = "spi0-fifo-capacity-irq-proof", feature = "spi0-varied-peer-irq-proof"))]
         assert_eq!(MAGIC, u32::from_le_bytes(*b"S0D2"));
         assert_eq!(IRQ_NUMBER, 19);
         assert_eq!(VECTOR_INDEX, 35);
