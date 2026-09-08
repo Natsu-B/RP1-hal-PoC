@@ -210,6 +210,18 @@ impl I2c1Host {
 
     #[cfg(target_arch = "arm")]
     pub fn arm_stop_det_irq(&mut self, address: u8) -> Result<I2c1IrqSnapshot, I2c1Error> {
+        self.arm_stop_det_irq_inner(address, true)
+    }
+
+    /// Leave every observed cause latched for the wrapper no-start precheck.
+    #[cfg(target_arch = "arm")]
+    #[inline(never)]
+    pub fn arm_stop_det_irq_preserving_causes(&mut self, address: u8) -> Result<I2c1IrqSnapshot, I2c1Error> {
+        self.arm_stop_det_irq_inner(address, false)
+    }
+
+    #[cfg(target_arch = "arm")]
+    fn arm_stop_det_irq_inner(&mut self, address: u8, acknowledge_stale: bool) -> Result<I2c1IrqSnapshot, I2c1Error> {
         if address > 0x7f {
             return Err(I2c1Error::InvalidAddress(address));
         }
@@ -218,10 +230,10 @@ impl I2c1Host {
         reg(IC_TAR).write(u32::from(address));
         reg(IC_INTR_MASK).write(0);
         let raw = reg(IC_RAW_INTR_STAT).read();
-        if raw & IC_INTR_STOP_DET != 0 {
+        if acknowledge_stale && raw & IC_INTR_STOP_DET != 0 {
             let _ = reg(IC_CLR_STOP_DET).read();
         }
-        if raw & IC_INTR_TX_ABRT != 0 {
+        if acknowledge_stale && raw & IC_INTR_TX_ABRT != 0 {
             let _ = reg(IC_TX_ABRT_SOURCE).read();
             let _ = reg(IC_CLR_TX_ABRT).read();
         }
@@ -324,6 +336,16 @@ pub fn i2c1_cleanup_stop_det_irq() -> I2c1IrqSnapshot {
     i2c1_irq_snapshot()
 }
 
+/// Bounded controller disable for the isolated STOP-route proof. Capture causes
+/// before calling; unlike the historical mask/ack cleanup this leaves ENABLE=0.
+#[cfg(target_arch = "arm")]
+pub fn i2c1_disable_stop_det_irq() -> Result<(), I2c1Error> {
+    i2c1_mask_stop_det_irq();
+    let result = disable();
+    i2c1_ack_stop_det_irq(i2c1_irq_snapshot());
+    result
+}
+
 fn disable() -> Result<(), I2c1Error> {
     reg(IC_ENABLE).write(0);
     if poll_until(
@@ -386,5 +408,14 @@ mod tests {
     #[test]
     fn terminal_command_sets_stop_only() {
         assert_eq!(u32::from(0x5a_u8) | IC_DATA_CMD_STOP, 0x25a);
+    }
+
+    #[test]
+    fn control_poll_has_a_finite_failure_and_success_bound() {
+        let mut polls = 0;
+        assert!(!poll_until(|| { polls += 1; false }, 3));
+        assert_eq!(polls, 3);
+        assert!(poll_until(|| true, 1));
+        assert!(!poll_until(|| true, 0));
     }
 }

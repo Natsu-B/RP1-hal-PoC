@@ -1336,6 +1336,56 @@ pub unsafe fn disable_i2c1_irq() {
     }
 }
 
+/// Single-entry candidate8 experiment only; all unrelated route state is owned
+/// by the caller of the firmware, including inherited bank1 pending bit21.
+#[cfg(any(all(target_arch = "arm", feature = "i2c1-local-irq"), test))]
+fn i2c1_irq8_initial_route_ok(state: [u32; 8]) -> bool {
+    state[..7] == [0x2000_0000, 0, 0, 0, 1 << 21, 0, 0] && state[7] <= 1
+}
+
+#[cfg(all(target_arch = "arm", feature = "i2c1-local-irq"))]
+#[inline(never)]
+pub unsafe fn prepare_i2c1_irq8_one_entry() -> Option<I2c1IrqRouteSnapshot> {
+    let before = i2c1_irq_route_snapshot();
+    if !i2c1_irq8_initial_route_ok([before.vtor, before.iser0, before.iser1,
+        before.ispr0, before.ispr1, before.iabr0, before.iabr1, before.primask]) {
+        return None;
+    }
+    unsafe { mask_i2c1_irq8_one_entry() };
+    Some(before) // No pending clear, including on the prepare path.
+}
+
+#[cfg(all(target_arch = "arm", feature = "i2c1-local-irq"))]
+#[inline(never)]
+pub unsafe fn enable_i2c1_irq8_after_source_asserted() {
+    unsafe {
+        core::ptr::write_volatile(NVIC_ISER0, I2C1_IRQ_BIT);
+        core::arch::asm!("dsb sy", "isb", "cpsie i", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "i2c1-local-irq"))]
+#[inline(never)]
+pub unsafe fn mask_i2c1_irq8_one_entry() {
+    unsafe {
+        core::ptr::write_volatile(NVIC_ICER0, I2C1_IRQ_BIT);
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(all(target_arch = "arm", feature = "i2c1-local-irq"))]
+#[inline(never)]
+pub unsafe fn restore_i2c1_irq8_one_entry(saved: I2c1IrqRouteSnapshot) {
+    // prepare accepted only disabled/clear candidate8. Clear only this bit,
+    // after the source has been masked, disabled and selectively acknowledged.
+    unsafe {
+        mask_i2c1_irq8_one_entry();
+        core::ptr::write_volatile(NVIC_ICPR0, I2C1_IRQ_BIT);
+        core::arch::asm!("msr PRIMASK, {}", in(reg) saved.primask, options(nostack, preserves_flags));
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+}
+
 #[cfg(all(target_arch = "arm", feature = "timer0-alarm0-irq26-candidate"))]
 pub unsafe fn prepare_timer0_alarm0_irq26_candidate() -> bool {
     let before = timer0_alarm0_irq26_candidate_route_snapshot();
@@ -1944,6 +1994,22 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{precise_bus_data_fault, precise_memmanage_data_fault};
+
+    #[test]
+    fn i2c1_irq8_owned_route_rejects_every_unrelated_delta() {
+        let good = [0x2000_0000, 0, 0, 0, 1 << 21, 0, 0, 0];
+        assert!(super::i2c1_irq8_initial_route_ok(good));
+        for index in 0..7 {
+            let mut bad = good;
+            bad[index] ^= 1;
+            assert!(!super::i2c1_irq8_initial_route_ok(bad));
+        }
+        let mut state = good;
+        state[7] = 1;
+        assert!(super::i2c1_irq8_initial_route_ok(state));
+        state[7] = 2;
+        assert!(!super::i2c1_irq8_initial_route_ok(state));
+    }
 
     #[test]
     fn accepts_exact_memmanage_data_violation() {
