@@ -145,6 +145,8 @@ i2c1-wrapper-readonly-proof = [
     "rp1-rt/i2c1-local-irq-bank1-passive-scout",
 ]
 i2c1-wrapper-stop-irq-proof = ["i2c1-reset-only", "rp1-rt/i2c1-local-irq"]
+i2c1-read1-irq-proof = ["i2c1-reset-only", "rp1-rt/i2c1-local-irq"]
+i2c1-read1-irq-expect-5a = ["i2c1-read1-irq-proof"]
 pcie-ep-init = ["rp1-hal/pcie-ep-init", "rp1-rt/pcie-ep-init"]
 debug-stack-low = ["rp1-hal/debug-stack-low", "rp1-rt/debug-stack-low"]
 debug-snapshot = ["debug-stack-low", "rp1-hal/debug-snapshot", "rp1-rt/debug-snapshot"]

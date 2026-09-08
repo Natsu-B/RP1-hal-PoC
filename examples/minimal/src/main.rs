@@ -8,8 +8,14 @@ use rp1_hal::reset::{ResetController, UartReset};
 #[cfg(target_arch = "arm")]
 use rp1_rt as _;
 
-#[cfg(any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof"))]
+#[cfg(any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof", feature = "i2c1-read1-irq-proof"))]
 mod i2c1_wrapper_readonly_proof;
+
+#[cfg(feature = "i2c1-read1-irq-proof")]
+mod i2c1_read1_irq_proof;
+
+#[cfg(all(feature = "i2c1-read1-irq-proof", any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof")))]
+compile_error!("I2C1 read1 and wrapper terminal records are mutually exclusive");
 
 #[cfg(feature = "i2c1-wrapper-stop-irq-proof")]
 mod i2c1_wrapper_stop_irq_proof;
@@ -18,7 +24,7 @@ mod i2c1_wrapper_stop_irq_proof;
 compile_error!("I2C1 wrapper terminal records are mutually exclusive");
 
 #[cfg(all(
-    any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof"),
+    any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof", feature = "i2c1-read1-irq-proof"),
     any(
         feature = "i2c1-host-proof",
         feature = "i2c1-local-irq-proof",
@@ -1577,6 +1583,7 @@ fn quiet_stop() -> ! {
     not(feature = "uart0-rx-irq"),
     not(feature = "i2c1-wrapper-readonly-proof"),
     not(feature = "i2c1-wrapper-stop-irq-proof"),
+    not(feature = "i2c1-read1-irq-proof"),
     not(feature = "rp1-linux-clk-uart-ownership-conflict")
 ))]
 fn publish_bar2_readonly_identity(flags: u32) {
@@ -10499,7 +10506,7 @@ fn emit_readback_frames(pin: &mut ConfiguredPin<22, Output>, uart0: &Uart0Tx) {
 #[cfg(target_arch = "arm")]
 #[rp1_hal::main]
 fn main(mut p: Peripherals) -> ! {
-    #[cfg(any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof"))]
+    #[cfg(any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof", feature = "i2c1-read1-irq-proof"))]
     i2c1_wrapper_readonly_proof::invalidate();
 
     let mut gpio22 = p.gpio.pin::<22>().into_output();
@@ -10566,6 +10573,7 @@ fn main(mut p: Peripherals) -> ! {
                 not(feature = "uart0-tx-polling-only"),
                 not(feature = "i2c1-wrapper-readonly-proof"),
                 not(feature = "i2c1-wrapper-stop-irq-proof"),
+                not(feature = "i2c1-read1-irq-proof"),
                 not(feature = "rp1-linux-clk-uart-ownership-conflict")
             ))]
             if state5.decision == State5Decision::LinkUp {
@@ -11227,9 +11235,18 @@ fn main(mut p: Peripherals) -> ! {
                     feature = "i2c1-local-irq-proof",
                     feature = "i2c1-local-irq-bank1-passive-scout",
                     feature = "i2c1-wrapper-readonly-proof",
-                    feature = "i2c1-wrapper-stop-irq-proof"
+                    feature = "i2c1-wrapper-stop-irq-proof",
+                    feature = "i2c1-read1-irq-proof"
                 )))]
                 quiet_stop();
+            }
+            #[cfg(feature = "i2c1-read1-irq-proof")]
+            if state5.decision == State5Decision::LinkUp {
+                use i2c1_read1_irq_proof as proof;
+                pulse_width(&mut gpio22, proof::READY_MARKER);
+                let decision = proof::run(p.i2c1, p.gpio.pin::<2>(), p.gpio.pin::<3>());
+                pulse_width(&mut gpio22, if decision == proof::PASS { proof::SUCCESS_MARKER } else { proof::FAILURE_MARKER });
+                quiet_stop(); // Immutable I1X1; fresh RP1 boot required for next request.
             }
             #[cfg(feature = "i2c1-wrapper-stop-irq-proof")]
             if state5.decision == State5Decision::LinkUp {

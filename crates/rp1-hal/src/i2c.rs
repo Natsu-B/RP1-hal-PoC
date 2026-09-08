@@ -14,11 +14,15 @@ const IC_RAW_INTR_STAT: usize = 0x34;
 const IC_RX_TL: usize = 0x38;
 const IC_TX_TL: usize = 0x3c;
 const IC_CLR_INTR: usize = 0x40;
+const IC_CLR_RX_UNDER: usize = 0x44;
+const IC_CLR_RX_OVER: usize = 0x48;
+const IC_CLR_TX_OVER: usize = 0x4c;
 const IC_CLR_TX_ABRT: usize = 0x54;
 const IC_CLR_STOP_DET: usize = 0x60;
 const IC_ENABLE: usize = 0x6c;
 const IC_STATUS: usize = 0x70;
 const IC_TXFLR: usize = 0x74;
+const IC_RXFLR: usize = 0x78;
 const IC_SDA_HOLD: usize = 0x7c;
 const IC_TX_ABRT_SOURCE: usize = 0x80;
 const IC_ENABLE_STATUS: usize = 0x9c;
@@ -28,6 +32,9 @@ const IC_COMP_TYPE: usize = 0xfc;
 const IC_COMP_TYPE_VALUE: u32 = 0x4457_0140;
 const IC_CON_MASTER_STD_RESTART: u32 = (1 << 0) | (1 << 1) | (1 << 5) | (1 << 6);
 const IC_DATA_CMD_STOP: u32 = 1 << 9;
+pub const I2C1_READ1_COMMAND: u32 = (1 << 8) | IC_DATA_CMD_STOP;
+pub const I2C1_READ1_FATAL: u32 = 0x4b;
+pub const I2C1_READ1_MASK: u32 = I2C1_READ1_FATAL | (1 << 2);
 const IC_INTR_TX_ABRT: u32 = 1 << 6;
 const IC_INTR_STOP_DET: u32 = 1 << 9;
 const IC_ENABLE_ENABLE: u32 = 1 << 0;
@@ -92,6 +99,16 @@ pub struct I2c1IrqSnapshot {
 pub struct I2c1QueuedWrite {
     pub bytes_queued: u16,
     pub last_command: u32,
+}
+
+/// Non-clearing read1 evidence. Existing write-only snapshots stay unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct I2c1Read1Snapshot {
+    pub irq: I2c1IrqSnapshot,
+    pub status: u32,
+    pub tx_level: u32,
+    pub rx_level: u32,
+    pub rx_threshold: u32,
 }
 
 impl I2c1 {
@@ -210,18 +227,23 @@ impl I2c1Host {
 
     #[cfg(target_arch = "arm")]
     pub fn arm_stop_det_irq(&mut self, address: u8) -> Result<I2c1IrqSnapshot, I2c1Error> {
-        self.arm_stop_det_irq_inner(address, true)
+        self.arm_stop_det_irq_inner(address, true, IC_INTR_STOP_DET)
     }
 
     /// Leave every observed cause latched for the wrapper no-start precheck.
     #[cfg(target_arch = "arm")]
     #[inline(never)]
     pub fn arm_stop_det_irq_preserving_causes(&mut self, address: u8) -> Result<I2c1IrqSnapshot, I2c1Error> {
-        self.arm_stop_det_irq_inner(address, false)
+        self.arm_stop_det_irq_inner(address, false, IC_INTR_STOP_DET)
     }
 
     #[cfg(target_arch = "arm")]
-    fn arm_stop_det_irq_inner(&mut self, address: u8, acknowledge_stale: bool) -> Result<I2c1IrqSnapshot, I2c1Error> {
+    pub fn arm_read1_irq_preserving_causes(&mut self, address: u8) -> Result<I2c1IrqSnapshot, I2c1Error> {
+        self.arm_stop_det_irq_inner(address, false, I2C1_READ1_MASK)
+    }
+
+    #[cfg(target_arch = "arm")]
+    fn arm_stop_det_irq_inner(&mut self, address: u8, acknowledge_stale: bool, mask: u32) -> Result<I2c1IrqSnapshot, I2c1Error> {
         if address > 0x7f {
             return Err(I2c1Error::InvalidAddress(address));
         }
@@ -244,11 +266,21 @@ impl I2c1Host {
         ) {
             return Err(I2c1Error::EnableTimeout);
         }
-        reg(IC_INTR_MASK).write(IC_INTR_STOP_DET);
+        reg(IC_INTR_MASK).write(mask);
         unsafe {
             core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         }
         Ok(i2c1_irq_snapshot())
+    }
+
+    /// Caller must own one active request and verify clean RX/TX levels first.
+    #[cfg(target_arch = "arm")]
+    pub fn start_read1(&mut self) -> Result<u32, I2c1Error> {
+        if !poll_until(|| reg(IC_TXFLR).read() < u32::from(self.tx_fifo_depth), CONTROL_POLL_LIMIT) {
+            return Err(I2c1Error::TxFifoTimeout);
+        }
+        reg(IC_DATA_CMD).write(I2C1_READ1_COMMAND);
+        Ok(I2C1_READ1_COMMAND)
     }
 
     #[cfg(target_arch = "arm")]
@@ -300,6 +332,70 @@ pub fn i2c1_irq_snapshot() -> I2c1IrqSnapshot {
         abort_source,
         enable_status: reg(IC_ENABLE_STATUS).read(),
     }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn i2c1_read1_snapshot() -> I2c1Read1Snapshot {
+    I2c1Read1Snapshot {
+        irq: i2c1_irq_snapshot(),
+        status: reg(IC_STATUS).read(),
+        tx_level: reg(IC_TXFLR).read(),
+        rx_level: reg(IC_RXFLR).read(),
+        rx_threshold: reg(IC_RX_TL).read(),
+    }
+}
+
+pub const fn i2c1_read1_pop_allowed(rx_level: u32) -> bool { rx_level == 1 }
+
+/// Exactly one 32-bit FIFO access, never an empty read or a masked level.
+#[cfg(target_arch = "arm")]
+pub fn i2c1_read1_pop_one() -> Option<u32> {
+    i2c1_read1_pop_allowed(reg(IC_RXFLR).read()).then(|| reg(IC_DATA_CMD).read())
+}
+
+#[cfg(target_arch = "arm")]
+pub fn i2c1_mask_read1_irq() {
+    reg(IC_INTR_MASK).write(0);
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+}
+
+/// Return precisely the observed causes selected for acknowledgement. RX_FULL
+/// is a FIFO level, never acknowledged via a clear register.
+#[cfg(target_arch = "arm")]
+pub fn i2c1_ack_read1_irq(snapshot: I2c1Read1Snapshot) -> u32 {
+    let mut causes = (snapshot.irq.raw_interrupt_status | snapshot.irq.masked_interrupt_status)
+        & (I2C1_READ1_FATAL | IC_INTR_STOP_DET);
+    if snapshot.irq.abort_source != 0 { causes |= IC_INTR_TX_ABRT; }
+    for (bit, offset) in [(1, IC_CLR_RX_UNDER), (2, IC_CLR_RX_OVER), (8, IC_CLR_TX_OVER),
+        (IC_INTR_TX_ABRT, IC_CLR_TX_ABRT), (IC_INTR_STOP_DET, IC_CLR_STOP_DET)] {
+        if causes & bit != 0 { let _ = reg(offset).read(); }
+    }
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    causes
+}
+
+/// Bounded disable only: caller records and selectively acknowledges causes.
+#[cfg(target_arch = "arm")]
+pub fn i2c1_disable_read1_irq() -> Result<(), I2c1Error> {
+    i2c1_mask_read1_irq();
+    disable()
+}
+
+/// Failure cleanup only, never counted as IRQ recovery. Reject unknown levels.
+#[cfg(target_arch = "arm")]
+pub fn i2c1_read1_discard_residual(depth: u32) -> u32 {
+    let mut discarded = 0;
+    while discarded < depth {
+        let level = reg(IC_RXFLR).read();
+        if level == 0 || level > depth { break; }
+        let _ = reg(IC_DATA_CMD).read();
+        discarded += 1;
+    }
+    discarded
+}
+
+pub const fn i2c1_rx_fifo_depth(component_parameter: u32) -> u16 {
+    (((component_parameter >> 8) & 0xff) + 1) as u16
 }
 
 #[cfg(target_arch = "arm")]
@@ -403,6 +499,13 @@ mod tests {
     fn fifo_depth_decodes_component_parameter() {
         assert_eq!(tx_fifo_depth(31 << 16), 32);
         assert_eq!(tx_fifo_depth(1 << 16), 2);
+        assert_eq!(i2c1_rx_fifo_depth(0x001f_1fea), 32);
+        assert_eq!(I2C1_READ1_COMMAND, 0x300);
+        assert_eq!(I2C1_READ1_MASK, 0x4f);
+        for level in [0, 2, 31, 32, 256, u32::MAX] {
+            assert!(!i2c1_read1_pop_allowed(level));
+        }
+        assert!(i2c1_read1_pop_allowed(1));
     }
 
     #[test]
