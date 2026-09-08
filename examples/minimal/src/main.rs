@@ -8,6 +8,63 @@ use rp1_hal::reset::{ResetController, UartReset};
 #[cfg(target_arch = "arm")]
 use rp1_rt as _;
 
+#[cfg(feature = "i2c1-wrapper-readonly-proof")]
+mod i2c1_wrapper_readonly_proof;
+
+#[cfg(all(
+    feature = "i2c1-wrapper-readonly-proof",
+    any(
+        feature = "i2c1-host-proof",
+        feature = "i2c1-local-irq-proof",
+        feature = "i2c1-local-irq-bank1-passive-scout",
+        feature = "spi0-reset-only",
+        feature = "uart0-reset-only",
+        feature = "pwm-gpio12-proof",
+        feature = "gpio22-start-proof",
+        feature = "gpio-wiring-proof",
+        feature = "inbound-monitor-block-proof",
+        feature = "cortex-m3-option-proof",
+        feature = "boot-rom-readonly-proof",
+        feature = "boot-rom-boundary-proof",
+        feature = "proc1-boot-rom-proof",
+        feature = "dual-core-memory-proof",
+        feature = "proc-local-memory-proof",
+        feature = "expected-fault-recovery-proof",
+        feature = "rp1-axi-dmac-identity-readonly-proof",
+        feature = "rp1-axi-dmac-reset-state-readonly-proof",
+        feature = "rp1-axi-dmac-active-identity-proof",
+        feature = "rp1-axi-dmac-internal-reset-identity-proof",
+        feature = "rp1-axi-dmac-global-enable-identity-proof",
+        feature = "shared-sram-bitband-proof",
+        feature = "internal-memory-boundary-read-proof",
+        feature = "shared-sram-64k-mirror-readonly-proof",
+        feature = "shared-sram-alias-window-extent-readonly-proof",
+        feature = "shared-sram-system-region-alias-readonly-proof",
+        feature = "mpu-fault-enforcement-proof",
+        feature = "raw-timer-proof",
+        feature = "watchdog-proof",
+        feature = "watchdog-scratch-proof",
+        feature = "watchdog-expiry-reason-proof",
+        feature = "rp1-adc-one-shot-proof",
+        feature = "rp1-i2s-readonly-prerequisite-snapshot",
+        feature = "timer-register-proof",
+        feature = "timer-writable-time-proof",
+        feature = "timer0-inte-ints-proof",
+        feature = "timer0-alarm0-local-irq26-candidate",
+        feature = "uart-reset-irq-map-proof",
+        feature = "uart1-local-nvic42-delivery",
+        feature = "uart2-local-nvic43-delivery",
+        feature = "uart3-local-nvic44-delivery",
+        feature = "uart4-local-nvic45-delivery",
+        feature = "uart5-local-nvic46-delivery",
+        feature = "pcie-ep-init",
+        feature = "debug-snapshot",
+        feature = "debug-mailbox-init",
+        feature = "debug-mailbox-layout-v1"
+    )
+))]
+compile_error!("I2C1 wrapper read-only proof cannot share another GPIO/mailbox/terminal proof");
+
 #[cfg(all(target_arch = "arm", feature = "inbound-monitor-block-proof"))]
 mod inbound_monitor;
 
@@ -1512,6 +1569,7 @@ fn quiet_stop() -> ! {
     target_arch = "arm",
     feature = "bar2-readonly-handshake",
     not(feature = "uart0-rx-irq"),
+    not(feature = "i2c1-wrapper-readonly-proof"),
     not(feature = "rp1-linux-clk-uart-ownership-conflict")
 ))]
 fn publish_bar2_readonly_identity(flags: u32) {
@@ -10434,6 +10492,9 @@ fn emit_readback_frames(pin: &mut ConfiguredPin<22, Output>, uart0: &Uart0Tx) {
 #[cfg(target_arch = "arm")]
 #[rp1_hal::main]
 fn main(mut p: Peripherals) -> ! {
+    #[cfg(feature = "i2c1-wrapper-readonly-proof")]
+    i2c1_wrapper_readonly_proof::invalidate();
+
     let mut gpio22 = p.gpio.pin::<22>().into_output();
     pulse_group(&mut gpio22, 1);
     pulse_group(&mut gpio22, 2);
@@ -10496,6 +10557,7 @@ fn main(mut p: Peripherals) -> ! {
             #[cfg(all(
                 feature = "bar2-readonly-handshake",
                 not(feature = "uart0-tx-polling-only"),
+                not(feature = "i2c1-wrapper-readonly-proof"),
                 not(feature = "rp1-linux-clk-uart-ownership-conflict")
             ))]
             if state5.decision == State5Decision::LinkUp {
@@ -11155,9 +11217,25 @@ fn main(mut p: Peripherals) -> ! {
                 #[cfg(not(any(
                     feature = "i2c1-host-proof",
                     feature = "i2c1-local-irq-proof",
-                    feature = "i2c1-local-irq-bank1-passive-scout"
+                    feature = "i2c1-local-irq-bank1-passive-scout",
+                    feature = "i2c1-wrapper-readonly-proof"
                 )))]
                 quiet_stop();
+            }
+            #[cfg(feature = "i2c1-wrapper-readonly-proof")]
+            if state5.decision == State5Decision::LinkUp {
+                use i2c1_wrapper_readonly_proof as proof;
+                pulse_width(&mut gpio22, proof::READY_MARKER);
+                let before = proof::capture(0);
+                // Keep the ordinary host setup; no arm, transfer or cleanup follows it.
+                let setup = p.i2c1.into_host_100khz(p.gpio.pin::<2>(), p.gpio.pin::<3>());
+                let after = proof::capture(1);
+                proof::publish(proof::record(setup.is_ok(), before, after));
+                pulse_width(
+                    &mut gpio22,
+                    if setup.is_ok() { proof::SUCCESS_MARKER } else { proof::FAILURE_MARKER },
+                );
+                quiet_stop(); // Immutable terminal record, including setup failure.
             }
             #[cfg(feature = "i2c1-local-irq-bank1-passive-scout")]
             if state5.decision == State5Decision::LinkUp {
