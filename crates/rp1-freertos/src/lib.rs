@@ -145,6 +145,14 @@ pub unsafe fn tick() -> Result<u32, Error> {
     Ok(ticks)
 }
 
+/// Remaining units before a wrapping32-bit deadline, or None when due/past.
+/// Both arguments must use the same counter/unit; the deadline must lie within
+/// half its wrap period. Works across wrap; ambiguous half-range is rejected.
+pub fn deadline_remaining(now: u32, deadline: u32) -> Option<u32> {
+    let remaining = deadline.wrapping_sub(now);
+    (remaining != 0 && remaining < 0x8000_0000).then_some(remaining)
+}
+
 /// Returns `None` for idle or an unmanaged kernel task.
 /// # Safety
 /// Running proc0 task context; see the module contract.
@@ -296,6 +304,17 @@ mod ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapping_deadline() {
+        assert_eq!(deadline_remaining(10, 20), Some(10));
+        assert_eq!(deadline_remaining(20, 20), None);
+        assert_eq!(deadline_remaining(21, 20), None);
+        assert_eq!(deadline_remaining(0xffff_fff0, 0x10), Some(32));
+        assert_eq!(deadline_remaining(0x10, 0xffff_fff0), None);
+        assert_eq!(deadline_remaining(0, 0x8000_0000), None);
+        assert_eq!(deadline_remaining(0, 0x7fff_ffff), Some(0x7fff_ffff));
+    }
 
     #[test]
     fn boundary_contract() {

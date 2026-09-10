@@ -6,11 +6,14 @@ use rp1_hal::gpio::{ConfiguredPin, Output};
 
 #[cfg(all(feature = "freertos-r1-fault", feature = "freertos-r1-panic"))]
 compile_error!("Select exactly one deliberate fault mode");
+#[cfg(all(feature = "freertos-r1-timer-irq", any(feature = "freertos-r1-fault", feature = "freertos-r1-panic")))]
+compile_error!("IRQ wakeup and deliberate faults are separate cohorts");
 
 const TELEMETRY: *mut u32 = 0x2000_f800 as *mut u32;
 static mut DATA_SENTINEL: u32 = 0x1357_9bdf;
 static mut BSS_SENTINEL: u32 = 0;
-static mut TASKS: [Option<Task>; 7] = [None; 7];
+const TASK_COUNT: usize = if cfg!(feature = "freertos-r1-timer-irq") { 8 } else { 7 };
+static mut TASKS: [Option<Task>; TASK_COUNT] = [None; TASK_COUNT];
 static mut QUEUE: Option<U32Queue> = None;
 static mut CHECK_QUEUE: Option<U32Queue> = None;
 static mut SEM: Option<BinarySemaphore> = None;
@@ -106,6 +109,12 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
             let handle = Task::create(slot as u32, name, entry, arg as *mut c_void, priority, words).unwrap();
             ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(slot).write(Some(handle));
         }
+        #[cfg(feature = "freertos-r1-timer-irq")]
+        {
+            timer_irq::prepare();
+            let handle = Task::create(7, c"timer-irq", timer_irq::worker, ptr::null_mut(), 5, 256).unwrap();
+            ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
+        }
         put(2, 3);
         os::start(hz).unwrap();
     }
@@ -126,6 +135,8 @@ extern "C" fn rp1_freertos_tick_hook() {
 #[unsafe(no_mangle)]
 extern "C" fn rp1_freertos_switch_hook(id: u32) {
     put(10, id); increment(9);
+    #[cfg(feature = "freertos-r1-timer-irq")]
+    if get(120) == 1 { put(121, id); put(120, 0); }
 }
 
 #[unsafe(no_mangle)]
@@ -169,6 +180,11 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         for i in 0..4 { assert_ne!(current[i], previous[i]); }
         previous = current;
         assert_eq!(get(70) | get(86), 0); // assembly context error latches
+        #[cfg(feature = "freertos-r1-timer-irq")]
+        {
+            assert!(get(97) > 0 && get(98) == 0 && get(114) == 0);
+            unsafe { put(123, task(7).stack_high_water().unwrap()); }
+        }
         unsafe {
             for slot in 0..7 { put(32+slot, task(slot).stack_high_water().unwrap()); }
             put(22, (0xe000_e014 as *const u32).read_volatile());
@@ -196,6 +212,113 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
             #[cfg(feature = "freertos-r1-panic")]
             { put(40, 2); panic!("deliberate R1 task panic"); }
         }
+    }
+}
+
+/// Selected TIMER0 ALARM0 IRQ26 is already HW-proven. This opt-in cohort tests
+/// RTOS FromISR wakeup/priority/latency, not IRQ discovery. Own ALARM0 exclusively;
+/// raw timer reads and official SysTick keep their existing independent owners.
+#[cfg(feature = "freertos-r1-timer-irq")]
+mod timer_irq {
+    use super::*;
+    const BIT: u32 = 1 << 26;
+    const PERIOD_US: u32 = 20_000; // Initial IRQ/RTOS admission, not 200us acceptance.
+    const ALARM: *mut u32 = 0x400a_c010 as *mut u32;
+    const ARMED: *const u32 = 0x400a_c020 as *const u32;
+    const INTR: *mut u32 = 0x400a_c034 as *mut u32;
+    const INTE: *mut u32 = 0x400a_c038 as *mut u32;
+    const INTF: *const u32 = 0x400a_c03c as *const u32;
+    const INTS: *const u32 = 0x400a_c040 as *const u32;
+    const ENABLE: *mut u32 = 0xe000_e100 as *mut u32;
+    const DISABLE: *mut u32 = 0xe000_e180 as *mut u32;
+    const PENDING: *mut u32 = 0xe000_e280 as *mut u32;
+    const PRIORITY: *mut u8 = 0xe000_e41a as *mut u8;
+
+    fn barrier() { unsafe { core::arch::asm!("dsb sy", "isb", options(nostack)); } }
+    unsafe fn mask() { unsafe { DISABLE.write_volatile(BIT); } barrier(); }
+
+    pub unsafe fn prepare() { unsafe {
+        // No global VTOR/PRIMASK/BASEPRI or unrelated IRQ priority modification.
+        assert_eq!(ENABLE.read_volatile() & BIT, 0);
+        assert_eq!(ARMED.read_volatile(), 0);
+        assert_eq!(INTE.read_volatile() | INTF.read_volatile() | INTS.read_volatile(), 0);
+        assert_eq!(INTR.read_volatile() & !0xf, 0);
+        INTR.write_volatile(1); // Known ALARM0 W1C, not unknown ARMED semantics.
+        PENDING.write_volatile(BIT);
+        PRIORITY.write_volatile(0xc0); // Logical6, lower urgency than max-syscall5.
+        barrier();
+        assert_eq!(PRIORITY.read_volatile(), 0xc0);
+        put(100, u32::from(PRIORITY.read_volatile()));
+    } }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn TIMER0_ALARM0_IRQ26_CANDIDATE_IRQHandler() { unsafe {
+        let entered = raw_low();
+        let (ipsr, primask, basepri): (u32, u32, u32);
+        core::arch::asm!("mrs {0}, IPSR", "mrs {1}, PRIMASK", "mrs {2}, BASEPRI",
+            out(reg) ipsr, out(reg) primask, out(reg) basepri, options(nomem, nostack));
+        let source = INTS.read_volatile();
+        INTE.write_volatile(0); // Stop source before notification; bounded one event.
+        INTR.write_volatile(1);
+        barrier();
+        put(99, ipsr); put(102, primask); put(103, basepri); put(104, entered);
+        increment(96);
+        if source != 1 || ipsr != 42 || get(119) != 1 {
+            increment(98); mask(); return;
+        }
+        put(113, get(112)); put(119, 0);
+        put(120, 1); // The next switch hook must select the higher-priority task8.
+        if task(7).notification_give_from_isr().is_err() { increment(98); mask(); }
+        let end = raw_low(); put(105, end); put(109, get(109).max(end.wrapping_sub(entered)));
+    } }
+
+    pub unsafe extern "C" fn worker(_: *mut c_void) {
+        let (ipsr, control, psp, msp): (u32, u32, u32, u32);
+        unsafe {
+            core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL", "mrs {2}, PSP", "mrs {3}, MSP",
+                out(reg) ipsr, out(reg) control, out(reg) psp, out(reg) msp, options(nomem, nostack));
+        }
+        for (i, value) in [ipsr, control, psp, msp].into_iter().enumerate() { put(124+i, value); }
+        assert_eq!(ipsr, 0); assert_eq!(control & 3, 2); assert_eq!(psp & 7, 0);
+        let mut deadline = raw_low().wrapping_add(PERIOD_US);
+        loop { unsafe {
+            mask();
+            assert_eq!(ARMED.read_volatile() & 1, 0);
+            assert_eq!((INTR.read_volatile() | INTE.read_volatile() | INTS.read_volatile()) & 1, 0);
+            assert_eq!(os::notification_take(true, 0).unwrap(), 0);
+            if os::deadline_remaining(raw_low(), deadline).is_none() {
+                increment(114); deadline = raw_low().wrapping_add(PERIOD_US);
+            }
+            increment(112); put(119, 1); put(121, 0); put(110, deadline);
+            PENDING.write_volatile(BIT);
+            ALARM.write_volatile(deadline);
+            INTE.write_volatile(1);
+            barrier();
+            assert_eq!(ARMED.read_volatile() & 1, 1);
+            assert_eq!(INTE.read_volatile(), 1);
+            assert_eq!(INTS.read_volatile(), 0);
+            ENABLE.write_volatile(BIT);
+            barrier();
+            let count = os::notification_take(true, 50).unwrap(); // Block, not RX/timer polling.
+            let woke = raw_low(); put(106, woke);
+            mask(); INTE.write_volatile(0); barrier();
+            if count != 1 {
+                // Do not write unproven ARMED disarm bits or resume a failed task.
+                put(119, 0); increment(98); panic!("TIMER IRQ task timeout");
+            }
+            assert_eq!(get(113), get(112));
+            assert_eq!(get(121), 8); // Immediate portYIELD_FROM_ISR task selection.
+            assert_eq!(INTR.read_volatile() & 1, 0);
+            assert_eq!(INTS.read_volatile() & 1, 0);
+            assert_eq!(get(98), 0);
+            let latency = woke.wrapping_sub(get(105));
+            put(107, latency); put(108, get(108).max(latency));
+            let lateness = woke.wrapping_sub(deadline);
+            assert!(lateness < 50_000);
+            put(111, get(111).max(lateness));
+            increment(97);
+            deadline = deadline.wrapping_add(PERIOD_US);
+        } }
     }
 }
 

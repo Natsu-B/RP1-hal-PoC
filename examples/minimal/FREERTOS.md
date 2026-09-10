@@ -74,7 +74,7 @@ Initial telemetry (`u32` indices relative f800): 0 RT01 magic;1 version;2 stage;
 10 last task;11 last tick raw time;12/13 min/max tick interval;14 monitor cycles;
 15 consumer completions;17 inheritance count;18 MSP bytes touched;
 19/20 initial data/BSS;21 AIRCR;22 reload;23..25 observed SYS control/div/SEL;
-26/27 run raw times;28..31 first task IPSR/CONTROL/PSP/MSP;
+26/27 run raw times;28..31 monitor IPSR/CONTROL/PSP/MSP (first task in the7-task image);
 32..38 minimum untouched task stack words;39 queue checks;48/49 sent/received;
 50 mutex completions. Spinner blocks64 and80 contain counter, initial
 IPSR/CONTROL/PSP/MSP and error latch at block+6. Stage5 means the monitor has
@@ -97,3 +97,22 @@ UsageFault and executes UDF with known R0-R3/R12 values; the second calls the
 ordinary Rust panic path. Both halt for reserved-record inspection, never
 skip the fault instruction, restart in place, or write RP1 reset/POWER bits.
 Hardware/restart validation is separate from building these candidates.
+
+## TIMER FromISR candidate
+
+RP1_RTOS_FEATURE=freertos-r1-timer-irq adds slot7 (task ID8), priority5, to the
+same seven-task workload. It owns previously proven TIMER0 ALARM0/IRQ26 only,
+with NVIC priority6/c0 and the existing vector ABI; legacy setup routines that
+change VTOR/global masks are not called. The official SysTick remains1kHz.
+Each real alarm masks/acks its source, publishes generation/timestamps, calls
+notification_give_from_isr, and requests the official port yield. The next
+switch must select task8; the task blocks for completion, never timer-polls.
+The initial absolute deadline period is20ms, not a200us/5kHz acceptance claim.
+
+Telemetry96..127: IRQ/wake/error counts96..98; IPSR99, priority100; initial ISR
+PRIMASK/BASEPRI102/103; IRQentry/end/task timestamps104..106; last/max IRQ-end
+to-task latency107/108; max ISR body109; deadline110/max lateness111;
+requested/IRQ generation112/113; missed schedule114; active119;
+next-switch latch120/ID121; task8 free stack123; first task8 context124..127.
+Whole host snapshots remain non-atomic. Finite timeout disables source/route
+and panics; it does not write unproven ARMED disarm bits or claim in-place recovery.

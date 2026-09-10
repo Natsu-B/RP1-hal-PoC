@@ -7,6 +7,9 @@ import struct
 import subprocess
 import sys
 
+if not __debug__:
+    raise SystemExit('ELF admission requires assertions enabled; refuse -O/PYTHONOPTIMIZE')
+
 
 def check(path):
     data = Path(path).read_bytes()
@@ -35,7 +38,12 @@ def check(path):
         fields = line.split()
         if len(fields) == 3:
             symbols[fields[2]] = int(fields[0], 16)
-    for index, name in {1:'Reset', 3:'RP1RtosFault', 11:'vPortSVCHandler', 14:'xPortPendSVHandler', 15:'xPortSysTickHandler'}.items():
+    required_vectors = {1:'Reset', **{n:'RP1RtosFault' for n in range(2, 7)},
+                        11:'vPortSVCHandler', 14:'xPortPendSVHandler', 15:'xPortSysTickHandler'}
+    for index, name in {42:'TIMER0_ALARM0_IRQ26_CANDIDATE_IRQHandler',
+                        35:'SPI0_IRQHandler', 24:'I2C1_IRQHandler'}.items():
+        if name in symbols: required_vectors[index] = name
+    for index, name in required_vectors.items():
         assert vector[index] == symbols[name] | 1, f'vector {index} must point directly to {name}'
     assert symbols['__ebss'] <= 0x2000e000
     assert not subprocess.check_output(['arm-none-eabi-nm', '-u', str(path)]), 'undefined symbols'
@@ -50,6 +58,7 @@ def check(path):
     return {'classification':'BUILD', 'status':'PASS', 'entry':hex(entry),
             'pt_load_end':hex(max(row[1] for row in loads)), 'msp':[hex(0x2000e000),hex(vector[0])],
             'bss_bytes':symbols['__ebss']-symbols['__sbss'], 'direct_rtos_vectors':True,
+            'checked_vector_indices': sorted(required_vectors),
             'exclusive_instructions':0, 'hardware':'OPEN'}
 
 

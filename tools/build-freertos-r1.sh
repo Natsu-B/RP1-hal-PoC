@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-freertos-r1.sh /new/output/directory' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
-case "$feature" in freertos-r1|freertos-r1-fault|freertos-r1-panic) ;; *) exit 2 ;; esac
+case "$feature" in freertos-r1|freertos-r1-fault|freertos-r1-panic|freertos-r1-timer-irq) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
