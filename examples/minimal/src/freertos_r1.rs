@@ -66,7 +66,7 @@ fn calibrate_cpu_hz() -> u32 {
 }
 
 pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
-    for n in 0..192 { put(n, 0); }
+    for n in 0..256 { put(n, 0); } // Clear stale exception record as well.
     put(0, u32::from_le_bytes(*b"RT01")); put(1, 1); put(2, 1);
     put(12, u32::MAX);
     unsafe {
@@ -129,6 +129,12 @@ extern "C" fn rp1_freertos_switch_hook(id: u32) {
 extern "C" fn rp1_freertos_fault_hook(reason: u32, detail: u32) -> ! {
     unsafe { core::arch::asm!("cpsid i", options(nostack)); }
     put(3, reason); put(4, detail);
+    let (ipsr, control, psp, msp): (u32, u32, u32, u32);
+    unsafe {
+        core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL", "mrs {2}, PSP", "mrs {3}, MSP",
+            out(reg) ipsr, out(reg) control, out(reg) psp, out(reg) msp, options(nomem, nostack));
+    }
+    for (i, v) in [ipsr, control, psp, msp].into_iter().enumerate() { put(56+i, v); }
     unsafe { core::arch::asm!("dsb sy", options(nostack)); }
     put(2, 0xffff_ffff);
     loop { unsafe { core::arch::asm!("wfi", options(nomem, nostack)); } }

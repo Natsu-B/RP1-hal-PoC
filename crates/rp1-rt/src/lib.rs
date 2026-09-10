@@ -2008,7 +2008,7 @@ pub unsafe extern "C" fn DefaultHandler() {
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
     #[cfg(feature = "freertos")]
-    unsafe { freertos::rp1_freertos_fault_hook(4, 0); }
+    unsafe { freertos::rp1_freertos_fault_hook(4, _info.location().map_or(0, |location| location.line())); }
     #[cfg(feature = "debug-stub")]
     debug_stub::panic();
 
