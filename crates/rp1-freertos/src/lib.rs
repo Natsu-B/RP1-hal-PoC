@@ -295,6 +295,8 @@ mod ffi {
         pub fn rp1_freertos_stack_high_water(id: u32) -> i32;
         pub fn rp1_freertos_notification_take(clear: u32, ticks: u32, count: *mut u32) -> i32;
         pub fn rp1_freertos_notification_give(id: u32) -> i32;
+        pub fn rp1_freertos_cancel_notification(generation: u32, active: *const u32,
+            cancelled: *mut u32, waiter: *const u32) -> i32;
         pub fn rp1_freertos_notification_give_from_isr(id: u32) -> i32;
         pub fn rp1_freertos_queue_create(slot: u32, capacity: u32) -> i32;
         pub fn rp1_freertos_queue_send(id: u32, item: u32, ticks: u32) -> i32;

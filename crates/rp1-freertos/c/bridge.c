@@ -214,6 +214,30 @@ int32_t rp1_freertos_notification_give(uint32_t id)
     return xTaskNotifyGive(handle) == pdPASS ? 0 : UNAVAILABLE;
 }
 
+/* One proc0 task transaction: an old canceller must not resume across rearm.
+ * Notify is nonblocking; its PendSV runs only after the outer critical exit. */
+int32_t rp1_freertos_cancel_notification(uint32_t generation,
+        const volatile uint32_t *active, volatile uint32_t *cancelled,
+        const volatile uint32_t *waiter)
+{
+    int32_t result = thread_context(1);
+    if (result != 0) return result;
+    if (active == NULL || cancelled == NULL || waiter == NULL) return INVALID;
+    if (generation == 0) return 0;
+    taskENTER_CRITICAL();
+    result = 0;
+    if (*active == generation) {
+        TaskHandle_t handle = task_handle(*waiter);
+        if (handle == NULL) result = INVALID;
+        else {
+            *cancelled = generation;
+            result = xTaskNotifyGive(handle) == pdPASS ? 1 : UNAVAILABLE;
+        }
+    }
+    taskEXIT_CRITICAL();
+    return result;
+}
+
 int32_t rp1_freertos_notification_give_from_isr(uint32_t id)
 {
     int32_t result = isr_context();

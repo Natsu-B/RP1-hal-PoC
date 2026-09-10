@@ -45,7 +45,25 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
         unsafe { wait_level(false, 30_000); }
         put(129, 2);
         let mut rx = Buffer { before:0x5aa5_a55a, bytes:[0xc3;4], after:0xa55a_5aa5 };
-        let receipt = unsafe { driver.receive(&[0;4], &mut rx.bytes, 50).unwrap() };
+        let result = unsafe { driver.receive(&[0;4], &mut rx.bytes, 50) };
+        if let Err(error) = result {
+            use os::spi0::Error::*;
+            use rp1_hal::spi::Spi0RxError as Rx;
+            let (code, detail) = match error {
+                InvalidDeadline => (1,0), Cancelled => (2,0), Timeout => (3,0), IrqBudget => (4,0),
+                Receive(Rx::InterruptFault(bits)) => (5,bits),
+                Receive(Rx::UnexpectedSource(bits)) => (6,bits),
+                Receive(Rx::InvalidFifoLevel { level, remaining }) => (7,level | ((remaining as u32)<<16)),
+                Receive(Rx::Incomplete { received, expected }) => (8,(received as u32) | ((expected as u32)<<16)),
+                Receive(Rx::CleanupReadback) => (9,0), Receive(_) => (10,0),
+            };
+            put(152,code); put(153,detail); put(158,u32::from_be_bytes(rx.bytes));
+            if let Some(r) = driver.last_receipt() {
+                put(154,r.generation); put(155,r.irq_entries);
+                put(156,r.elapsed_us); put(157,r.irq_body_max_us);
+            }
+        }
+        let receipt = result.unwrap();
         let received = u32::from_be_bytes(rx.bytes);
         assert_eq!(received, 0x6996_3c00 | id);
         assert_eq!(rx.before,0x5aa5_a55a); assert_eq!(rx.after,0xa55a_5aa5);

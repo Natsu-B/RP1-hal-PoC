@@ -1,6 +1,7 @@
 //! Proc0 SPI0 IRQ19 adapter. One owner, one FIFO, one outstanding request.
 //! Uses the caller task's default notification exclusively while receiving.
-//! No clock/reset/VTOR/global interrupt-mask writer, allocation, or proc1 lock.
+//! No clock/reset/VTOR writer, allocation, or proc1 lock. Cancellation uses the
+//! kernel's task critical section to serialize its short nonblocking transaction.
 use crate::{self as os, Task};
 use core::ptr;
 use rp1_hal::spi::{Spi0Host, Spi0IrqTransfer, Spi0RxError, Spi0RxState};
@@ -11,7 +12,7 @@ const DISABLE: *mut u32 = 0xe000_e180 as *mut u32;
 const PENDING: *mut u32 = 0xe000_e280 as *mut u32;
 const PRIORITY: *mut u8 = 0xe000_e413 as *mut u8;
 static mut ACTIVE: *mut Spi0IrqTransfer<'static> = ptr::null_mut();
-static mut WAITER: Option<Task> = None;
+static mut WAITER: u32 = 0;
 static mut GENERATION: u32 = 0;
 static mut CANCEL: u32 = 0;
 static mut IRQ_COUNT: u32 = 0;
@@ -38,7 +39,7 @@ pub struct Receipt {
 }
 
 /// Owns the HAL host/pins; do not create another SPI0 owner or call from proc1.
-pub struct Driver { host: Spi0Host, generation: u32 }
+pub struct Driver { host: Spi0Host, generation: u32, last: Option<Receipt> }
 
 impl Driver {
     /// # Safety
@@ -51,8 +52,11 @@ impl Driver {
         unsafe { PRIORITY.write_volatile(0xc0); PENDING.write_volatile(BIT); }
         barrier();
         assert_eq!(unsafe { PRIORITY.read_volatile() }, 0xc0);
-        Self { host, generation: 0 }
+        Self { host, generation: 0, last: None }
     }
+
+    /// Last request's counters, including checked-aborted requests. No MMIO.
+    pub fn last_receipt(&self) -> Option<Receipt> { self.last }
 
     /// Receive with bounded FIFO servicing and task blocking until IRQ/deadline.
     /// Successful return means serial idle AND checked local cleanup, not only
@@ -65,6 +69,7 @@ impl Driver {
     pub unsafe fn receive(&mut self, tx: &[u8], rx: &mut [u8], timeout_ticks: u32)
         -> Result<Receipt, Error>
     {
+        self.last = None;
         if timeout_ticks == 0 || timeout_ticks >= 0x8000_0000 { return Err(Error::InvalidDeadline); }
         let deadline = unsafe { os::tick().unwrap() }.wrapping_add(timeout_ticks);
         let started = raw();
@@ -76,7 +81,7 @@ impl Driver {
         self.generation = self.generation.wrapping_add(1).max(1);
         let generation = self.generation;
         unsafe {
-            ptr::addr_of_mut!(WAITER).write_volatile(Some(waiter));
+            ptr::addr_of_mut!(WAITER).write_volatile(waiter.0);
             ptr::addr_of_mut!(CANCEL).write_volatile(0);
             ptr::addr_of_mut!(IRQ_COUNT).write_volatile(0);
             ptr::addr_of_mut!(IRQ_ERROR).write_volatile(0);
@@ -130,10 +135,14 @@ impl Driver {
         unsafe {
             ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::null_mut());
             ptr::addr_of_mut!(GENERATION).write_volatile(0);
-            ptr::addr_of_mut!(WAITER).write_volatile(None);
+            ptr::addr_of_mut!(WAITER).write_volatile(0);
             PENDING.write_volatile(BIT);
         }
         barrier();
+        // No ISR or canceller can publish after withdrawal. Do not let a late
+        // completion/cancellation count escape this receive's reserved channel.
+        unsafe { os::notification_take(true, 0).unwrap(); }
+        self.last = Some(receipt);
         result.map(|()| receipt)
     }
 }
@@ -147,12 +156,9 @@ pub unsafe fn active_generation() -> u32 { unsafe { ptr::addr_of!(GENERATION).re
 /// # Safety
 /// Proc0 task context. The owner task notification is reserved to this adapter.
 pub unsafe fn cancel(generation: u32) -> bool {
-    if generation == 0 || generation != unsafe { active_generation() } { return false; }
-    unsafe { ptr::addr_of_mut!(CANCEL).write_volatile(generation); }
-    if let Some(task) = unsafe { ptr::addr_of!(WAITER).read_volatile() } {
-        unsafe { task.notification_give().unwrap(); }
-    }
-    true
+    os::value(unsafe { os::ffi::rp1_freertos_cancel_notification(generation,
+        ptr::addr_of!(GENERATION), ptr::addr_of_mut!(CANCEL), ptr::addr_of!(WAITER)) })
+        .expect("SPI cancellation transaction failed") == 1
 }
 
 /// # Safety
@@ -177,8 +183,9 @@ pub unsafe fn on_interrupt() {
     if terminal {
         mask();
         unsafe { ptr::addr_of_mut!(IRQ_GENERATION).write_volatile(ptr::addr_of!(GENERATION).read_volatile()); }
-        if let Some(task) = unsafe { ptr::addr_of!(WAITER).read_volatile() } {
-            unsafe { task.notification_give_from_isr().unwrap(); }
+        let waiter = unsafe { ptr::addr_of!(WAITER).read_volatile() };
+        if waiter != 0 {
+            unsafe { Task(waiter).notification_give_from_isr().unwrap(); }
         }
     }
     let ended = raw();
