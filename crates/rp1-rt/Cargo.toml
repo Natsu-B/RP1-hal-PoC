@@ -6,6 +6,7 @@ build = "build.rs"
 
 [features]
 default = []
+freertos = []
 pcie-ep-init = []
 debug-stack-low = []
 debug-snapshot = ["debug-stack-low"]

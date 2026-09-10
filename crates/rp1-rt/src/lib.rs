@@ -1,5 +1,12 @@
 #![no_std]
 
+#[cfg(all(feature = "freertos", any(feature = "expected-fault-recovery", feature = "debug-stub", feature = "debug-mailbox-init")))]
+compile_error!("FreeRTOS owns exception handling; do not combine with legacy fault/debug runtime");
+#[cfg(all(feature = "freertos", target_arch = "arm"))]
+mod freertos;
+#[cfg(all(feature = "freertos", target_arch = "arm"))]
+use freertos::Reset;
+
 #[cfg(all(
     any(feature = "debug-mailbox-init", feature = "debug-stub"),
     target_arch = "arm"
@@ -81,6 +88,7 @@ unsafe extern "C" {
 #[cfg(all(
     target_arch = "arm",
     not(any(
+        feature = "freertos",
         feature = "uart0-rx-irq",
         feature = "uart1-local-irq",
         feature = "uart2-local-irq",
@@ -129,6 +137,7 @@ unsafe extern "C" {
     target_arch = "arm",
     feature = "expected-fault-recovery",
     not(any(
+        feature = "freertos",
         feature = "uart0-rx-irq",
         feature = "pwm0-local-irq",
         feature = "spi0-local-irq",
@@ -162,6 +171,7 @@ pub static VECTOR_TABLE: [unsafe extern "C" fn(); 16] = [
 #[cfg(all(
     target_arch = "arm",
     any(
+        feature = "freertos",
         feature = "uart0-rx-irq",
         feature = "uart1-local-irq",
         feature = "uart2-local-irq",
@@ -180,6 +190,17 @@ const fn local_irq_vector_table() -> [unsafe extern "C" fn(); 80] {
     let mut vectors = [DefaultHandler as unsafe extern "C" fn(); 80];
     vectors[0] = _stack_start;
     vectors[1] = Reset;
+    #[cfg(feature = "freertos")]
+    {
+        vectors[2] = freertos::RP1RtosFault;
+        vectors[3] = freertos::RP1RtosFault;
+        vectors[4] = freertos::RP1RtosFault;
+        vectors[5] = freertos::RP1RtosFault;
+        vectors[6] = freertos::RP1RtosFault;
+        vectors[11] = freertos::vPortSVCHandler;
+        vectors[14] = freertos::xPortPendSVHandler;
+        vectors[15] = freertos::xPortSysTickHandler;
+    }
     #[cfg(feature = "expected-fault-recovery")]
     {
         vectors[3] = ExpectedFaultHandler;
@@ -234,6 +255,7 @@ const fn local_irq_vector_table() -> [unsafe extern "C" fn(); 80] {
 #[cfg(all(
     target_arch = "arm",
     any(
+        feature = "freertos",
         feature = "uart0-rx-irq",
         feature = "uart1-local-irq",
         feature = "uart2-local-irq",
@@ -266,13 +288,11 @@ pub const UART5_IRQ_NUMBER: usize = 46;
 pub const UART5_VECTOR_INDEX: usize = 16 + UART5_IRQ_NUMBER;
 pub const PWM0_IRQ_NUMBER: usize = 5;
 pub const PWM0_VECTOR_INDEX: usize = 16 + PWM0_IRQ_NUMBER;
-/// Historical candidate retained for the bounded negative commissioning test.
-/// SPI0 source assertion did not produce NVIC19 delivery; this is NOT a proven
-/// local route. The host MSI-X ID alone cannot establish a Cortex-M IRQ number.
+/// Selected SPI0 RX route established by September 2026 IRQ19/IPSR35 cohorts.
+/// This is the Cortex-M NVIC namespace, not the host MSI-X namespace.
 pub const SPI0_IRQ_NUMBER: usize = 19;
 pub const SPI0_VECTOR_INDEX: usize = 16 + SPI0_IRQ_NUMBER;
-/// Historical negative candidate, NOT an established I2C1-to-local-NVIC route.
-/// Kept for reproducing the IRQ8 commissioning test without changing its ABI.
+/// Selected I2C1 RX/abort route established by September 2026 IRQ8/IPSR24 cohorts.
 pub const I2C1_IRQ_NUMBER: usize = 8;
 pub const I2C1_VECTOR_INDEX: usize = 16 + I2C1_IRQ_NUMBER;
 pub const TIMER0_ALARM0_IRQ26_CANDIDATE_NUMBER: usize = 26;
@@ -320,6 +340,7 @@ const VECTOR_TABLE_BASE: u32 = 0x2000_0000;
 #[cfg(all(
     target_arch = "arm",
     any(
+        feature = "freertos",
         feature = "uart0-rx-irq",
         feature = "uart1-local-irq",
         feature = "uart2-local-irq",
@@ -1429,6 +1450,7 @@ pub unsafe fn disable_timer0_alarm0_irq26_candidate() {
 #[cfg(all(
     target_arch = "arm",
     any(
+        feature = "freertos",
         feature = "uart0-rx-irq",
         feature = "uart1-local-irq",
         feature = "uart2-local-irq",
@@ -1918,13 +1940,14 @@ pub unsafe fn run_expected_data_write(address: *mut u32, value: u32) -> Expected
     }
 }
 
-#[cfg(target_arch = "arm")]
+#[cfg(all(target_arch = "arm", not(feature = "freertos")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Reset() {
     unsafe {
         zero_bss();
     }
     #[cfg(any(
+        feature = "freertos",
         feature = "uart0-rx-irq",
         feature = "uart1-local-irq",
         feature = "uart2-local-irq",
@@ -1965,6 +1988,8 @@ unsafe fn zero_bss() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn DefaultHandler() {
+    #[cfg(all(feature = "freertos", target_arch = "arm"))]
+    unsafe { freertos::RP1RtosFault(); }
     #[cfg(all(feature = "uart0-rx-irq", target_arch = "arm"))]
     unsafe {
         record_uart0_exception(UART0_EXCEPTION_MAGIC);
@@ -1982,10 +2007,12 @@ pub unsafe extern "C" fn DefaultHandler() {
 #[cfg(target_arch = "arm")]
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
+    #[cfg(feature = "freertos")]
+    unsafe { freertos::rp1_freertos_fault_hook(4, 0); }
     #[cfg(feature = "debug-stub")]
     debug_stub::panic();
 
-    #[cfg(not(feature = "debug-stub"))]
+    #[cfg(not(any(feature = "debug-stub", feature = "freertos")))]
     loop {
         core::hint::spin_loop();
     }

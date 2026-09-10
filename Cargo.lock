@@ -219,9 +219,14 @@ name = "rp1-example-minimal"
 version = "0.1.0"
 dependencies = [
  "rp1-build",
+ "rp1-freertos",
  "rp1-hal",
  "rp1-rt",
 ]
+
+[[package]]
+name = "rp1-freertos"
+version = "0.1.0"
 
 [[package]]
 name = "rp1-hal"

@@ -15,12 +15,12 @@ SECTIONS
     *(.rodata .rodata.*);
   } > RP1_APP_SRAM
 
-  .data : ALIGN(4)
+  .data : ALIGN(8)
   {
     *(.data .data.*);
   } > RP1_APP_SRAM
 
-  .bss (NOLOAD) : ALIGN(4)
+  .bss (NOLOAD) : ALIGN(8)
   {
     __sbss = .;
     *(.bss .bss.*);
@@ -36,5 +36,8 @@ SECTIONS
   } > RP1_APP_SRAM
 
   __image_end = .;
+  ASSERT(__image_end <= __app_limit, "RP1 image overlaps reserved SRAM/ISR stack")
+  ASSERT((_stack_start & 7) == 0, "RP1 MSP must be 8-byte aligned")
+  ASSERT((ADDR(.vector_table) & 511) == 0, "RP1 VTOR must be 512-byte aligned")
 
 }

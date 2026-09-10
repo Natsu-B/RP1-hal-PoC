@@ -7,12 +7,14 @@ build = "build.rs"
 [dependencies]
 rp1-hal = { path = "../../crates/rp1-hal" }
 rp1-rt = { path = "../../crates/rp1-rt" }
+rp1-freertos = { path = "../../crates/rp1-freertos", optional = true }
 
 [build-dependencies]
 rp1-build = { path = "../../crates/rp1-build" }
 
 [features]
 default = []
+freertos-r1 = ["state5-composite-boundary", "rp1-rt/freertos", "dep:rp1-freertos"]
 gpio22-start-proof = []
 endpoint-clock-only = []
 state3-composite-boundary = ["endpoint-clock-only"]

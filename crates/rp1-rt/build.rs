@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=link.x");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FREERTOS");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PCIE_EP_INIT");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_STACK_LOW");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_SNAPSHOT");
@@ -18,9 +19,12 @@ fn main() {
     let snapshot = env::var_os("CARGO_FEATURE_DEBUG_SNAPSHOT").is_some();
     let mailbox_layout = env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT").is_some();
     let mailbox_layout_v1 = env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1").is_some();
+    let rtos = env::var_os("CARGO_FEATURE_FREERTOS").is_some();
 
-    let app_len = if stack_low { "62K" } else { "64K" };
-    let stack_start = if stack_low {
+    let app_len = if rtos { "56K" } else if stack_low { "62K" } else { "64K" };
+    let stack_start = if rtos {
+        "0x2000f000"
+    } else if stack_low {
         "0x2000f800"
     } else {
         "ORIGIN(RP1_APP_SRAM) + LENGTH(RP1_APP_SRAM)"
@@ -47,6 +51,7 @@ fn main() {
 {diag_region}{stub_region}}}
 
 _stack_start = {stack_start};
+__app_limit = ORIGIN(RP1_APP_SRAM) + LENGTH(RP1_APP_SRAM);
 __rp1_debug_diag_start = ORIGIN(RP1_DEBUG_DIAG);
 __rp1_debug_diag_end = ORIGIN(RP1_DEBUG_DIAG) + LENGTH(RP1_DEBUG_DIAG);
 __rp1_debug_stub_start = ORIGIN(RP1_DEBUG_STUB);

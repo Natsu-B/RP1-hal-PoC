@@ -1,0 +1,8 @@
+[package]
+name = "rp1-freertos"
+version = "0.1.0"
+edition = "2024"
+links = "rp1_freertos"
+build = "build.rs"
+
+[dependencies]

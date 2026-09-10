@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+[[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-freertos-r1.sh /new/output/directory' >&2; exit 2; }
+out=$1
+mkdir -p "$out"
+exec > "$out/build.txt" 2>&1
+cd "$repo"
+date --iso-8601=seconds
+git branch --show-current
+git rev-parse HEAD
+git diff --binary > "$out/source.diff"
+git diff --cached --binary > "$out/index.diff"
+export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1
+export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=debuginfo CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
+cargo +stable rustc --offline --locked --release --target thumbv7m-none-eabi \
+  -p rp1-example-minimal --no-default-features --features freertos-r1 -- -C "link-arg=-Map=$out/RP1.map"
+cp "$repo/target/thumbv7m-none-eabi/release/rp1-example-minimal" "$out/RP1.elf"
+arm-none-eabi-readelf -lSW "$out/RP1.elf" > "$out/readelf.txt"
+arm-none-eabi-nm -n "$out/RP1.elf" > "$out/symbols.txt"
+arm-none-eabi-objdump -d "$out/RP1.elf" > "$out/disassembly.txt"
+arm-none-eabi-size "$out/RP1.elf"
+python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" > "$out/elf-validation.json"
+sha256sum "$out/RP1.elf" > "$out/output.sha256"
+date --iso-8601=seconds

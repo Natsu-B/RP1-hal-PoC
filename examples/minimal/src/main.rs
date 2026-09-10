@@ -8,6 +8,9 @@ use rp1_hal::reset::{ResetController, UartReset};
 #[cfg(target_arch = "arm")]
 use rp1_rt as _;
 
+#[cfg(all(target_arch = "arm", feature = "freertos-r1"))]
+mod freertos_r1;
+
 #[cfg(any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof", feature = "i2c1-read1-irq-proof"))]
 mod i2c1_wrapper_readonly_proof;
 
@@ -10568,6 +10571,10 @@ fn main(mut p: Peripherals) -> ! {
         #[cfg(feature = "state5-composite-boundary")]
         if result.decision == State3Decision::CoreAlive {
             let state5 = state5_composite_boundary();
+            #[cfg(feature = "freertos-r1")]
+            if state5.decision == State5Decision::LinkUp {
+                freertos_r1::run(gpio22);
+            }
             #[cfg(all(
                 feature = "bar2-readonly-handshake",
                 not(feature = "uart0-tx-polling-only"),
