@@ -13,6 +13,10 @@ adds a task8 SPI owner, IRQ19/vector35, logical priority6, and uses the reusable
 `rp1_freertos::spi0::Driver`. Existing known PLL_SYS/reset and guarded GPIO9 bias
 contracts are reused before scheduler start. Only the first two existing ESP32
 `miso_peer 1/2` low/hi-Z frames are tested here; no new ESP firmware or wiring.
+The physical ESP app must actually provide that service: selected existing0.6.0
+does; retained0.6.9 does not. Use the evidence runner's fresh app-sector backup,
+temporary install/readback and exact restore contract, not the old source tree
+as proof of the controller currently running.
 The task's default notification is reserved while receiving. ISR FIFO service
 is bounded by one hardware FIFO; per-request IRQ count is capped by length+1.
 The task blocks to completion/deadline, then uses `try_finish` with one-tick
@@ -21,6 +25,17 @@ masks IRQ, withdraws the pointer and clears pending before returning the buffer.
 Failed checked cleanup halts; Drop alone is never reported as recovery.
 Generation-scoped cancellation rejects idle/stale requests. It does not transfer
 ownership to the requester. No RTOS objects or locks are shared with proc1.
+Cancellation validation/publication/notification is one nonblocking kernel
+critical section; unregister then drain prevents stale notification escape.
+`tools/test-spi-cancel.py` compiles the production C transaction with a host stub;
+its7 passing cases are STATIC only, not hardware cancellation proof.
+
+SPI0 wrapper+0x108 is a separate required local-route prerequisite. The earlier
+IRQ19 successful proof programs exactly1 after prepared IMR=SER=0; merely
+enabling NVIC19 was insufficient in RTOS diagnostic commissioning (IRQ0,
+timeout~50ms despite a valid external peer frame). The HAL's checked
+`Spi0IrqTransfer::enable_local_irq_route` accepts only prior0/1 and leaves1 until
+the existing SPI0 reset. No guessed reverse-write or unrelated route is used.
 
 The first SPI link attempt was rejected by the existing56KiB limit. Instead of
 shrinking MSP/reservations, static task stack backing is now a fixed2560-word
@@ -34,6 +49,9 @@ SPI telemetry128=RS01,129=waiting1/receiving2/released3/done4,130=frameID,
 131=completed frames,132=post-completion progress;136..143 and144..151 contain
 received BE word, generation, IRQ count, total us, ISR max us, end-to-task us,
 both buffer canaries. Word123 is task8 untouched stack words;124..127 its context.
+Errors152..158 retain code/detail/generation/IRQ count/elapsed/ISR time/RX bytes;
+159/160 retain wrapper route before/after. `Driver::last_receipt` exposes counters
+after checked abort as well as success. Those diagnostics are not success flags.
 These fields are observed, not a claimed atomic page snapshot. Readiness is
 guarded GPIO9 released→LOW; actual data completion must come through IRQ19.
 

@@ -100,6 +100,7 @@ impl Driver {
             if os::deadline_remaining(unsafe { os::tick().unwrap() }, deadline).is_none() {
                 return Err(Error::Timeout);
             }
+            unsafe { transfer.enable_local_irq_route() }.map_err(Error::Receive)?;
             transfer.start().map_err(Error::Receive)?;
             loop {
                 // All Rust access to the transfer happens while its IRQ is masked.

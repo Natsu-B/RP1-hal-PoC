@@ -26,6 +26,7 @@ pub enum Spi0RxError {
     TransferTimeout,
     Cancelled,
     CleanupReadback,
+    LocalRouteReadback(u32),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,6 +184,24 @@ impl Spi0IrqTransfer<'_> {
         &self.rx.data[..self.rx.received]
     }
 
+    /// Enable the selected RP1 SPI0 wrapper route used by the IRQ19 HW proof.
+    /// This is RP1-specific +0x108, not a generic DesignWare SSI register. Only
+    /// observed values0/1 are accepted; the established write is exactly1.
+    /// The route remains configured through transfers and is cleared by the
+    /// existing known SPI0 reset prerequisite, not an unproven reverse write.
+    /// # Safety
+    /// Own SPI0 exclusively and keep local IRQ19 masked. No VTOR, priority,
+    /// global interrupt mask, or other peripheral route is changed here.
+    pub unsafe fn enable_local_irq_route(&mut self) -> Result<(), Spi0RxError> {
+        if self.rx.state != Spi0RxState::Prepared { return Err(Spi0RxError::NotPrepared); }
+        if reg(IMR).read() != 0 || reg(SER).read() != 0 { return Err(Spi0RxError::NotPrepared); }
+        if local_route_write_needed(reg(0x108).read())? { reg(0x108).write(1); }
+        io_barrier();
+        let actual = reg(0x108).read();
+        if actual != 1 { return Err(Spi0RxError::LocalRouteReadback(actual)); }
+        Ok(())
+    }
+
     pub fn start(&mut self) -> Result<(), Spi0RxError> {
         self.rx.start()?;
         reg(IMR).write(IRQ_RX_MASK);
@@ -266,6 +285,10 @@ impl Spi0IrqTransfer<'_> {
     }
 }
 
+fn local_route_write_needed(value: u32) -> Result<bool, Spi0RxError> {
+    match value { 0 => Ok(true), 1 => Ok(false), other => Err(Spi0RxError::LocalRouteReadback(other)) }
+}
+
 fn serial_idle(status: u32, tx_level: u32) -> bool {
     status & (SR_BUSY | SR_TX_EMPTY) == SR_TX_EMPTY && tx_level == 0
 }
@@ -313,6 +336,15 @@ fn quiesce() -> Result<(), Spi0RxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_route_accepts_only_observed_zero_or_one() {
+        assert_eq!(local_route_write_needed(0), Ok(true));
+        assert_eq!(local_route_write_needed(1), Ok(false));
+        for value in [2,3,4,0x8000_0000,u32::MAX] {
+            assert_eq!(local_route_write_needed(value), Err(Spi0RxError::LocalRouteReadback(value)));
+        }
+    }
 
     #[test]
     fn serial_idle_requires_no_busy_empty_tx_and_no_queued_bytes() {
