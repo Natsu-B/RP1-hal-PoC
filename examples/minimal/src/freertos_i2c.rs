@@ -38,9 +38,11 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
             assert_eq!(r.generation,generation);assert!(r.irq_entries>0);
             assert_eq!(r.higher_priority_wakes,1);
             assert_eq!(r.received,0);assert_eq!(r.first_fatal_causes,1<<6);
-            assert_eq!(r.first_abort_source,1);assert_eq!(r.discarded_after_failure,0);
+            // Preserve the entire observed two-command abort word. Bit23's
+            // flush-count meaning is an IP-family inference, not RP1 proof.
+            assert_eq!(r.first_abort_source,0x0080_0001);assert_eq!(r.discarded_after_failure,0);
         }
-        assert!(matches!(result,Err(os::i2c1::Error::Receive(RxError::Fatal { causes:0x40,abort_source:1 }))));
+        assert!(matches!(result,Err(os::i2c1::Error::Receive(RxError::Fatal { causes:0x40,abort_source:0x0080_0001 }))));
         assert_eq!(sample(&buffer),[0x5aa5_a55a,0xc3c3_c3c3,0xa55a_5aa5]);
         assert_eq!(unsafe { os::i2c1::active_generation() },0);
         assert!(!unsafe { os::i2c1::cancel(generation) });
