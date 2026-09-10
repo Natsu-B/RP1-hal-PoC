@@ -32,8 +32,9 @@ Copy handles do not synchronize access to application data.
 
 ## Fixed lifetime allocation and API
 
-All C pools are ordinary shared `.bss`: 8 task slots, each with one TCB and an
-8-byte-aligned 512-word stack; a separate 128-word idle stack; 4 `u32` queue slots
+All C pools are ordinary shared `.bss`: 8 task slots, each with one TCB and a
+requested 128..512-word stack from a fixed2560-word, 8-byte-aligned pool;
+a separate 128-word idle stack; 4 `u32` queue slots
 with capacity 1..=16; 4 binary-semaphore slots; 4 nonrecursive mutex slots.
 Task requests accept 128..=512 words and priority 0..=7. Slot indices are zero
 based; task IDs used in telemetry are slot+1. Names are nonempty static C strings
@@ -82,3 +83,16 @@ Rust argument/error/opaque-handle boundaries. ARM checking compiles the four
 official kernel sources plus the bridge with `-Wall -Wextra -Werror`; it does
 not prove task scheduling or hardware behavior. Final firmware link/vector/
 memory-budget checks and hardware evidence are the enclosing runtime's job.
+
+## SPI lifecycle workload
+
+`RP1_RTOS_FEATURE=freertos-r2-spi-lifecycle tools/build-freertos-r1.sh /new/output`
+uses fixed Rust size optimization `s` (C remains `-Os`); earlier workloads keep
+Rust `3`. No application/MSP/stack budget is enlarged. This optional eighth task
+tests partial1tick timeout, lower-priority task cancellation, notification drain,
+buffer quiet interval and successful generation3 IRQ rearm on input-only MISO.
+It does not replace the separate ESP sequence/payload test or prove all R2.
+`Receipt::irq_end_to_task_us` is zero when RxComplete was not observed.
+Preparation errors after possible MMIO halt with local IRQ masked: the current
+HAL cannot return a checked-abort handle on setup error. Only pre-MMIO argument
+errors return normally; automatic recovery of all setup errors remains OPEN.

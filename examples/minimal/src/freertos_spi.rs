@@ -3,6 +3,9 @@
 use super::*;
 use rp1_hal::spi::Spi0Host;
 static mut HOST: Option<Spi0Host> = None;
+#[cfg(feature = "freertos-r2-spi-lifecycle")]
+#[path = "freertos_spi_lifecycle.rs"]
+pub mod lifecycle;
 
 pub fn set_host(host: Spi0Host) { unsafe { ptr::addr_of_mut!(HOST).write(Some(host)); } }
 
@@ -38,6 +41,14 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
     for (i,v) in [ipsr,control,psp,msp].into_iter().enumerate() { put(124+i,v); }
     let host = unsafe { ptr::addr_of_mut!(HOST).replace(None).unwrap() };
     let mut driver = unsafe { os::spi0::Driver::new(host) };
+    #[cfg(feature = "freertos-r2-spi-lifecycle")]
+    unsafe { lifecycle::run(&mut driver); }
+    #[cfg(not(feature = "freertos-r2-spi-lifecycle"))]
+    unsafe { frames(&mut driver); }
+}
+
+#[cfg(not(feature = "freertos-r2-spi-lifecycle"))]
+unsafe fn frames(driver: &mut os::spi0::Driver) -> ! {
     put(128, u32::from_le_bytes(*b"RS01"));
     for id in 1..=2 {
         unsafe { wait_level(true, 3000); }

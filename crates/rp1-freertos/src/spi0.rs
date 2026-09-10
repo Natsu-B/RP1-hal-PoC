@@ -35,6 +35,7 @@ pub struct Receipt {
     pub irq_entries: u32,
     pub elapsed_us: u32,
     pub irq_body_max_us: u32,
+    /// Zero when no RxComplete-to-task observation was made (timeout/cancel).
     pub irq_end_to_task_us: u32,
 }
 
@@ -77,7 +78,18 @@ impl Driver {
         assert!(unsafe { ptr::addr_of!(ACTIVE).read_volatile() }.is_null());
         let waiter = unsafe { os::current_task().unwrap().unwrap() };
         unsafe { os::notification_take(true, 0).unwrap(); }
-        let mut transfer = self.host.prepare_irq_transfer(tx, rx).map_err(Error::Receive)?;
+        let mut transfer = self.host.prepare_irq_transfer(tx, rx).map_err(|e| {
+            // HAL preparation has no checked-abort handle on Err. Only errors
+            // known to precede MMIO can safely return the host/buffer here.
+            // Post-MMIO setup failures halt with IRQ masked and ACTIVE absent;
+            // do not mistake the HAL's best-effort Drop for checked recovery.
+            assert!(matches!(e, Spi0RxError::LengthMismatch { .. }
+                | Spi0RxError::Setup(rp1_hal::spi::Spi0Error::EmptyPayload
+                    | rp1_hal::spi::Spi0Error::PayloadTooLong { .. }
+                    | rp1_hal::spi::Spi0Error::FifoDepthUnknown)),
+                "SPI preparation failed after possible MMIO; recovery required");
+            Error::Receive(e)
+        })?;
         self.generation = self.generation.wrapping_add(1).max(1);
         let generation = self.generation;
         unsafe {
@@ -95,7 +107,7 @@ impl Driver {
             ptr::addr_of_mut!(GENERATION).write_volatile(generation);
             PENDING.write_volatile(BIT);
         }
-        let mut wake_us = 0;
+        let mut wake_us = None;
         let result = (|| {
             if os::deadline_remaining(unsafe { os::tick().unwrap() }, deadline).is_none() {
                 return Err(Error::Timeout);
@@ -111,7 +123,7 @@ impl Driver {
                     .ok_or(Error::Timeout)?;
                 if transfer.state() == Spi0RxState::RxComplete {
                     assert_eq!(unsafe { ptr::addr_of!(IRQ_GENERATION).read_volatile() }, generation);
-                    if wake_us == 0 { wake_us = raw(); }
+                    if wake_us.is_none() { wake_us = Some(raw()); }
                     if transfer.try_finish().map_err(Error::Receive)? { return Ok(()); }
                     // No useful RX IRQ remains for the last serial edge. One tick
                     // delay avoids busy polling; keep the source masked throughout.
@@ -131,7 +143,7 @@ impl Driver {
             irq_entries: unsafe { ptr::addr_of!(IRQ_COUNT).read_volatile() },
             elapsed_us: raw().wrapping_sub(started),
             irq_body_max_us: unsafe { ptr::addr_of!(IRQ_MAX_US).read_volatile() },
-            irq_end_to_task_us: wake_us.wrapping_sub(unsafe { ptr::addr_of!(IRQ_END).read_volatile() }),
+            irq_end_to_task_us: wake_us.map_or(0, |t| t.wrapping_sub(unsafe { ptr::addr_of!(IRQ_END).read_volatile() })),
         };
         unsafe {
             ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::null_mut());

@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-freertos-r1.sh /new/output/directory' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
-case "$feature" in freertos-r1|freertos-r1-fault|freertos-r1-panic|freertos-r1-timer-irq|freertos-r2-spi) ;; *) exit 2 ;; esac
+case "$feature" in freertos-r1|freertos-r1-fault|freertos-r1-panic|freertos-r1-timer-irq|freertos-r2-spi|freertos-r2-spi-lifecycle) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
@@ -16,6 +16,14 @@ git diff --binary > "$out/source.diff"
 git diff --cached --binary > "$out/index.diff"
 export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1
 export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=debuginfo CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+# The lifecycle workload adds a second task-side path. Fix its size optimization
+# explicitly; never enlarge the application into the MSP/reserved SRAM budget.
+if [[ "$feature" == freertos-r2-spi-lifecycle ]]; then
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=s
+else
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
+fi
+printf 'rust_opt_level=%s\n' "$CARGO_PROFILE_RELEASE_OPT_LEVEL"
 export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
 cargo +stable rustc --offline --locked --release --target thumbv7m-none-eabi \
   -p rp1-example-minimal --no-default-features --features "$feature" -- -C "link-arg=-Map=$out/RP1.map"

@@ -185,7 +185,10 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     put(39, 1); put(2, 4);
     let mut previous = [0; 4];
     loop {
+        #[cfg(not(feature = "freertos-r2-spi-lifecycle"))]
         unsafe { os::delay(1000).unwrap(); }
+        #[cfg(feature = "freertos-r2-spi-lifecycle")]
+        unsafe { spi::lifecycle::monitor_wait(1000); }
         let current = [get(64), get(80), get(49), get(50)];
         for i in 0..4 { assert_ne!(current[i], previous[i]); }
         previous = current;
