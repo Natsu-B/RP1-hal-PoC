@@ -218,26 +218,31 @@ impl Spi0IrqTransfer<'_> {
         let mut error = self.rx.finish_error();
         if error.is_none() {
             if !poll_until(
-                || {
-                    reg(SR).read() & (SR_BUSY | SR_TX_EMPTY) == SR_TX_EMPTY
-                        && reg(TXFLR).read() == 0
-                },
+                || serial_idle(reg(SR).read(), reg(TXFLR).read()),
                 TRANSFER_POLL_LIMIT,
             ) {
                 error = Some(Spi0RxError::TransferTimeout);
-            } else {
-                let faults = reg(RISR).read() & IRQ_ERRORS;
-                let level = reg(RXFLR).read();
-                if faults != 0 {
-                    error = Some(Spi0RxError::InterruptFault(faults));
-                } else if level != 0 {
-                    error = Some(Spi0RxError::InvalidFifoLevel {
-                        level,
-                        remaining: 0,
-                    });
-                }
-            }
+            } else { error = terminal_error(); }
         }
+        self.complete(error)
+    }
+
+    /// One serial-idle observation, with no transfer-completion busy wait.
+    /// `false` retains CS, buffer and ownership: the caller must block until its
+    /// next check or deadline, then retry or abort. Mask the owned NVIC route
+    /// before calling. Successful completion/error still uses bounded checked
+    /// local quiesce; this is not a zero-MMIO-latency API.
+    pub fn try_finish(&mut self) -> Result<bool, Spi0RxError> {
+        if self.rx.state == Spi0RxState::Complete { return Ok(true); }
+        let mut error = self.rx.finish_error();
+        if error.is_none() {
+            if !serial_idle(reg(SR).read(), reg(TXFLR).read()) { return Ok(false); }
+            error = terminal_error();
+        }
+        self.complete(error).map(|()| true)
+    }
+
+    fn complete(&mut self, mut error: Option<Spi0RxError>) -> Result<(), Spi0RxError> {
         if let Err(cleanup) = quiesce() {
             error = Some(cleanup);
         }
@@ -259,6 +264,18 @@ impl Spi0IrqTransfer<'_> {
         }
         result
     }
+}
+
+fn serial_idle(status: u32, tx_level: u32) -> bool {
+    status & (SR_BUSY | SR_TX_EMPTY) == SR_TX_EMPTY && tx_level == 0
+}
+
+fn terminal_error() -> Option<Spi0RxError> {
+    let faults = reg(RISR).read() & IRQ_ERRORS;
+    let level = reg(RXFLR).read();
+    if faults != 0 { Some(Spi0RxError::InterruptFault(faults)) }
+    else if level != 0 { Some(Spi0RxError::InvalidFifoLevel { level, remaining: 0 }) }
+    else { None }
 }
 
 impl Drop for Spi0IrqTransfer<'_> {
@@ -296,6 +313,16 @@ fn quiesce() -> Result<(), Spi0RxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serial_idle_requires_no_busy_empty_tx_and_no_queued_bytes() {
+        for status in 0..16 {
+            for level in [0, 1, 256, u32::MAX] {
+                assert_eq!(serial_idle(status, level),
+                    status & SR_BUSY == 0 && status & SR_TX_EMPTY != 0 && level == 0);
+            }
+        }
+    }
 
     #[test]
     fn validates_before_any_hardware_action() {
