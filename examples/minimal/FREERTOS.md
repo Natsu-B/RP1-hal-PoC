@@ -113,6 +113,7 @@ Telemetry96..127: IRQ/wake/error counts96..98; IPSR99, priority100; initial ISR
 PRIMASK/BASEPRI102/103; IRQentry/end/task timestamps104..106; last/max IRQ-end
 to-task latency107/108; max ISR body109; deadline110/max lateness111;
 requested/IRQ generation112/113; missed schedule114; active119;
-next-switch latch120/ID121; task8 free stack123; first task8 context124..127.
+next-switch latch120/ID121; last completed switch ID122 (121 clears on next arm);
+task8 free stack123; first task8 context124..127.
 Whole host snapshots remain non-atomic. Finite timeout disables source/route
 and panics; it does not write unproven ARMED disarm bits or claim in-place recovery.

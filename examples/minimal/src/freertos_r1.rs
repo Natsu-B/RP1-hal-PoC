@@ -308,6 +308,7 @@ mod timer_irq {
             }
             assert_eq!(get(113), get(112));
             assert_eq!(get(121), 8); // Immediate portYIELD_FROM_ISR task selection.
+            put(122, get(121)); // Persistent completed witness;121 clears on next arm.
             assert_eq!(INTR.read_volatile() & 1, 0);
             assert_eq!(INTS.read_volatile() & 1, 0);
             assert_eq!(get(98), 0);
