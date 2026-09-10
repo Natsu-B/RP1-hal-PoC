@@ -4,6 +4,9 @@ use core::{ffi::c_void, ptr};
 use rp1_freertos::{self as os, BinarySemaphore, Mutex, Task, U32Queue};
 use rp1_hal::gpio::{ConfiguredPin, Output};
 
+#[cfg(all(feature = "freertos-r1-fault", feature = "freertos-r1-panic"))]
+compile_error!("Select exactly one deliberate fault mode");
+
 const TELEMETRY: *mut u32 = 0x2000_f800 as *mut u32;
 static mut DATA_SENTINEL: u32 = 0x1357_9bdf;
 static mut BSS_SENTINEL: u32 = 0;
@@ -178,7 +181,37 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         assert!(untouched >= 32); // ISR/boot MSP guard remains intact
         increment(14); put(27, raw_low()); put(2, 5);
         marker.toggle();
+        #[cfg(any(feature = "freertos-r1-fault", feature = "freertos-r1-panic"))]
+        if get(14) == 5 {
+            put(41, get(8)); put(42, raw_low());
+            #[cfg(feature = "freertos-r1-fault")]
+            unsafe {
+                put(40, 1);
+                // Architected UsageFault enable only, not RP1 reset/POWER MMIO.
+                let shcsr = 0xe000_ed24 as *mut u32;
+                shcsr.write_volatile(shcsr.read_volatile() | (1 << 18));
+                core::arch::asm!("dsb sy", "isb", options(nostack));
+                rp1_rtos_fault_probe();
+            }
+            #[cfg(feature = "freertos-r1-panic")]
+            { put(40, 2); panic!("deliberate R1 task panic"); }
+        }
     }
+}
+
+/// Known task-frame contents for the halt-only diagnostic/reboot test. No Rust
+/// local stack frame, undefined Rust operation, or PC-advance recovery is used.
+#[cfg(feature = "freertos-r1-fault")]
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn rp1_rtos_fault_probe() -> ! {
+    core::arch::naked_asm!(
+        "movw r0, #0x101", "movw r1, #0x202", "movw r2, #0x303",
+        "movw r3, #0x404", "movw r12, #0x1212",
+        ".global rp1_rtos_udf_instruction",
+        "rp1_rtos_udf_instruction:", "udf #0x51",
+        "2:", "b 2b",
+    );
 }
 
 unsafe extern "C" fn producer(_: *mut c_void) {

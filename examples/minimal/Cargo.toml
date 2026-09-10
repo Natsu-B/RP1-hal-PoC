@@ -15,6 +15,8 @@ rp1-build = { path = "../../crates/rp1-build" }
 [features]
 default = []
 freertos-r1 = ["state5-composite-boundary", "rp1-rt/freertos", "dep:rp1-freertos"]
+freertos-r1-fault = ["freertos-r1"]
+freertos-r1-panic = ["freertos-r1"]
 gpio22-start-proof = []
 endpoint-clock-only = []
 state3-composite-boundary = ["endpoint-clock-only"]

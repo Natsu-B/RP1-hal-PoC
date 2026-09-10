@@ -1,7 +1,8 @@
 # Proc0 FreeRTOS R1 integration
 
-Status: BUILD candidate; hardware admission/verification is separate. This is
-not yet an R1 release and provides no R2/R3 completion claim.
+Status: selected tick/context/task-synchronization HW2/2 on source68e55d54,
+not yet a full R1 release; no R2/R3 completion claim. Evidence repository commit
+c43964472ec0d3128a61f6fff50007ee9b42e96f records the two-member cohort.
 
 The `freertos-r1` feature reuses this example's selected endpoint-clock,
 state1/2/3/5 startup unchanged. Only after LinkUp does it create seven permanent
@@ -81,8 +82,18 @@ completed at least one interval; ffffffff is an assert/panic. fb00 magic RFT1
 indicates an exception record. Neither stage5 nor a pair of GPIO edges alone is
 the full R1 proof.
 
-Remaining: formal same-image2/2 and independent external GPIO observation,
-intentional fault/recovery validation, hardware exception-frame/register
+Selected formal same-image2/2 and independent external GPIO observation passed.
+Remaining: intentional fault/recovery validation, hardware exception-frame/register
 distinction beyond the current pattern test, ISR task wakeups, tick-wrap race
 tests, and 10boots/30min endurance. SPI/I2C/UART adapters, 200us absolute periodic
 work and R3 remain separate work. No servo/IMU/camera measurement is implied.
+
+## Deliberate fault candidates (not unattended firmware)
+
+Set RP1_RTOS_FEATURE=freertos-r1-fault or freertos-r1-panic when invoking the
+same build script. They are mutually exclusive opt-in test images, not part
+of normal freertos-r1. After five monitor cycles, the first enables architected
+UsageFault and executes UDF with known R0-R3/R12 values; the second calls the
+ordinary Rust panic path. Both halt for reserved-record inspection, never
+skip the fault instruction, restart in place, or write RP1 reset/POWER bits.
+Hardware/restart validation is separate from building these candidates.
