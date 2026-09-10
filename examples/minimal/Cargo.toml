@@ -18,6 +18,7 @@ freertos-r1 = ["state5-composite-boundary", "rp1-rt/freertos", "dep:rp1-freertos
 freertos-r1-fault = ["freertos-r1"]
 freertos-r1-panic = ["freertos-r1"]
 freertos-r1-timer-irq = ["freertos-r1", "rp1-rt/timer0-alarm0-irq26-candidate"]
+freertos-r2-spi = ["freertos-r1", "spi0-miso-guarded-input-bias", "rp1-rt/spi0-local-irq", "rp1-freertos/spi0-irq"]
 gpio22-start-proof = []
 endpoint-clock-only = []
 state3-composite-boundary = ["endpoint-clock-only"]

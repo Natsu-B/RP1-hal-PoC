@@ -4,8 +4,10 @@
 #include "semphr.h"
 #include <stddef.h>
 #include <stdint.h>
+#include "static_stack.h"
 
 enum { TASKS = 8, STACK_WORDS = 512, QUEUES = 4, QUEUE_WORDS = 16, SEMAPHORES = 4 };
+enum { TASK_STACK_POOL_WORDS = 2560 };
 enum { INVALID = -1, STATE = -2, OCCUPIED = -3, UNAVAILABLE = -4, CONTEXT = -5 };
 enum { BINARY = 0, MUTEX = 1 };
 
@@ -16,9 +18,10 @@ _Static_assert(sizeof(void *) == 4, "32-bit target required");
 /* ponytail: finite lifetime pools; add deletion/reuse only with a real lifecycle requirement. */
 static struct {
     StaticTask_t tcb;
-    StackType_t stack[STACK_WORDS] __attribute__((aligned(8)));
     TaskHandle_t handle;
 } tasks[TASKS];
+static StackType_t task_stacks[TASK_STACK_POOL_WORDS] __attribute__((aligned(8)));
+static uint32_t task_stack_used;
 static StaticTask_t idle_tcb;
 static StackType_t idle_stack[configMINIMAL_STACK_SIZE] __attribute__((aligned(8)));
 static struct {
@@ -125,9 +128,12 @@ int32_t rp1_freertos_task_create(uint32_t slot, const char *name, TaskFunction_t
     while (length < configMAX_TASK_NAME_LEN && name[length] != '\0') ++length;
     if (length == 0 || length == configMAX_TASK_NAME_LEN) return INVALID;
     if (tasks[slot].handle != NULL) return OCCUPIED;
+    uint32_t next_stack = rp1_stack_next(task_stack_used, stack_words, TASK_STACK_POOL_WORDS);
+    if (next_stack == UINT32_MAX) return UNAVAILABLE;
     TaskHandle_t handle = xTaskCreateStatic(entry, name, stack_words, argument, priority,
-                                          tasks[slot].stack, &tasks[slot].tcb);
+                                          &task_stacks[task_stack_used], &tasks[slot].tcb);
     if (handle == NULL) return UNAVAILABLE;
+    task_stack_used = next_stack;
     tasks[slot].handle = handle;
     ++task_count;
     return (int32_t)(slot + 1);

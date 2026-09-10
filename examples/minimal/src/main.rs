@@ -10584,6 +10584,18 @@ fn main(mut p: Peripherals) -> ! {
                 cs1.set_high();
                 let mut sclk = p.gpio.pin::<11>().into_output();
                 sclk.set_low();
+                #[cfg(feature = "freertos-r2-spi")]
+                {
+                    // Exact existing SPI proof prerequisite; no runtime PLL retune.
+                    assert_eq!(pll_sys_core_lock_transition().decision, PllSysCoreLockDecision::Locked);
+                    assert!(enable_pll_sys_pri_ph_bit4().is_ok());
+                    assert!(release_spi0_reset_bank1_bit10().is_ok());
+                    let host = p.spi0.into_host_mode0_100khz(p.gpio.pin::<8>(),
+                        p.gpio.pin::<9>(), p.gpio.pin::<10>(), p.gpio.pin::<11>()).unwrap();
+                    let pad = spi0_miso_input_observation::apply_guarded_bias().unwrap();
+                    assert_eq!(pad & 0xff, 0xfb);
+                    freertos_r1::spi::set_host(host);
+                }
                 freertos_r1::run(gpio22);
             }
             #[cfg(all(

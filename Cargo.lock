@@ -227,6 +227,9 @@ dependencies = [
 [[package]]
 name = "rp1-freertos"
 version = "0.1.0"
+dependencies = [
+ "rp1-hal",
+]
 
 [[package]]
 name = "rp1-hal"

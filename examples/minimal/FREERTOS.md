@@ -3,6 +3,39 @@
 Status: selected tick/context/task-synchronization HW2/2 on source68e55d54,
 not yet a full R1 release; no R2/R3 completion claim. Evidence repository commit
 c43964472ec0d3128a61f6fff50007ee9b42e96f records the two-member cohort.
+Follow-up evidence c257bc026 records UsageFault/panic each2/2 with separate normal
+restart, TIMER FromISR2/2 and10 independent normal-image boots. R1 is PARTIAL.
+
+## SPI RTOS candidate (not yet HW-qualified)
+
+`RP1_RTOS_FEATURE=freertos-r2-spi tools/build-freertos-r1.sh /new/output`
+adds a task8 SPI owner, IRQ19/vector35, logical priority6, and uses the reusable
+`rp1_freertos::spi0::Driver`. Existing known PLL_SYS/reset and guarded GPIO9 bias
+contracts are reused before scheduler start. Only the first two existing ESP32
+`miso_peer 1/2` low/hi-Z frames are tested here; no new ESP firmware or wiring.
+The task's default notification is reserved while receiving. ISR FIFO service
+is bounded by one hardware FIFO; per-request IRQ count is capped by length+1.
+The task blocks to completion/deadline, then uses `try_finish` with one-tick
+delays for serial-idle, not a busy loop. On error/cancel it explicitly aborts,
+masks IRQ, withdraws the pointer and clears pending before returning the buffer.
+Failed checked cleanup halts; Drop alone is never reported as recovery.
+Generation-scoped cancellation rejects idle/stale requests. It does not transfer
+ownership to the requester. No RTOS objects or locks are shared with proc1.
+
+The first SPI link attempt was rejected by the existing56KiB limit. Instead of
+shrinking MSP/reservations, static task stack backing is now a fixed2560-word
+(10KiB) aligned boot-time pool. Requested sizes round up to even words; out-of-
+budget creation returns Unavailable. No freeing, heap or allocation after start.
+Current8-task SPI example requests2304words; idle has a separate128-word stack.
+`tools/test-static-stack.c` tests exact fit/overflow/alignment and integer wrap
+using the production C helper. Old HW images retain their old per-slot pools.
+
+SPI telemetry128=RS01,129=waiting1/receiving2/released3/done4,130=frameID,
+131=completed frames,132=post-completion progress;136..143 and144..151 contain
+received BE word, generation, IRQ count, total us, ISR max us, end-to-task us,
+both buffer canaries. Word123 is task8 untouched stack words;124..127 its context.
+These fields are observed, not a claimed atomic page snapshot. Readiness is
+guarded GPIO9 released→LOW; actual data completion must come through IRQ19.
 
 The `freertos-r1` feature reuses this example's selected endpoint-clock,
 state1/2/3/5 startup unchanged. Only after LinkUp does it create seven permanent

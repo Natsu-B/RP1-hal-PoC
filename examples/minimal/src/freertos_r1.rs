@@ -8,11 +8,16 @@ use rp1_hal::gpio::{ConfiguredPin, Output};
 compile_error!("Select exactly one deliberate fault mode");
 #[cfg(all(feature = "freertos-r1-timer-irq", any(feature = "freertos-r1-fault", feature = "freertos-r1-panic")))]
 compile_error!("IRQ wakeup and deliberate faults are separate cohorts");
+#[cfg(all(feature = "freertos-r2-spi", any(feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic")))]
+compile_error!("Select one task8 workload; keep intentional faults separate");
+#[cfg(feature = "freertos-r2-spi")]
+#[path = "freertos_spi.rs"]
+pub mod spi;
 
 const TELEMETRY: *mut u32 = 0x2000_f800 as *mut u32;
 static mut DATA_SENTINEL: u32 = 0x1357_9bdf;
 static mut BSS_SENTINEL: u32 = 0;
-const TASK_COUNT: usize = if cfg!(feature = "freertos-r1-timer-irq") { 8 } else { 7 };
+const TASK_COUNT: usize = if cfg!(any(feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi")) { 8 } else { 7 };
 static mut TASKS: [Option<Task>; TASK_COUNT] = [None; TASK_COUNT];
 static mut QUEUE: Option<U32Queue> = None;
 static mut CHECK_QUEUE: Option<U32Queue> = None;
@@ -115,6 +120,11 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
             let handle = Task::create(7, c"timer-irq", timer_irq::worker, ptr::null_mut(), 5, 256).unwrap();
             ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
         }
+        #[cfg(feature = "freertos-r2-spi")]
+        {
+            let handle = Task::create(7, c"spi-rx", spi::worker, ptr::null_mut(), 5, 512).unwrap();
+            ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
+        }
         put(2, 3);
         os::start(hz).unwrap();
     }
@@ -185,6 +195,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
             assert!(get(97) > 0 && get(98) == 0 && get(114) == 0);
             unsafe { put(123, task(7).stack_high_water().unwrap()); }
         }
+        #[cfg(feature = "freertos-r2-spi")]
+        unsafe { put(123, task(7).stack_high_water().unwrap()); }
         unsafe {
             for slot in 0..7 { put(32+slot, task(slot).stack_high_water().unwrap()); }
             put(22, (0xe000_e014 as *const u32).read_volatile());

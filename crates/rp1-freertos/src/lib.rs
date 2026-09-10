@@ -12,9 +12,15 @@
 
 use core::ffi::{CStr, c_char, c_void};
 
+#[cfg(all(feature = "spi0-irq", target_arch = "arm"))]
+pub mod spi0;
+
 pub const TASK_SLOTS: u32 = 8;
 pub const MIN_STACK_WORDS: u32 = 128;
 pub const MAX_STACK_WORDS: u32 = 512;
+/// Fixed backing pool; requested task stacks (rounded to even words) share this
+/// budget at boot. Exhaustion returns Unavailable; idle has its separate stack.
+pub const TOTAL_TASK_STACK_WORDS: u32 = 2560;
 pub const QUEUE_SLOTS: u32 = 4;
 pub const MAX_QUEUE_WORDS: u32 = 16;
 pub const SEMAPHORE_SLOTS: u32 = 4;
