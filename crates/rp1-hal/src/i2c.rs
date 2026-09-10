@@ -1,6 +1,15 @@
 use crate::addr::I2C1_BASE;
 use crate::gpio::{ConfiguredPin, Function, Pin, configure_i2c_pin};
+#[cfg(target_arch = "arm")]
+use crate::i2c_rx_state::ReadCommand;
 use crate::mmio::Reg;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum I2c1RouteError { ControllerEnabled, InterruptsEnabled, Readback(u32) }
+
+fn route_write_needed(value: u32) -> Result<bool, I2c1RouteError> {
+    match value { 0 => Ok(true), 1 => Ok(false), other => Err(I2c1RouteError::Readback(other)) }
+}
 
 const IC_CON: usize = 0x00;
 const IC_TAR: usize = 0x04;
@@ -242,6 +251,44 @@ impl I2c1Host {
         self.arm_stop_det_irq_inner(address, false, I2C1_READ1_MASK)
     }
 
+    /// Enable RX_FULL, STOP and fatal causes without clearing stale evidence.
+    #[cfg(target_arch = "arm")]
+    pub fn arm_rx_irq_preserving_causes(&mut self, address: u8) -> Result<I2c1IrqSnapshot, I2c1Error> {
+        self.arm_stop_det_irq_inner(address, false, I2C1_READ1_MASK | IC_INTR_STOP_DET)
+    }
+
+    /// Known RP1 wrapper route used by local IRQ8, not a DesignWare offset.
+    /// Leave enabled across requests; no reverse write is inferred.
+    /// # Safety
+    /// Own proc0 I2C1, pins and IRQ8. Keep that NVIC route masked; controller
+    /// disabled and its interrupt mask zero. No global mask/VTOR/priority write.
+    #[cfg(target_arch = "arm")]
+    pub unsafe fn enable_local_irq_route(&mut self) -> Result<(), I2c1RouteError> {
+        if reg(IC_ENABLE_STATUS).read() != 0 { return Err(I2c1RouteError::ControllerEnabled); }
+        if reg(IC_INTR_MASK).read() != 0 { return Err(I2c1RouteError::InterruptsEnabled); }
+        if route_write_needed(reg(0x108).read())? { reg(0x108).write(1); }
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+        let actual = reg(0x108).read();
+        if actual == 1 { Ok(()) } else { Err(I2c1RouteError::Readback(actual)) }
+    }
+
+    /// Caller serializes prepare/access/record, with fresh TX capacity and RX
+    /// credit. Submit exactly once, then immediately record_issued. A write is
+    /// not evidence of bus completion or acknowledgement.
+    #[cfg(target_arch = "arm")]
+    pub fn issue_read_command(&mut self, command: &ReadCommand) {
+        reg(IC_DATA_CMD).write(command.word());
+    }
+
+    /// Recheck full-width FIFO level before one actual DATA_CMD pop. Caller owns
+    /// PopPermit and supplies min(observed depth, outstanding, remaining).
+    #[cfg(target_arch = "arm")]
+    pub fn pop_rx_one(&mut self, max_level: u32) -> Option<u32> {
+        let level = reg(IC_RXFLR).read();
+        (max_level <= 256 && level >= 1 && level <= max_level)
+            .then(|| reg(IC_DATA_CMD).read())
+    }
+
     #[cfg(target_arch = "arm")]
     fn arm_stop_det_irq_inner(&mut self, address: u8, acknowledge_stale: bool, mask: u32) -> Result<I2c1IrqSnapshot, I2c1Error> {
         if address > 0x7f {
@@ -476,6 +523,15 @@ fn reg(offset: usize) -> Reg<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_route_accepts_only_exact_known_values() {
+        assert_eq!(route_write_needed(0),Ok(true));
+        assert_eq!(route_write_needed(1),Ok(false));
+        for value in [2,3,0x8000_0000,u32::MAX] {
+            assert_eq!(route_write_needed(value),Err(I2c1RouteError::Readback(value)));
+        }
+    }
 
     #[test]
     fn register_map_matches_rp1_designware_i2c1() {

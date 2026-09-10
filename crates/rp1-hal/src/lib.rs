@@ -6,6 +6,9 @@ pub use rp1_macros::main;
 pub mod addr;
 pub mod gpio;
 pub mod i2c;
+pub mod i2c_rx_state;
+#[cfg(target_arch = "arm")]
+pub mod i2c_rx_irq_adapter;
 pub mod mailbox;
 pub mod mmio;
 pub mod owner;
