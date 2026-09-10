@@ -13,11 +13,16 @@ compile_error!("Select one task8 workload; keep intentional faults separate");
 #[cfg(feature = "freertos-r2-spi")]
 #[path = "freertos_spi.rs"]
 pub mod spi;
+#[cfg(all(feature = "freertos-r2-i2c-nack", any(feature = "freertos-r2-spi", feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic")))]
+compile_error!("Select one task8 workload; keep intentional faults separate");
+#[cfg(feature = "freertos-r2-i2c-nack")]
+#[path = "freertos_i2c.rs"]
+pub mod i2c;
 
 const TELEMETRY: *mut u32 = 0x2000_f800 as *mut u32;
 static mut DATA_SENTINEL: u32 = 0x1357_9bdf;
 static mut BSS_SENTINEL: u32 = 0;
-const TASK_COUNT: usize = if cfg!(any(feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi")) { 8 } else { 7 };
+const TASK_COUNT: usize = if cfg!(any(feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack")) { 8 } else { 7 };
 static mut TASKS: [Option<Task>; TASK_COUNT] = [None; TASK_COUNT];
 static mut QUEUE: Option<U32Queue> = None;
 static mut CHECK_QUEUE: Option<U32Queue> = None;
@@ -125,6 +130,11 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
             let handle = Task::create(7, c"spi-rx", spi::worker, ptr::null_mut(), 5, 512).unwrap();
             ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
         }
+        #[cfg(feature = "freertos-r2-i2c-nack")]
+        {
+            let handle = Task::create(7, c"i2c-rx", i2c::worker, ptr::null_mut(), 5, 512).unwrap();
+            ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
+        }
         put(2, 3);
         os::start(hz).unwrap();
     }
@@ -198,7 +208,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
             assert!(get(97) > 0 && get(98) == 0 && get(114) == 0);
             unsafe { put(123, task(7).stack_high_water().unwrap()); }
         }
-        #[cfg(feature = "freertos-r2-spi")]
+        #[cfg(any(feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack"))]
         unsafe { put(123, task(7).stack_high_water().unwrap()); }
         unsafe {
             for slot in 0..7 { put(32+slot, task(slot).stack_high_water().unwrap()); }

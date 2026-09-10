@@ -146,8 +146,8 @@ impl Driver {
             irq_end_to_task_us: wake_us.map_or(0, |t| t.wrapping_sub(unsafe { ptr::addr_of!(IRQ_END).read_volatile() })),
         };
         unsafe {
-            ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::null_mut());
             ptr::addr_of_mut!(GENERATION).write_volatile(0);
+            ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::null_mut());
             ptr::addr_of_mut!(WAITER).write_volatile(0);
             PENDING.write_volatile(BIT);
         }

@@ -15,6 +15,9 @@ use core::ffi::{CStr, c_char, c_void};
 #[cfg(all(feature = "spi0-irq", target_arch = "arm"))]
 pub mod spi0;
 
+#[cfg(all(feature = "i2c1-irq", target_arch = "arm"))]
+pub mod i2c1;
+
 pub const TASK_SLOTS: u32 = 8;
 pub const MIN_STACK_WORDS: u32 = 128;
 pub const MAX_STACK_WORDS: u32 = 512;
@@ -108,7 +111,14 @@ impl Task {
     /// # Safety
     /// Proc0 external IRQ, logical priority 5..=7; see the module contract.
     pub unsafe fn notification_give_from_isr(self) -> Result<(), Error> {
-        value(unsafe { ffi::rp1_freertos_notification_give_from_isr(self.0) }).map(|_| ())
+        unsafe { self.notification_give_from_isr_woken() }.map(|_| ())
+    }
+
+    /// Same notification/yield, with the kernel's higher-priority-woken result.
+    /// # Safety
+    /// Proc0 external IRQ, logical priority 5..=7; see the module contract.
+    pub unsafe fn notification_give_from_isr_woken(self) -> Result<bool, Error> {
+        value(unsafe { ffi::rp1_freertos_notification_give_from_isr(self.0) }).map(|v| v!=0)
     }
 
     /// Includes temporary priority inheritance.

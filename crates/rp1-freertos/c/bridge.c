@@ -247,7 +247,7 @@ int32_t rp1_freertos_notification_give_from_isr(uint32_t id)
     BaseType_t woken = pdFALSE;
     vTaskNotifyGiveFromISR(handle, &woken);
     portYIELD_FROM_ISR(woken);
-    return 0;
+    return woken != pdFALSE;
 }
 
 int32_t rp1_freertos_queue_create(uint32_t slot, uint32_t capacity)

@@ -1,0 +1,34 @@
+# Proc0 I2C IRQ adapter — candidate
+
+`rp1-freertos/i2c1-irq` provides a single-owner, notification-blocking receiver
+using the existing bounded RX engine and actual local IRQ8/vector24. It does not
+install a global IRQ mask, VTOR, reset writer, or cross-core lock. FromISR runs at
+logical priority6; official FreeRTOS handles the wake and PendSV request.
+
+Own the peripheral, pins2/3, clocks and IRQ8 exclusively. Construct in a proc0
+task after the known PLL/reset/startup path. Supply buffers of1..33bytes and a
+nonzero timeout below half the32-bit tick range. The ISR only touches driver-owned
+storage, never the caller buffer. After terminal status the task withdraws the
+generation, disables IRQ/controller, retains fatal evidence before selective ACK,
+checks disabled/FIFO/pending state, and samples quiet over at least4ms with1tick
+sleeps. Only then copy the actual prefix to the caller and permit rearm. Failed
+cleanup halts for recovery; it is not a successful Drop-based recovery.
+
+Quiet evidence includes sample count and maximum gap: it is not continuous
+observation. No success may hide a fatal cause seen during cleanup. A new request
+is published generation-last; cancellation checks and notification are one C
+critical-section transaction. Kernel `higher_priority_wakes` distinguishes a
+blocked task being woken from merely having an IRQ before the wait.
+
+`freertos-r2-i2c-nack` is the first8-task integration workload: two reads to the
+known unassigned0x2e with the present ESP32 slave at0x2d, requiring retained address
+NACK, actual IRQ wake, unchanged caller buffer/canaries and checked rearm. It must
+not call the current ESP32's protected0x2d callback outside its READYACK protocol.
+This workload does not prove successful payload RX, timeout/cancel HW behavior,
+arbitrary-slave NACK recovery, or combined SPI/I2C/UART operation.
+
+Build: `RP1_RTOS_FEATURE=freertos-r2-i2c-nack tools/build-freertos-r1.sh /new/out`.
+Run host tests: `cargo test -p rp1-hal --target x86_64-unknown-linux-gnu`,
+`python3 tools/test-irq-publication.py`, `python3 tools/test-isr-notify.py`, and
+`python3 tools/test-spi-cancel.py`. Preserve ELF/vector/memory admission checks.
+STATIC/BUILD until a separately identified formal hardware cohort passes.

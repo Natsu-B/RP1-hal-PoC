@@ -10596,6 +10596,14 @@ fn main(mut p: Peripherals) -> ! {
                     assert_eq!(pad & 0xff, 0xfb);
                     freertos_r1::spi::set_host(host);
                 }
+                #[cfg(feature = "freertos-r2-i2c-nack")]
+                {
+                    assert_eq!(pll_sys_core_lock_transition().decision, PllSysCoreLockDecision::Locked);
+                    assert!(enable_pll_sys_pri_ph_bit4().is_ok());
+                    assert!(release_i2c1_reset_bank0_bit8().is_ok());
+                    let host = p.i2c1.into_host_100khz(p.gpio.pin::<2>(), p.gpio.pin::<3>()).unwrap();
+                    freertos_r1::i2c::set_host(host);
+                }
                 freertos_r1::run(gpio22);
             }
             #[cfg(all(

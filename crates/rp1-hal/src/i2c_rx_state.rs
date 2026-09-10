@@ -25,6 +25,7 @@ pub enum Error {
     Mismatch,
     PrematureStop,
     Timeout,
+    Cancelled,
     Adapter,
 }
 
@@ -63,8 +64,9 @@ pub enum CleanupError {
 
 /// Caller evidence collected AFTER bounded disable, any failure-only discard,
 /// selective observed-cause acknowledgement, and owned NVIC pending cleanup.
-/// `quiet_conditions_held` attests these conditions held THROUGHOUT the measured
-/// interval, not merely at its endpoint. This struct cannot establish that fact.
+/// `quiet_conditions_held` attests every sampled snapshot in the interval was
+/// clean, not just its endpoint. Sampling is not continuous observation: callers
+/// must report sample count and maximum gap. This struct cannot perform a check.
 #[derive(Clone, Copy, Debug)]
 pub struct CleanupEvidence {
     pub enable_status: u32,
@@ -82,6 +84,8 @@ pub struct CleanupEvidence {
     pub quiet_conditions_held: bool,
     pub quiet_elapsed_ticks: u32,
     pub quiet_required_ticks: u32,
+    pub quiet_samples: u32,
+    pub quiet_max_gap_ticks: u32,
 }
 
 impl CleanupEvidence {
@@ -101,6 +105,9 @@ impl CleanupEvidence {
             Err(CleanupError::IrqNotQuiescent)
         } else if !self.quiet_conditions_held
             || self.quiet_required_ticks == 0
+            || self.quiet_samples < 2
+            || self.quiet_max_gap_ticks == 0
+            || self.quiet_max_gap_ticks > self.quiet_elapsed_ticks
             || self.quiet_elapsed_ticks < self.quiet_required_ticks
             || self.irq_count_before != self.irq_count_after
         {
@@ -421,6 +428,15 @@ impl RxState {
         Ok(())
     }
 
+    /// Record a caller cancellation; pending IO tokens cannot survive it.
+    /// This does not disable hardware, clear an IRQ or release a buffer.
+    pub fn cancel(&mut self, generation: u32) -> Result<(), Rejected> {
+        self.active(generation)?;
+        self.state = State::Failed(Error::Cancelled);
+        self.pending = Pending::None;
+        Ok(())
+    }
+
     fn check_generation(&self, generation: u32) -> Result<(), Rejected> {
         if generation != self.generation {
             Err(Rejected::StaleGeneration)
@@ -472,6 +488,8 @@ mod tests {
             quiet_conditions_held: true,
             quiet_elapsed_ticks: 4_000,
             quiet_required_ticks: 4_000,
+            quiet_samples: 5,
+            quiet_max_gap_ticks: 1_000,
         }
     }
     fn armed(expected: &[u8], rx: u16, tx: u16) -> (RxState, u32) {
@@ -489,6 +507,23 @@ mod tests {
     fn pop(s: &mut RxState, g: u32, level: u32, byte: u8) {
         let permit = s.prepare_pop(g, level).unwrap().unwrap();
         s.record_pop(permit, Some(byte)).unwrap(); // simulated guarded physical pop
+    }
+
+    #[test]
+    fn cancelled_request_and_sampled_cleanup_are_explicit() {
+        let (mut s,g)=armed(&[0x31],2,2);
+        let command=s.prepare_read(g,0).unwrap().unwrap();
+        s.cancel(g).unwrap();
+        assert_eq!(s.primary_error(),Some(Error::Cancelled));
+        assert_eq!(s.record_issued(command),Err(Rejected::Inactive));
+        for evidence in [CleanupEvidence {quiet_samples:1,..clean()},
+            CleanupEvidence {quiet_max_gap_ticks:0,..clean()},
+            CleanupEvidence {quiet_max_gap_ticks:4001,..clean()}] {
+            assert_eq!(s.record_cleanup(g,evidence),Err(Rejected::CleanupFailed(CleanupError::QuietNotObserved)));
+        }
+        s.record_cleanup(g,clean()).unwrap();
+        assert!(s.arm_read(1).unwrap()>g);
+        assert_eq!(s.cancel(g),Err(Rejected::StaleGeneration));
     }
 
     #[test]
