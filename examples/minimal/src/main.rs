@@ -10573,6 +10573,17 @@ fn main(mut p: Peripherals) -> ! {
             let state5 = state5_composite_boundary();
             #[cfg(feature = "freertos-r1")]
             if state5.decision == State5Decision::LinkUp {
+                // Retain the existing ESP peer's idle wiring contract even though
+                // R1 does not transfer SPI/I2C data. ESP32 MISO stays released.
+                let _miso = p.gpio.pin::<9>().into_input_pull_up();
+                let _sda = p.gpio.pin::<2>().into_input_pull_up();
+                let _scl = p.gpio.pin::<3>().into_input_pull_up();
+                let mut cs0 = p.gpio.pin::<8>().into_output();
+                cs0.set_high();
+                let mut cs1 = p.gpio.pin::<7>().into_output();
+                cs1.set_high();
+                let mut sclk = p.gpio.pin::<11>().into_output();
+                sclk.set_low();
                 freertos_r1::run(gpio22);
             }
             #[cfg(all(
