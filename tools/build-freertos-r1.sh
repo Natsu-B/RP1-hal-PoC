@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-freertos-r1.sh /new/output/directory' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
-case "$feature" in freertos-r3-proc1-worker|freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat|freertos-r2-mixed-i2c-pair|freertos-r2-mixed-i2c-stream) ;; *) exit 2 ;; esac
+case "$feature" in freertos-r3-watchdog-arm-receipt|freertos-r3-proc1-worker|freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat|freertos-r2-mixed-i2c-pair|freertos-r2-mixed-i2c-stream) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
@@ -43,6 +43,11 @@ if [[ "$feature" == freertos-r3-proc1-worker ]]; then
     "$out/proc1-test" > "$out/proc1-host-test.txt"
 fi
 export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
+if [[ "$feature" == freertos-r3-watchdog-arm-receipt ]]; then
+    cp "$repo/examples/minimal/src/freertos_watchdog.rs" "$out/freertos_watchdog.rs"
+    rustc +stable --edition=2024 --test "$out/freertos_watchdog.rs" -o "$out/watchdog-test"
+    "$out/watchdog-test" > "$out/watchdog-host-test.txt"
+fi
 if [[ "$feature" == freertos-r2-mixed* ]]; then
     cp "$repo/examples/minimal/src/freertos_mixed.rs" "$out/freertos_mixed.rs"
     cp "$repo/examples/minimal/src/mixed_repeat.rs" "$out/mixed_repeat.rs"
@@ -66,5 +71,9 @@ arm-none-eabi-nm -n "$out/RP1.elf" > "$out/symbols.txt"
 arm-none-eabi-objdump -d "$out/RP1.elf" > "$out/disassembly.txt"
 arm-none-eabi-size "$out/RP1.elf"
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" > "$out/elf-validation.json"
+if [[ "$feature" == freertos-r3-watchdog-arm-receipt ]]; then
+    python3 -B "$repo/tools/test-freertos-watchdog.py" > "$out/watchdog-validator-test.txt"
+    python3 -B "$repo/tools/check-freertos-watchdog-elf.py" --self-test "$out/RP1.elf" > "$out/watchdog-elf-validation.json"
+fi
 sha256sum "$out/RP1.elf" > "$out/output.sha256"
 date --iso-8601=seconds
