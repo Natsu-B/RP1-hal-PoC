@@ -32,3 +32,26 @@ Run host tests: `cargo test -p rp1-hal --target x86_64-unknown-linux-gnu`,
 `python3 tools/test-irq-publication.py`, `python3 tools/test-isr-notify.py`, and
 `python3 tools/test-spi-cancel.py`. Preserve ELF/vector/memory admission checks.
 STATIC/BUILD until a separately identified formal hardware cohort passes.
+
+## Current peer workload
+
+`freertos-r2-i2c-peer` uses the same driver/task slot and current ESP32 native
+READYACK service. A typed GPIO9 input-pull-up is admitted only from the previously
+tested cold-boot register/reset state; it never drives that wire. GPIO22 belongs
+to this worker during the handshake, then transfers to the monitor after the
+final HIGH dwell. Seven other kernel-test tasks continue throughout.
+
+Host observes13tick READY pulse, arms one absolute5s peer lease and stops the
+slave. LOW1 grants a NACK read, then17tick CLEAN1 permits separator HIGH. The
+19tick READY2 permits the peer's existing I2C0 reset/restart/two-byte preload.
+LOW2 grants the IRQ-blocking read of31,4e;23tick DONE2 permits release; final
+HIGH produces29tick DONE then monitor ownership. Both receipts require an
+actual higher-priority task wake, checked cleanup and guarded buffer contents.
+The HIGH/LOW dwell is sampled at1tick intervals for at least2ms, not continuous
+observation. No lease is renewed and no callback is requested outside this flow.
+
+Build with `RP1_RTOS_FEATURE=freertos-r2-i2c-peer tools/build-freertos-r1.sh /new/out`.
+This candidate requires the native host protocol/terminal-evidence join, not
+just seeing final HIGH (which could be fail-close). It is BUILD-only until its
+own formal cohort. Does not prove arbitrary-slave recovery, hard physical lease
+latency, integrated R2 or an IMU acquisition rate. No ESP or Linux image changes.

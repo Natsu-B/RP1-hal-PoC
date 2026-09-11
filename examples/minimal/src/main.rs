@@ -10598,6 +10598,8 @@ fn main(mut p: Peripherals) -> ! {
                 }
                 #[cfg(feature = "freertos-r2-i2c-nack")]
                 {
+                    #[cfg(feature = "freertos-r2-i2c-peer")]
+                    freertos_r1::i2c::set_peer_pin(p.gpio.pin::<9>());
                     assert_eq!(pll_sys_core_lock_transition().decision, PllSysCoreLockDecision::Locked);
                     assert!(enable_pll_sys_pri_ph_bit4().is_ok());
                     assert!(release_i2c1_reset_bank0_bit8().is_ok());

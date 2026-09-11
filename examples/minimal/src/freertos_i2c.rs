@@ -4,6 +4,11 @@
 use super::*;
 use rp1_hal::{i2c::I2c1Host, i2c_rx_state::Error as RxError};
 static mut HOST:Option<I2c1Host>=None;
+#[cfg(feature = "freertos-r2-i2c-peer")]
+#[path = "freertos_i2c_peer.rs"]
+mod peer;
+#[cfg(feature = "freertos-r2-i2c-peer")]
+pub fn set_peer_pin(pin:rp1_hal::gpio::Pin<9>) { peer::set_pin(pin); }
 pub fn set_host(host:I2c1Host) { unsafe { ptr::addr_of_mut!(HOST).write(Some(host)); } }
 #[repr(C)]
 struct Buffer { before:u32,bytes:[u8;4],after:u32 }
@@ -20,6 +25,22 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
     put(128,u32::from_le_bytes(*b"RI01"));put(129,1);put(133,0x2e);
     let host=unsafe { ptr::addr_of_mut!(HOST).replace(None).unwrap() };
     let mut driver=unsafe { os::i2c1::Driver::new(host) };
+    #[cfg(feature = "freertos-r2-i2c-peer")]
+    unsafe { peer::run(&mut driver); }
+    #[cfg(not(feature = "freertos-r2-i2c-peer"))]
+    unsafe { nack(&mut driver); }
+}
+
+fn store(generation:u32,r:os::i2c1::Receipt,buffer:&Buffer) {
+    let base=136+(generation as usize-1)*16;
+    for (i,v) in [r.generation,r.irq_entries,r.received,r.elapsed_us,
+        r.irq_body_max_us,r.irq_end_to_task_us,r.first_fatal_causes,r.first_abort_source,
+        r.discarded_after_failure,r.cleanup_elapsed_us,r.quiet_samples,r.quiet_max_gap_us,
+        sample(buffer)[0],sample(buffer)[1],sample(buffer)[2],r.higher_priority_wakes].into_iter().enumerate() { put(base+i,v); }
+}
+
+#[cfg(not(feature = "freertos-r2-i2c-peer"))]
+unsafe fn nack(driver:&mut os::i2c1::Driver)->! {
     let mut buffer=Buffer { before:0x5aa5_a55a,bytes:[0xc3;4],after:0xa55a_5aa5 };
     assert!(matches!(unsafe { driver.receive(0x2e,&mut [],50) },Err(os::i2c1::Error::InvalidArgument)));
     assert!(matches!(unsafe { driver.receive(0x2e,&mut buffer.bytes,0) },Err(os::i2c1::Error::InvalidArgument)));
@@ -30,11 +51,7 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
         put(129,2);
         let result=unsafe { driver.receive(0x2e,&mut buffer.bytes[..2],50) };
         if let Some(r)=driver.last_receipt() {
-            let base=136+(generation as usize-1)*16;
-            for (i,v) in [r.generation,r.irq_entries,r.received,r.elapsed_us,
-                r.irq_body_max_us,r.irq_end_to_task_us,r.first_fatal_causes,r.first_abort_source,
-                r.discarded_after_failure,r.cleanup_elapsed_us,r.quiet_samples,r.quiet_max_gap_us,
-                sample(&buffer)[0],sample(&buffer)[1],sample(&buffer)[2],r.higher_priority_wakes].into_iter().enumerate() { put(base+i,v); }
+            store(generation,r,&buffer);
             assert_eq!(r.generation,generation);assert!(r.irq_entries>0);
             assert_eq!(r.higher_priority_wakes,1);
             assert_eq!(r.received,0);assert_eq!(r.first_fatal_causes,1<<6);

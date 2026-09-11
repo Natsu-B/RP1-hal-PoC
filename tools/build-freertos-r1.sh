@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-freertos-r1.sh /new/output/directory' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
-case "$feature" in freertos-r1|freertos-r1-fault|freertos-r1-panic|freertos-r1-timer-irq|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-i2c-nack) ;; *) exit 2 ;; esac
+case "$feature" in freertos-r1|freertos-r1-fault|freertos-r1-panic|freertos-r1-timer-irq|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-i2c-nack|freertos-r2-i2c-peer) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
@@ -18,7 +18,7 @@ export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1
 export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=debuginfo CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
 # The lifecycle workload adds a second task-side path. Fix its size optimization
 # explicitly; never enlarge the application into the MSP/reserved SRAM budget.
-if [[ "$feature" == freertos-r2-spi-lifecycle || "$feature" == freertos-r2-i2c-nack ]]; then
+if [[ "$feature" == freertos-r2-spi-lifecycle || "$feature" == freertos-r2-i2c-nack || "$feature" == freertos-r2-i2c-peer ]]; then
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=s
 else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3

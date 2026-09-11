@@ -183,7 +183,10 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     for (i, v) in [ipsr, control, psp, msp].into_iter().enumerate() { put(28+i, v); }
     assert_eq!(ipsr, 0); assert_eq!(control & 3, 2); assert_eq!(psp & 7, 0);
     assert!((0x2000_e000..=0x2000_f000).contains(&msp));
+    #[cfg(not(feature = "freertos-r2-i2c-peer"))]
     let mut marker = unsafe { ptr::addr_of!(MARKER).read().unwrap() };
+    #[cfg(feature = "freertos-r2-i2c-peer")]
+    let mut marker:Option<ConfiguredPin<22,Output>>=None;
     let q = unsafe { ptr::addr_of!(CHECK_QUEUE).read().unwrap() };
     unsafe {
         assert_eq!(q.receive(2).unwrap(), None); // real block/timeout
@@ -221,7 +224,13 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         put(18, (1024 - untouched) as u32 * 4);
         assert!(untouched >= 32); // ISR/boot MSP guard remains intact
         increment(14); put(27, raw_low()); put(2, 5);
+        #[cfg(not(feature = "freertos-r2-i2c-peer"))]
         marker.toggle();
+        #[cfg(feature = "freertos-r2-i2c-peer")]
+        if get(129)==4 {
+            if marker.is_none() { marker=unsafe { ptr::addr_of_mut!(MARKER).replace(None) }; }
+            marker.as_mut().unwrap().toggle();
+        }
         #[cfg(any(feature = "freertos-r1-fault", feature = "freertos-r1-panic"))]
         if get(14) == 5 {
             put(41, get(8)); put(42, raw_low());
