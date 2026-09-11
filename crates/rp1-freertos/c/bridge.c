@@ -169,6 +169,17 @@ int32_t rp1_freertos_delay(uint32_t ticks)
     return 0;
 }
 
+int32_t rp1_freertos_delay_until(uint32_t *previous, uint32_t increment)
+{
+    int32_t result = thread_context(1);
+    if (result != 0) return result;
+    if (previous == NULL || increment == 0 || increment >= 0x80000000U) return INVALID;
+    TickType_t wake = *previous;
+    BaseType_t delayed = xTaskDelayUntil(&wake, increment);
+    *previous = (uint32_t)wake;
+    return delayed != pdFALSE;
+}
+
 int32_t rp1_freertos_tick(uint32_t *ticks)
 {
     int32_t result = thread_context(1);

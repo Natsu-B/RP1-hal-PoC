@@ -41,6 +41,7 @@ void rp1_freertos_trace_switch(void *task);
 #define traceTASK_SWITCHED_IN() rp1_freertos_trace_switch((void *)pxCurrentTCB)
 
 #define INCLUDE_vTaskDelay                       1
+#define INCLUDE_xTaskDelayUntil                  1
 #define INCLUDE_vTaskSuspend                     1
 #define INCLUDE_uxTaskPriorityGet                 1
 #define INCLUDE_uxTaskGetStackHighWaterMark        1

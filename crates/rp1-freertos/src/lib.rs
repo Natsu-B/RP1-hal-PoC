@@ -164,6 +164,17 @@ pub unsafe fn delay(ticks: u32) -> Result<(), Error> {
     value(unsafe { ffi::rp1_freertos_delay(ticks) }).map(|_| ())
 }
 
+/// Official absolute-period wait. Initialize `previous` with `tick()` once.
+/// Advances `previous` by `increment` even when already due; returns whether the
+/// kernel blocked. A late caller should count/rebase rather than burst-catch-up.
+/// The positive increment and elapsed time since the previous call must be less
+/// than half the 32-bit tick range. This is tick cadence, not wall-clock accuracy.
+/// # Safety
+/// Running proc0 task context; see the module contract. `previous` is task-owned.
+pub unsafe fn delay_until(previous: &mut u32, increment: u32) -> Result<bool, Error> {
+    value(unsafe { ffi::rp1_freertos_delay_until(previous, increment) }).map(|v| v != 0)
+}
+
 /// Wrapping 32-bit scheduler tick count, not wall time.
 /// # Safety
 /// Running proc0 task context; see the module contract.
@@ -313,6 +324,7 @@ mod ffi {
         #[cfg(feature = "assert-probe")]
         pub fn rp1_freertos_config_assert_probe() -> !;
         pub fn rp1_freertos_delay(ticks: u32) -> i32;
+        pub fn rp1_freertos_delay_until(previous: *mut u32, increment: u32) -> i32;
         pub fn rp1_freertos_tick(ticks: *mut u32) -> i32;
         pub fn rp1_freertos_current_task(id: *mut u32) -> i32;
         pub fn rp1_freertos_priority_get(id: u32) -> i32;

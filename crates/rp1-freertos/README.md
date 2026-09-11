@@ -144,6 +144,20 @@ memory-budget checks and hardware evidence are the enclosing runtime's job.
 ## Mixed SPI / I2C NACK / UART selected workload
 
 Opt-in `freertos-r2-mixed-repeat` is the finite sustained-load candidate:384
+SPI/UART requests. Its monitor now uses official `delay_until(&mut previous, 1000)`
+instead of adding stack-scan time to a relative delay. Initialize `previous` once
+from `tick()`. The API accepts1..0x7fffffff ticks and updates the anchor even when
+already due; it requires task context and the module's no-critical-section contract.
+The mixed monitor counts/rebases a missed cycle, never burst-catches-up. MD01 words
+60..63 are no-block count, maximum bookkeeping-through-GPIO us, maximum wake-late
+ticks, and magic. IO/fault telemetry is unchanged. Other example modes keep their
+existing cadence. This does not widen the original external marker tolerance.
+`tools/test-delay-until.py` compiles the actual bridge and official kernel function
+with scheduler mocks for input/wrap/due tests; it does not emulate task switching.
+`tools/check-freertos-monitor-deadline.py LOG` adds MD01 checks to the existing
+mixed-repeat numeric checks; an actual external peer/GPIO cohort is still required.
+
+The sustained peer contract remains384
 SPI/UART requests,192 absolute10s cycles with request2 at+4500ms (~32min), and
 I2C0x2e NACK requests every100ticks until both owners finish. UART tags0001..0384
 are monotonic, SPI wire IDs alternate1/2. A release/acquire load/store handshake

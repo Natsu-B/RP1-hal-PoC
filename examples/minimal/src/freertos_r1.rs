@@ -257,8 +257,24 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     }
     put(39, 1); put(2, 4);
     let mut previous = [0; 4];
+    #[cfg(feature = "freertos-r2-mixed-repeat")]
+    let mut wake = unsafe { os::tick().unwrap() };
+    #[cfg(feature = "freertos-r2-mixed-repeat")]
+    put(63, u32::from_le_bytes(*b"MD01")); // words60..63: monitor-only, not IO/fault.
     loop {
-        #[cfg(not(any(feature = "freertos-r2-spi-lifecycle", feature = "freertos-r2-i2c-cancel-window", feature = "freertos-r2-uart-lifecycle")))]
+        #[cfg(feature = "freertos-r2-mixed-repeat")]
+        let body_start = unsafe {
+            if !os::delay_until(&mut wake, 1000).unwrap() {
+                put(60, get(60).checked_add(1).unwrap());
+                wake = os::tick().unwrap(); // No burst catch-up or unbounded retry.
+                continue;
+            }
+            let late = os::tick().unwrap().wrapping_sub(wake);
+            assert!(late < 0x8000_0000);
+            put(62, get(62).max(late));
+            raw_low()
+        };
+        #[cfg(not(any(feature = "freertos-r2-mixed-repeat", feature = "freertos-r2-spi-lifecycle", feature = "freertos-r2-i2c-cancel-window", feature = "freertos-r2-uart-lifecycle")))]
         unsafe { os::delay(1000).unwrap(); }
         #[cfg(feature = "freertos-r2-spi-lifecycle")]
         unsafe { spi::lifecycle::monitor_wait(1000); }
@@ -298,6 +314,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         increment(14); put(27, raw_low()); put(2, 5);
         #[cfg(not(feature = "freertos-r2-i2c-peer"))]
         marker.toggle();
+        #[cfg(feature = "freertos-r2-mixed-repeat")]
+        put(61, get(61).max(raw_low().wrapping_sub(body_start)));
         #[cfg(feature = "freertos-r2-i2c-peer")]
         if get(129)==4 {
             if marker.is_none() { marker=unsafe { ptr::addr_of_mut!(MARKER).replace(None) }; }
