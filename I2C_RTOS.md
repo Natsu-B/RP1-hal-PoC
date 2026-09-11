@@ -1,4 +1,4 @@
-# Proc0 I2C IRQ adapter — candidate
+# Proc0 I2C IRQ adapter — selected IRQ foundation
 
 `rp1-freertos/i2c1-irq` provides a single-owner, notification-blocking receiver
 using the existing bounded RX engine and actual local IRQ8/vector24. It does not
@@ -31,7 +31,7 @@ Build: `RP1_RTOS_FEATURE=freertos-r2-i2c-nack tools/build-freertos-r1.sh /new/ou
 Run host tests: `cargo test -p rp1-hal --target x86_64-unknown-linux-gnu`,
 `python3 tools/test-irq-publication.py`, `python3 tools/test-isr-notify.py`, and
 `python3 tools/test-spi-cancel.py`. Preserve ELF/vector/memory admission checks.
-STATIC/BUILD until a separately identified formal hardware cohort passes.
+Keep STATIC/BUILD checks separate from the selected hardware cohorts below.
 
 ## Current peer workload
 
@@ -51,7 +51,14 @@ The HIGH/LOW dwell is sampled at1tick intervals for at least2ms, not continuous
 observation. No lease is renewed and no callback is requested outside this flow.
 
 Build with `RP1_RTOS_FEATURE=freertos-r2-i2c-peer tools/build-freertos-r1.sh /new/out`.
-This candidate requires the native host protocol/terminal-evidence join, not
-just seeing final HIGH (which could be fail-close). It is BUILD-only until its
-own formal cohort. Does not prove arbitrary-slave recovery, hard physical lease
-latency, integrated R2 or an IMU acquisition rate. No ESP or Linux image changes.
+This workload requires the native host protocol/terminal-evidence join, not
+just seeing final HIGH (which could be fail-close). On2026-09-11, selected source
+f2d0116816d8753f35fd5fbc509c071e2c5d5c80/image113e9427ba99f84a7ecd48c6753d65e1bae1ca0ad9c5fd0225bf9a88a760e77d
+passed formal2/2: one NACK IRQ wake then real31,4e RX with2IRQs/one blocked-task
+wake, checked cleanup/canary and continuing kernel-test tasks. Payload ISR maxima
+301/302us, IRQ-end→task52/48us, observed MSP<=912B, task unused190/512words.
+Earlier cold-input admission failed because common R1 startup already configured
+the pin; reuse that handle, as the current source does. The failure and separate
+normal recovery remain distinct. No ESP or Linux image changes occurred.
+These bounded cohorts do not prove arbitrary-slave recovery, hard physical lease
+latency, I2C timeout/cancel, integrated R2,30min operation or an IMU acquisition rate.
