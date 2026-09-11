@@ -169,8 +169,27 @@ RI02 READY stays compatible with the existing host client, but final count3 and
 ICW1 extension at word182 require a new validator. Gen3 receipt96..111 and probe
 112..122/180..183 do not touch ASSERT184..191/fault192..255. Existing incompatible
 timer/SPI/UART example checks remain. Ordinary builds omit this hook entirely.
-This new image is BUILD-only until its own commissioning/formal2/2; SPI's result
-does not prove I2C cancellation. It is a test seam, not a production delay.
+HALc9b19dc/image e0dc3883 passed its own selected HW2/2 and four separate normal
+boots (rpi-cm5-hack616884350). Actual31,4e retained after Cancelled, gen3 NACK
+rearm; ISR278/279us, wake48us, MSP808B. It is a test seam, not a production delay
+or proof of arbitrary slave/active-cancel recovery.
+
+## UART lifecycle workload
+
+`RP1_RTOS_FEATURE=freertos-r2-uart-lifecycle tools/build-freertos-r1.sh /new/out`
+adds a hook-free no-response20tick timeout and active cancellation before the
+existing two USB-UART payload exchanges. Monitor waits boundedly for published
+tickets, since exchange preflight cleanup can block before publication. It also
+observes generation1's armed CR/IMSC/NVIC state before timeout. Empty prompts
+keep the existing host peer unchanged; wire1/2 are driver generations3/4.
+Failed requests retain no RX/error/overflow/residual and require checked quiet
+cleanup, stale-ticket rejection and stable buffers. Source `uart0.rs` unchanged.
+
+UL01 uses failed receipts96..119, monitor ledger120..122, existing context123..133,
+canaries134..135 and successful receipts136..183; ASSERT/fault184..255 stay free.
+Only the optional example uses this schema. Build uses existing opt-s/fat-LTO
+within the original task/MSP budget. HW OPEN until its own fixed-image cohort;
+partial-data cancel, overflow/error and fullR2 are not implied.
 
 ## SPI lifecycle detail
 

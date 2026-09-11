@@ -3,6 +3,9 @@
 use super::*;
 use rp1_hal::uart::Uart0Tx;
 static mut HOST:Option<Uart0Tx>=None;
+#[cfg(feature = "freertos-r2-uart-lifecycle")]
+#[path = "freertos_uart_lifecycle.rs"]
+pub mod lifecycle;
 pub fn set_host(host:Uart0Tx) { unsafe { ptr::addr_of_mut!(HOST).write(Some(host)); } }
 
 #[repr(C)]
@@ -18,8 +21,9 @@ fn store(generation:u32,r:os::uart0::Receipt,buffer:&Buffer) {
     let bytes=unsafe { ptr::addr_of!(buffer.bytes).read_volatile() };
     for i in 0..5 { put(base+19+i,u32::from_be_bytes(bytes[i*4..i*4+4].try_into().unwrap())); }
     unsafe {
-        put(184,ptr::addr_of!(buffer.before).read_volatile());
-        put(185,ptr::addr_of!(buffer.after).read_volatile());
+        let base=if cfg!(feature = "freertos-r2-uart-lifecycle") {134} else {184};
+        put(base,ptr::addr_of!(buffer.before).read_volatile());
+        put(base+1,ptr::addr_of!(buffer.after).read_volatile());
     }
 }
 
@@ -36,6 +40,8 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
     assert!(matches!(unsafe { driver.exchange(b"",&mut [],50) },Err(os::uart0::Error::InvalidArgument)));
     assert!(matches!(unsafe { driver.exchange(b"",&mut buffer.bytes,0) },Err(os::uart0::Error::InvalidArgument)));
     put(130,2);
+    #[cfg(feature = "freertos-r2-uart-lifecycle")]
+    unsafe { lifecycle::before(&mut driver,&mut buffer); }
     for (index,(ready,payload,ack)) in [
         (&b"RP1U0 RTOSREADY 0001\r\n"[..],&b"HOST2RP1 IRQ 0001\r\n"[..],&b"RP1U0 RTOSOK 0001\r\n"[..]),
         (&b"RP1U0 RTOSREADY 0002\r\n"[..],&b"HOST2RP1 IRQ 0002\r\n"[..],&b"RP1U0 RTOSOK 0002\r\n"[..]),
@@ -44,21 +50,28 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
         buffer.bytes.fill(0xc3);put(129,2);
         // The adapter publishes/arms RX before sending READY, then blocks.
         let result=unsafe { driver.exchange(ready,&mut buffer.bytes[..19],2000) };
-        let generation=index as u32+1;
-        if let Some(r)=driver.last_receipt() { store(generation,r,&buffer); }
+        let generation=index as u32+1+if cfg!(feature = "freertos-r2-uart-lifecycle") {2} else {0};
+        if let Some(r)=driver.last_receipt() { store(index as u32+1,r,&buffer); }
         let r=result.unwrap();
         assert_eq!(r.generation,generation);assert_eq!(r.received,19);
         assert!(r.irq_entries>0);assert_eq!(r.ipsr,41);assert!(r.higher_priority_wakes>0);
         assert_eq!(&buffer.bytes[..19],payload);assert_eq!(buffer.bytes[19],0xc3);
-        assert_eq!(get(184),0x5aa5_a55a);assert_eq!(get(185),0xa55a_5aa5);
+        let canary=if cfg!(feature = "freertos-r2-uart-lifecycle") {134} else {184};
+        assert_eq!(get(canary),0x5aa5_a55a);assert_eq!(get(canary+1),0xa55a_5aa5);
         assert_eq!(unsafe { os::uart0::active_generation() },0);
         assert!(!unsafe { os::uart0::cancel(generation) });
         unsafe { driver.write_all(ack,100).unwrap(); }
-        increment(131);put(191,generation);put(129,3);
+        increment(131);
+        #[cfg(not(feature = "freertos-r2-uart-lifecycle"))]
+        put(191,generation);
+        put(129,3);
     }
+    #[cfg(not(feature = "freertos-r2-uart-lifecycle"))]
+    {
     for (index,address) in [(186,0x4001_8054),(187,0x4001_8058),(188,0x4001_8060),
         (189,0x4002_0010)] { put(index,unsafe { (address as *const u32).read_volatile() }); }
     put(190,unsafe { (0xe000_e419 as *const u8).read_volatile() } as u32);
+    }
     put(129,4);
     loop { unsafe { os::delay(1000).unwrap(); } increment(132); }
 }
