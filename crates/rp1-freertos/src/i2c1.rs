@@ -1,7 +1,7 @@
 //! Proc0 I2C1/IRQ8 single-owner receive. No global IRQ mask/VTOR/reset writer.
 //! Task notification0 is reserved during a read; FIFO pops belong to the ISR.
 use crate::{self as os, Task};
-use core::{cell::UnsafeCell, ptr};
+use core::{cell::{Cell, UnsafeCell}, ptr};
 use rp1_hal::{i2c::{self, I2c1Host, I2c1Read1Snapshot},
     i2c_rx_irq_adapter::{self as adapter, ServiceEvidence},
     i2c_rx_state::{CleanupEvidence, Error as RxError, RxState, State, FATAL_CAUSES, OWNED_CAUSES, MAX_LEN}};
@@ -68,7 +68,9 @@ impl Context {
 
 /// Owns host, pins and engine. IRQ storage never points at the caller's buffer.
 /// UnsafeCell explicitly identifies the serialized task/IRQ shared state.
-pub struct Driver { context:UnsafeCell<Context>, last:Option<Receipt> }
+/// Use shared references across interruptible calls, including outer callers;
+/// UnsafeCell does not relax an enclosing &mut Driver's uniqueness.
+pub struct Driver { context:UnsafeCell<Context>, last:Cell<Option<Receipt>> }
 impl Driver {
     /// # Safety
     /// Proc0 task only; exclusive I2C1/IRQ8/pins ownership and known clocks/reset.
@@ -84,15 +86,15 @@ impl Driver {
         assert_eq!(unsafe { (0xe000_e408 as *const u8).read_volatile() },0xc0);
         Self { context:UnsafeCell::new(Context { host,engine:RxState::new(rx_depth,observed.tx_fifo_depth).unwrap(),
             rx_depth:u32::from(rx_depth),receipt:Receipt::default(),irq_end:0,terminal_generation:0,
-            no_progress:0,budget_failed:false }),last:None }
+            no_progress:0,budget_failed:false }),last:Cell::new(None) }
     }
 
-    pub fn last_receipt(&self)->Option<Receipt> { self.last }
+    pub fn last_receipt(&self)->Option<Receipt> { self.last.get() }
 
     /// Mask/disable/retain/ACK then sample disabled-source quiet over >=4ms.
     /// Sleep between samples: this is NOT the earlier proof's tight polling.
     /// Any cleanup failure halts; do not release host/engine/buffer for rearm.
-    unsafe fn cleanup(&mut self,failed:bool) {
+    unsafe fn cleanup(&self,failed:bool) {
         mask();
         let c=unsafe { &mut *self.context.get() };
         let started=raw();
@@ -138,9 +140,10 @@ impl Driver {
 
     /// # Safety
     /// Running proc0 task, same owner contract as new, notification0 reserved.
+    /// No enclosing exclusive Driver borrow or concurrent/reentrant driver call.
     /// Only after masked checked cleanup is the actual prefix copied to rx.
-    pub unsafe fn receive(&mut self,address:u8,rx:&mut[u8],timeout:u32)->Result<Receipt,Error> {
-        self.last=None;
+    pub unsafe fn receive(&self,address:u8,rx:&mut[u8],timeout:u32)->Result<Receipt,Error> {
+        self.last.set(None);
         if address>0x7f || rx.is_empty() || rx.len()>MAX_LEN || timeout==0 || timeout>=0x8000_0000 {
             return Err(Error::InvalidArgument);
         }
@@ -227,7 +230,7 @@ impl Driver {
         }
         let bytes=c.engine.bytes();rx[..bytes.len()].copy_from_slice(bytes);
         c.receipt.received=bytes.len() as u32;c.receipt.elapsed_us=raw().wrapping_sub(started);
-        self.last=Some(c.receipt);result.map(|()| c.receipt)
+        self.last.set(Some(c.receipt));result.map(|()| c.receipt)
     }
 }
 

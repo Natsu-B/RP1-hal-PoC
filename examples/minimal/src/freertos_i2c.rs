@@ -26,11 +26,11 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
     for (i,v) in [ipsr,control,psp,msp].into_iter().enumerate() { put(124+i,v); }
     put(128,u32::from_le_bytes(*b"RI01"));put(129,1);put(133,0x2e);
     let host=unsafe { ptr::addr_of_mut!(HOST).replace(None).unwrap() };
-    let mut driver=unsafe { os::i2c1::Driver::new(host) };
+    let driver=unsafe { os::i2c1::Driver::new(host) };
     #[cfg(feature = "freertos-r2-i2c-peer")]
-    unsafe { peer::run(&mut driver); }
+    unsafe { peer::run(&driver); }
     #[cfg(not(feature = "freertos-r2-i2c-peer"))]
-    unsafe { nack(&mut driver); }
+    unsafe { nack(&driver); }
 }
 
 fn store(generation:u32,r:os::i2c1::Receipt,buffer:&Buffer) {
@@ -44,7 +44,7 @@ fn store_at(base:usize,r:os::i2c1::Receipt,buffer:&Buffer) {
 }
 
 #[cfg(not(feature = "freertos-r2-i2c-peer"))]
-unsafe fn nack(driver:&mut os::i2c1::Driver)->! {
+unsafe fn nack(driver:&os::i2c1::Driver)->! {
     let mut buffer=Buffer { before:0x5aa5_a55a,bytes:[0xc3;4],after:0xa55a_5aa5 };
     assert!(matches!(unsafe { driver.receive(0x2e,&mut [],50) },Err(os::i2c1::Error::InvalidArgument)));
     assert!(matches!(unsafe { driver.receive(0x2e,&mut buffer.bytes,0) },Err(os::i2c1::Error::InvalidArgument)));

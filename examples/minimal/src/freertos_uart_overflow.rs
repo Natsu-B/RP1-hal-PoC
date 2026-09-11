@@ -14,7 +14,7 @@ static PROMPT:[u8;1024]=prompt();
 #[repr(C)]
 struct Burst {before:u32,bytes:[u8;96],after:u32}
 
-pub unsafe fn before(driver:&mut os::uart0::Driver) {
+pub unsafe fn before(driver:&os::uart0::Driver) {
     put(128,u32::from_le_bytes(*b"UO01"));
     let mut buffer=Burst {before:0x5aa5_a55a,bytes:[0xc3;96],after:0xa55a_5aa5};
     let result=unsafe {driver.exchange(&PROMPT,&mut buffer.bytes,1000)};

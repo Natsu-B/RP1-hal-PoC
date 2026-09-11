@@ -72,7 +72,7 @@ unsafe fn pulse(marker:&mut ConfiguredPin<22,Output>,width:u32,index:usize) {
     let start=raw_low();marker.set_high();unsafe { os::delay(width).unwrap(); }marker.set_low();
     put(index,raw_low().wrapping_sub(start));
 }
-pub unsafe fn run(driver:&mut os::i2c1::Driver)->! {
+pub unsafe fn run(driver:&os::i2c1::Driver)->! {
     let mut marker=unsafe { ptr::addr_of_mut!(MARKER).replace(None).unwrap() };
     marker.set_low();put(128,u32::from_le_bytes(*b"RI02"));put(133,0x2d);
     #[cfg(feature = "freertos-r2-i2c-cancel-window")]

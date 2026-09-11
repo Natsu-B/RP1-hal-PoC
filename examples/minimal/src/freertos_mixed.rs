@@ -96,7 +96,7 @@ pub unsafe extern "C" fn i2c_worker(_: *mut c_void) { unsafe {
     use rp1_hal::i2c_rx_state::Error as RxError;
     const B: usize = 128;
     enter(B, *b"ICM1", 7);
-    let mut driver = os::i2c1::Driver::new(ptr::addr_of_mut!(I2C).replace(None).unwrap());
+    let driver = os::i2c1::Driver::new(ptr::addr_of_mut!(I2C).replace(None).unwrap());
     put(B+17, u32::MAX); put(B+31, 0x2e);
     // ponytail: fixed256-request cohort; extend only after same-image admission.
     for generation in 1..=256 {
@@ -136,7 +136,7 @@ pub unsafe extern "C" fn i2c_worker(_: *mut c_void) { unsafe {
 pub unsafe extern "C" fn uart_worker(_: *mut c_void) { unsafe {
     const B: usize = 160;
     enter(B, *b"UAM1", 8);
-    let mut driver = os::uart0::Driver::new(ptr::addr_of_mut!(UART).replace(None).unwrap());
+    let driver = os::uart0::Driver::new(ptr::addr_of_mut!(UART).replace(None).unwrap());
     let mut buffer = Buffer::<20>::new();
     for (index,(ready,payload,ack)) in [
         (&b"RP1U0 RTOSREADY 0001\r\n"[..], &b"HOST2RP1 IRQ 0001\r\n"[..], &b"RP1U0 RTOSOK 0001\r\n"[..]),

@@ -55,7 +55,7 @@ unsafe fn failed(driver:&os::uart0::Driver,buffer:&Buffer,generation:u32) {
     assert_eq!((enabled|pending|active)&(1<<25),0);
     increment(131);
 }
-pub(super) unsafe fn before(driver:&mut os::uart0::Driver,buffer:&mut Buffer) {
+pub(super) unsafe fn before(driver:&os::uart0::Driver,buffer:&mut Buffer) {
     put(128,u32::from_le_bytes(*b"UL01"));
     assert!(!unsafe { os::uart0::cancel(1) });put(122,1);
     // No prompt and no peer write: this request must block until its deadline.

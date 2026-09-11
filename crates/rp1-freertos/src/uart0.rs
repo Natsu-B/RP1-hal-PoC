@@ -1,7 +1,7 @@
 //! Proc0 UART0/IRQ25: one owner, a 64-byte RX ring, notification0 per exchange.
 //! RX is armed before prompt TX. No clock/reset/VTOR or global IRQ-mask writer.
 use crate::{self as os, Task};
-use core::{cell::UnsafeCell, ptr};
+use core::{cell::{Cell, UnsafeCell}, ptr};
 use rp1_hal::uart::{Uart0RxStatus, Uart0Tx};
 
 const BIT: u32 = 1 << 25;
@@ -139,7 +139,9 @@ impl Context {
 
 /// The ISR points only into UnsafeCell, never at the caller's buffer. All task
 /// accesses to Context are IRQ25-masked, and end before unmasking or blocking.
-pub struct Driver { context: UnsafeCell<Context>, last: Option<Receipt> }
+/// Interruptible calls must use shared references, including outer callers:
+/// UnsafeCell does not relax the uniqueness of an enclosing &mut Driver.
+pub struct Driver { context: UnsafeCell<Context>, last: Cell<Option<Receipt>> }
 impl Driver {
     /// # Safety
     /// Proc0, exclusive already-initialized UART0/pins/IRQ25 ownership. Install
@@ -155,15 +157,15 @@ impl Driver {
         barrier();
         assert_eq!(unsafe { PRIORITY.read_volatile() }, 0xc0);
         Self { context: UnsafeCell::new(Context { host, state: RxState::new(0, 0),
-            receipt: Receipt::default(), irq_end: 0, terminal_generation: 0, wake_recorded: false }), last: None }
+            receipt: Receipt::default(), irq_end: 0, terminal_generation: 0, wake_recorded: false }), last: Cell::new(None) }
     }
 
-    pub fn last_receipt(&self) -> Option<Receipt> { self.last }
+    pub fn last_receipt(&self) -> Option<Receipt> { self.last.get() }
 
     /// RXE off, <=32 pops per sample/<=64 total, retain errors before ECR/ICR,
     /// then >=4ms sampled quiet. An in-flight character can finish after RXE is
     /// cleared: it resets the quiet interval and cannot become silent success.
-    unsafe fn cleanup(&mut self, preflight: bool) {
+    unsafe fn cleanup(&self, preflight: bool) {
         mask();
         let started = raw();
         { unsafe { &mut *self.context.get() }.host.stop_rx_irq(); }
@@ -232,7 +234,7 @@ impl Driver {
 
     /// FIFO-full and serial-BUSY waits yield a tick, never busy-spin. RX can run
     /// while sending a prompt, but its ring remains bounded and overflow is fatal.
-    unsafe fn transmit(&mut self, bytes: &[u8], deadline: u32, generation: u32) -> Result<(), Error> {
+    unsafe fn transmit(&self, bytes: &[u8], deadline: u32, generation: u32) -> Result<(), Error> {
         let mut sent = 0;
         loop {
             mask();
@@ -255,12 +257,13 @@ impl Driver {
 
     /// # Safety
     /// Running proc0 owner task, notification0 reserved throughout the exchange.
+    /// No enclosing exclusive Driver borrow or concurrent/reentrant driver call.
     /// `rx` is never ISR-owned. Prefix copies happen under IRQ25 mask; it cannot
     /// return until checked cleanup. Success also requires TX serial BUSY idle.
-    pub unsafe fn exchange(&mut self, prompt: &[u8], rx: &mut [u8], timeout_ticks: u32)
+    pub unsafe fn exchange(&self, prompt: &[u8], rx: &mut [u8], timeout_ticks: u32)
         -> Result<Receipt, Error>
     {
-        self.last = None;
+        self.last.set(None);
         if rx.is_empty() || rx.len() > u32::MAX as usize || timeout_ticks == 0 || timeout_ticks >= 0x8000_0000 {
             return Err(Error::InvalidArgument);
         }
@@ -350,7 +353,7 @@ impl Driver {
         c.receipt.first_error_dr = c.state.first_error_dr;
         c.receipt.overflow_bytes = c.state.overflow_bytes;
         c.receipt.elapsed_us = raw().wrapping_sub(started);
-        self.last = Some(c.receipt);
+        self.last.set(Some(c.receipt));
         result.map(|()| c.receipt)
     }
 
@@ -358,7 +361,8 @@ impl Driver {
     /// generation or replace last_receipt. RX stays disabled outside exchange.
     /// # Safety
     /// Running proc0 owner task; no outstanding exchange or other UART writer.
-    pub unsafe fn write_all(&mut self, bytes: &[u8], timeout_ticks: u32) -> Result<(), Error> {
+    /// No enclosing exclusive Driver borrow or concurrent/reentrant driver call.
+    pub unsafe fn write_all(&self, bytes: &[u8], timeout_ticks: u32) -> Result<(), Error> {
         if timeout_ticks == 0 || timeout_ticks >= 0x8000_0000 { return Err(Error::InvalidArgument); }
         mask();
         assert!(unsafe { ptr::addr_of!(ACTIVE).read_volatile() }.is_null());

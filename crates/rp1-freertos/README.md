@@ -1,5 +1,17 @@
 # Proc0 static FreeRTOS bridge
 
+UART/I2C interruptible Driver methods take `&self`, with `UnsafeCell` IRQ state
+and `Cell` for the last receipt. Callers must retain only shared Driver borrows
+across requests (including enclosing helpers); one proc0 owner, no reentrancy.
+Inner Context references end before enabling the IRQ. SPI keeps its separate
+stack-local transfer in UnsafeCell so the waiting closure does not hold an
+exclusive transfer borrow. These are serialized IRQ accesses, not cross-core
+locks. `UnsafeCell` does not relax `&mut` uniqueness.
+`tools/check-uart-transmit-loop.py ELF` checks the pinned optimized overflow
+image reloads IRQ-mutated terminal/error fields on each transmit iteration.
+The old full-prompt overflow commissioning failed this check; a build PASS
+alone does not establish corrected hardware overflow/rearm behavior.
+
 FreeRTOS-Kernel V11.3.1, commit `3a22924e0a9ddbbc8b0758881c33b3422a5cc20d`,
 is compiled from the unmodified `third-party/FreeRTOS-Kernel` submodule. The build
 rejects another commit, tracked vendor edits, another ARM target, or a compiler

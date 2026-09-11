@@ -38,15 +38,15 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
     assert_eq!(ipsr,0);assert_eq!(control&3,2);assert_eq!(psp&7,0);
     put(128,u32::from_le_bytes(*b"RU01"));put(129,1);put(133,115200);
     let host=unsafe { ptr::addr_of_mut!(HOST).replace(None).unwrap() };
-    let mut driver=unsafe { os::uart0::Driver::new(host) };
+    let driver=unsafe { os::uart0::Driver::new(host) };
     let mut buffer=Buffer { before:0x5aa5_a55a,bytes:[0xc3;20],after:0xa55a_5aa5 };
     assert!(matches!(unsafe { driver.exchange(b"",&mut [],50) },Err(os::uart0::Error::InvalidArgument)));
     assert!(matches!(unsafe { driver.exchange(b"",&mut buffer.bytes,0) },Err(os::uart0::Error::InvalidArgument)));
     put(130,2);
     #[cfg(feature = "freertos-r2-uart-lifecycle")]
-    unsafe { lifecycle::before(&mut driver,&mut buffer); }
+    unsafe { lifecycle::before(&driver,&mut buffer); }
     #[cfg(feature = "freertos-r2-uart-overflow")]
-    unsafe { overflow::before(&mut driver); }
+    unsafe { overflow::before(&driver); }
     for (index,(ready,payload,ack)) in [
         (&b"RP1U0 RTOSREADY 0001\r\n"[..],&b"HOST2RP1 IRQ 0001\r\n"[..],&b"RP1U0 RTOSOK 0001\r\n"[..]),
         (&b"RP1U0 RTOSREADY 0002\r\n"[..],&b"HOST2RP1 IRQ 0002\r\n"[..],&b"RP1U0 RTOSOK 0002\r\n"[..]),

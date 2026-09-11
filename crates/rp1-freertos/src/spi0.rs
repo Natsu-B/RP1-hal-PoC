@@ -3,7 +3,7 @@
 //! No clock/reset/VTOR writer, allocation, or proc1 lock. Cancellation uses the
 //! kernel's task critical section to serialize its short nonblocking transaction.
 use crate::{self as os, Task};
-use core::ptr;
+use core::{cell::UnsafeCell, ptr};
 use rp1_hal::spi::{Spi0Host, Spi0IrqTransfer, Spi0RxError, Spi0RxState};
 
 const BIT: u32 = 1 << 19;
@@ -80,7 +80,7 @@ impl Driver {
         assert!(unsafe { ptr::addr_of!(ACTIVE).read_volatile() }.is_null());
         let waiter = unsafe { os::current_task().unwrap().unwrap() };
         unsafe { os::notification_take(true, 0).unwrap(); }
-        let mut transfer = self.host.prepare_irq_transfer(tx, rx).map_err(|e| {
+        let transfer = UnsafeCell::new(self.host.prepare_irq_transfer(tx, rx).map_err(|e| {
             // HAL preparation has no checked-abort handle on Err. Only errors
             // known to precede MMIO can safely return the host/buffer here.
             // Post-MMIO setup failures halt with IRQ masked and ACTIVE absent;
@@ -91,7 +91,7 @@ impl Driver {
                     | rp1_hal::spi::Spi0Error::FifoDepthUnknown)),
                 "SPI preparation failed after possible MMIO; recovery required");
             Error::Receive(e)
-        })?;
+        })?);
         self.generation = generation;
         unsafe {
             ptr::addr_of_mut!(WAITER).write_volatile(waiter.0);
@@ -104,7 +104,7 @@ impl Driver {
             ptr::addr_of_mut!(IRQ_LIMIT).write_volatile(tx.len() as u32 + 1);
             // Erase only the raw pointer's lifetime, never manufacture a static
             // reference. It is withdrawn under IRQ19 mask before `transfer` dies.
-            ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::addr_of_mut!(transfer).cast());
+            ptr::addr_of_mut!(ACTIVE).write_volatile(transfer.get().cast());
             ptr::addr_of_mut!(GENERATION).write_volatile(generation);
             PENDING.write_volatile(BIT);
         }
@@ -113,19 +113,24 @@ impl Driver {
             if os::deadline_remaining(unsafe { os::tick().unwrap() }, deadline).is_none() {
                 return Err(Error::Timeout);
             }
-            unsafe { transfer.enable_local_irq_route() }.map_err(Error::Receive)?;
-            transfer.start().map_err(Error::Receive)?;
+            {
+                let t = unsafe { &mut *transfer.get() };
+                unsafe { t.enable_local_irq_route() }.map_err(Error::Receive)?;
+                t.start().map_err(Error::Receive)?;
+            }
             loop {
-                // All Rust access to the transfer happens while its IRQ is masked.
+                // Capture the shared UnsafeCell, not &mut transfer across IRQs.
+                // Each inner borrow ends before IRQ enable/notification wait.
                 if unsafe { ptr::addr_of!(CANCEL).read_volatile() } == generation { return Err(Error::Cancelled); }
                 if unsafe { ptr::addr_of!(IRQ_ERROR).read_volatile() } != 0 { return Err(Error::IrqBudget); }
-                if let Spi0RxState::Failed(e) = transfer.state() { return Err(Error::Receive(e)); }
+                let state = unsafe { &*transfer.get() }.state();
+                if let Spi0RxState::Failed(e) = state { return Err(Error::Receive(e)); }
                 let remaining = os::deadline_remaining(unsafe { os::tick().unwrap() }, deadline)
                     .ok_or(Error::Timeout)?;
-                if transfer.state() == Spi0RxState::RxComplete {
+                if state == Spi0RxState::RxComplete {
                     assert_eq!(unsafe { ptr::addr_of!(IRQ_GENERATION).read_volatile() }, generation);
                     if wake_us.is_none() { wake_us = Some(raw()); }
-                    if transfer.try_finish().map_err(Error::Receive)? { return Ok(()); }
+                    if unsafe { &mut *transfer.get() }.try_finish().map_err(Error::Receive)? { return Ok(()); }
                     // No useful RX IRQ remains for the last serial edge. One tick
                     // delay avoids busy polling; keep the source masked throughout.
                     unsafe { os::delay(1).unwrap(); }
@@ -137,8 +142,8 @@ impl Driver {
             }
         })();
         mask();
-        if result.is_err() { transfer.abort().expect("SPI checked abort failed; buffer retained by halt"); }
-        assert!(matches!(transfer.state(), Spi0RxState::Complete | Spi0RxState::Failed(_)));
+        if result.is_err() { unsafe { &mut *transfer.get() }.abort().expect("SPI checked abort failed; buffer retained by halt"); }
+        assert!(matches!(unsafe { &*transfer.get() }.state(), Spi0RxState::Complete | Spi0RxState::Failed(_)));
         // Opt-in acceptance image only: let a real task cancel after checked
         // completion but before withdrawal. No probe/callback in normal builds.
         #[cfg(feature = "spi0-cancel-window-probe")]
