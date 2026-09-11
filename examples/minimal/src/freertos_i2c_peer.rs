@@ -7,6 +7,10 @@ static mut PIN:Option<ConfiguredPin<9,rp1_hal::gpio::Input>>=None;
 pub fn set_pin(pin:ConfiguredPin<9,rp1_hal::gpio::Input>) { unsafe { ptr::addr_of_mut!(PIN).write(Some(pin)); } }
 
 fn read(address:usize)->u32 { unsafe { (address as *const u32).read_volatile() } }
+fn input_admitted(pre:[u32;7])->bool {
+    pre[0]==0x85 && pre[1]==0xda && pre[2]&(1<<13)==0 && pre[3]==0x0040_0980
+        && pre[5]&(1<<19)==0 && pre[6]&(1<<19)!=0
+}
 fn idle_high()->Option<bool> {
     let s=i2c::i2c1_read1_snapshot();
     assert!(s.irq.enable_status==0 && s.irq.interrupt_mask==0 && s.rx_level==0 && s.tx_level==0);
@@ -44,8 +48,7 @@ pub unsafe fn run(driver:&mut os::i2c1::Driver)->! {
     let pre=[read(0x400d_004c),read(0x400f_0028),read(0x400d_0048),
         read(0x400e_0004),read(0x400e_0008),read(0x4001_4004),read(0x4001_401c)];
     for (i,v) in pre.into_iter().enumerate() { put(173+i,v); }
-    assert!(pre[0]==0x85 && pre[1]==0xda && pre[2]&(1<<13)==0 && pre[3]==0x0040_0980
-        && pre[5]&(1<<19)==0 && pre[6]&(1<<19)!=0);
+    assert!(input_admitted(pre));
     let _input=unsafe { ptr::addr_of_mut!(PIN).replace(None).unwrap() };
     let mut buffer=Buffer { before:0x5aa5_a55a,bytes:[0xc3;4],after:0xa55a_5aa5 };
     unsafe { wait(true,3000); pulse(&mut marker,13,168); }
