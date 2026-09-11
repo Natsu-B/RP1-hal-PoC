@@ -1,5 +1,13 @@
 # UART0 task adapter
 
+Selected HW2/2 at code5609593fc32f2b5ab62ac2c3de58dd0917383375: two19B real
+USB-UART responses perboot, IRQ25/IPSR41 and five blocked-task wakes perrequest,
+exactsequence/canary/ACK, checkedcleanup and separate finalnormalbaseline.
+ISR observedmax89us, terminalIRQ→task58..59us, UARTstack observed1104B used,
+MSP480B. This documents that selected workload only; the lifecycle/combined
+limitations below remain. This later documentation commit is not the tested
+firmware source revision.
+
 Build candidate: `RP1_RTOS_FEATURE=freertos-r2-uart tools/build-freertos-r1.sh /new/output`.
 This selects the existing pinned official FreeRTOS GCC ARM_CM3 proc0 port,
 Rust size optimization, static task8 (priority5,512words) and direct local
