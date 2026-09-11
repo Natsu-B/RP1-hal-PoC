@@ -269,9 +269,9 @@ compile_error!("SPI0 caller deadline and other transaction proofs are mutually e
         feature = "uart3-local-nvic44-delivery",
         feature = "uart4-local-nvic45-delivery",
         feature = "uart5-local-nvic46-delivery",
-        feature = "uart0-reset-only",
+        all(feature = "uart0-reset-only", not(feature = "freertos-r2-mixed")),
         feature = "pwm-gpio12-proof",
-        feature = "i2c1-reset-only",
+        all(feature = "i2c1-reset-only", not(feature = "freertos-r2-mixed")),
         feature = "gpio-wiring-proof",
         feature = "debug-mailbox-ping",
         feature = "debug-stub",
@@ -10615,6 +10615,21 @@ fn main(mut p: Peripherals) -> ! {
                     assert!(release_uart0_reset_bank1_bit26().is_ok());
                     let host = p.uart0.init_tx_rx_115200_clock_ready();
                     freertos_r1::uart::set_host(host);
+                }
+                #[cfg(feature = "freertos-r2-mixed")]
+                {
+                    // One shared PLL prerequisite before any driver is armed.
+                    assert!(pll_sys_core_lock_transition().decision == PllSysCoreLockDecision::Locked);
+                    assert!(enable_pll_sys_pri_ph_bit4().is_ok());
+                    assert!(release_spi0_reset_bank1_bit10().is_ok());
+                    let spi = p.spi0.into_host_mode0_100khz(p.gpio.pin::<8>(),
+                        p.gpio.pin::<9>(), p.gpio.pin::<10>(), p.gpio.pin::<11>()).unwrap();
+                    assert!(spi0_miso_input_observation::apply_guarded_bias().unwrap() & 0xff == 0xfb);
+                    assert!(release_i2c1_reset_bank0_bit8().is_ok());
+                    let i2c = p.i2c1.into_host_100khz(p.gpio.pin::<2>(), p.gpio.pin::<3>()).unwrap();
+                    assert!(release_uart0_reset_bank1_bit26().is_ok());
+                    let uart = p.uart0.init_tx_rx_115200_clock_ready();
+                    freertos_r1::mixed::set_hosts(spi, i2c, uart);
                 }
                 freertos_r1::run(gpio22);
             }

@@ -1,8 +1,16 @@
 //! R1 integrated workload. These are test tasks, not a replacement scheduler.
 //! Seven permanent proc0 tasks; no task/ISR retains a boot-stack pointer.
 use core::{ffi::c_void, ptr};
-use rp1_freertos::{self as os, BinarySemaphore, Mutex, Task, U32Queue};
+use rp1_freertos::{self as os, BinarySemaphore, Task, U32Queue};
+#[cfg(not(feature = "freertos-r2-mixed"))]
+use rp1_freertos::Mutex;
 use rp1_hal::gpio::{ConfiguredPin, Output};
+
+#[cfg(all(feature = "freertos-r2-mixed", any(feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "uart0-rx-irq")))]
+compile_error!("Mixed R2 owns three tasks/IRQs; standalone workloads are separate");
+#[cfg(feature = "freertos-r2-mixed")]
+#[path = "freertos_mixed.rs"]
+pub mod mixed;
 
 #[cfg(all(feature = "freertos-r1-assert", any(feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart")))]
 compile_error!("C configASSERT is a separate halt/recovery cohort");
@@ -30,11 +38,12 @@ pub mod uart;
 const TELEMETRY: *mut u32 = 0x2000_f800 as *mut u32;
 static mut DATA_SENTINEL: u32 = 0x1357_9bdf;
 static mut BSS_SENTINEL: u32 = 0;
-const TASK_COUNT: usize = if cfg!(any(feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart")) { 8 } else { 7 };
+const TASK_COUNT: usize = if cfg!(any(feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")) { 8 } else { 7 };
 static mut TASKS: [Option<Task>; TASK_COUNT] = [None; TASK_COUNT];
 static mut QUEUE: Option<U32Queue> = None;
 static mut CHECK_QUEUE: Option<U32Queue> = None;
 static mut SEM: Option<BinarySemaphore> = None;
+#[cfg(not(feature = "freertos-r2-mixed"))]
 static mut MUTEX: Option<Mutex> = None;
 static mut MARKER: Option<ConfiguredPin<22, Output>> = None;
 
@@ -115,7 +124,9 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
         assert!(U32Queue::create(2, 0).is_err());
         assert!(U32Queue::create(2, 17).is_err());
         ptr::addr_of_mut!(SEM).write(Some(BinarySemaphore::create(0).unwrap()));
+        #[cfg(not(feature = "freertos-r2-mixed"))]
         ptr::addr_of_mut!(MUTEX).write(Some(Mutex::create(0).unwrap()));
+        #[cfg(not(feature = "freertos-r2-mixed"))]
         let entries: [(os::TaskEntry, &core::ffi::CStr, u32, u32); 7] = [
             // Under 5kHz load, stack scans must share the lowest application
             // priority, not starve either producer or the mutex owner.
@@ -124,6 +135,21 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
             (producer, c"producer", 2, 256), (mutex_low, c"mutex-low", 1, 256),
             (mutex_high, c"mutex-high", 3, 256),
         ];
+        #[cfg(feature = "freertos-r2-mixed")]
+        let entries: [(os::TaskEntry, &core::ffi::CStr, u32, u32); 8] = [
+            // 2560 stack words exactly: no pool growth or reserved-memory change.
+            // Separate R1 cohort retains mutex-inheritance stress; not claimed here.
+            (monitor, c"monitor", 4, 256), (spin, c"spin-a", 1, 128),
+            (spin, c"spin-b", 1, 128), (consumer, c"consumer", 3, 256),
+            (producer, c"producer", 2, 256), (mixed::spi_worker, c"spi-rx", 5, 512),
+            (mixed::i2c_worker, c"i2c-nack", 5, 512), (mixed::uart_worker, c"uart-rx", 5, 512),
+        ];
+        #[cfg(feature = "freertos-r2-mixed")]
+        {
+            assert!(entries.iter().map(|e| e.3).sum::<u32>() == 2560);
+            put(40, u32::from_le_bytes(*b"MIX1")); put(41, 5); put(42, 3);
+            put(43, 2560); put(44, 256);
+        }
         for (slot, (entry, name, priority, words)) in entries.into_iter().enumerate() {
             let arg = match slot { 1 => 0x2000_f900, 2 => 0x2000_f940, _ => 0 };
             let handle = Task::create(slot as u32, name, entry, arg as *mut c_void, priority, words).unwrap();
@@ -232,7 +258,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         #[cfg(feature = "freertos-r1-periodic-200us")]
         put(168, raw_low()); // Monitor bookkeeping interval, includes preemption.
         let current = [get(64), get(80), get(49), get(50)];
-        for i in 0..4 { assert_ne!(current[i], previous[i]); }
+        let checked = if cfg!(feature = "freertos-r2-mixed") { 3 } else { 4 };
+        for i in 0..checked { assert_ne!(current[i], previous[i]); }
         previous = current;
         assert_eq!(get(70) | get(86), 0); // assembly context error latches
         #[cfg(feature = "freertos-r1-timer-irq")]
@@ -245,6 +272,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         unsafe { put(123, task(7).stack_high_water().unwrap()); }
         unsafe {
             for slot in 0..7 { put(32+slot, task(slot).stack_high_water().unwrap()); }
+            #[cfg(feature = "freertos-r2-mixed")]
+            put(45, task(7).stack_high_water().unwrap());
             put(22, (0xe000_e014 as *const u32).read_volatile());
         }
         let mut untouched = 0;
@@ -660,6 +689,7 @@ unsafe extern "C" fn consumer(_: *mut c_void) {
     } }
 }
 
+#[cfg(not(feature = "freertos-r2-mixed"))]
 unsafe extern "C" fn mutex_low(_: *mut c_void) {
     let m = unsafe { ptr::addr_of!(MUTEX).read().unwrap() };
     loop { unsafe {
@@ -673,6 +703,7 @@ unsafe extern "C" fn mutex_low(_: *mut c_void) {
     } }
 }
 
+#[cfg(not(feature = "freertos-r2-mixed"))]
 unsafe extern "C" fn mutex_high(_: *mut c_void) {
     let m = unsafe { ptr::addr_of!(MUTEX).read().unwrap() };
     loop { unsafe {

@@ -95,6 +95,53 @@ official kernel sources plus the bridge with `-Wall -Wextra -Werror`; it does
 not prove task scheduling or hardware behavior. Final firmware link/vector/
 memory-budget checks and hardware evidence are the enclosing runtime's job.
 
+## Mixed SPI / I2C NACK / UART candidate (BUILD, HW OPEN)
+
+`freertos-r2-mixed` is a dedicated proc0 example, not the union of standalone
+task8 features. One shared PLL prerequisite runs before the three peripheral
+setups and scheduler. Separate permanent owners reserve notification0; ISR
+vectors24/35/41 call the existing I2C1/SPI0/UART0 adapters at priority6 (`0xc0`).
+No Linux, proc1, extra equipment, allocator or new scheduler is involved.
+
+| Task | ID | Priority | Stack words |
+|---|---:|---:|---:|
+| Monitor | 1 | 4 | 256 |
+| Non-yielding register-pattern spinners | 2,3 | 1 | 128 each |
+| Queue consumer / producer | 4,5 | 3 / 2 | 256 each |
+| SPI / I2C NACK / UART owner | 6,7,8 | 5 | 512 each |
+
+Total2560 words fits the existing pool exactly; idle128 words and MSP4096 bytes
+remain separate. The standalone mutex pair is deliberately absent: this image
+must not claim an inheritance stress result. Monitor stack reduction is a new
+candidate budget, informed by earlier watermarks, still requiring mixed HW.
+
+```sh
+RP1_RTOS_FEATURE=freertos-r2-mixed bash tools/build-freertos-r1.sh /new/output
+python3 -B tools/test-freertos-mixed.py
+python3 -B tools/check-freertos-mixed.py /path/to/numeric-observer-records.txt
+```
+
+Build fixes Rust opt-level `s`, fat LTO and one codegen unit; C remains `-Os`.
+`CARGO_TARGET_DIR` can select an existing RAM-backed build directory. The first
+non-LTO link exceeded reserved memory and was rejected. Candidate LTO build:
+text38472/data8/BSS13208 bytes, PT_LOAD end`0x2000d000`, unchanged MSP
+`0x2000e000..0x2000f000`; direct RTOS/three IRQ vectors, no exclusive instructions.
+
+Finite workload: two existing SPI frames, two real19-byte UART replies and256
+I2C reads to the known unassigned0x2e address, verifying NACK/quiet cleanup/rearm.
+I2C successful RX uses a different peer handshake on GPIO9 and is NOT enabled
+with SPI MISO. Current retained ESP0.6.9 lacks the SPI peer service: hardware
+admission must select the already-proven temporary peer with fresh backup and
+checked restoration; do not send its commands to0.6.9 or infer compatibility.
+
+Telemetry96..127/128..159/160..191 belongs to SPI/I2C/UART respectively;
+192..255 remains fault-owned. SPI receipt start/end must fall inside the
+corresponding UART armed request. This is request overlap, not simultaneous
+wire payload. External SPI bit/OE records, UART peer receipts and GPIO witness
+are required in addition to numeric validation. Preserve the existing I2C/UART
+cleanup timing assertions under load. Timeout/cancel races, continuous mixed
+stress and full R2 acceptance remain OPEN.
+
 ## SPI lifecycle workload
 
 `RP1_RTOS_FEATURE=freertos-r2-spi-lifecycle tools/build-freertos-r1.sh /new/output`
