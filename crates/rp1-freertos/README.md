@@ -338,3 +338,30 @@ assertion-stack usage. Actual PSP/MSP are captured separately. Root evidence
 3796cda13fc926b016d4bea65f93ee032c1b4dcb contains the fixed source/build/hash,
 corrected validator/refusal tests and eight-member ordered verification.
 R1 200us/30minute coverage and integrated R2/R3 remain separate requirements.
+
+## Finite normal I2C pair in the mixed example (BUILD candidate)
+
+`RP1_RTOS_FEATURE=freertos-r2-mixed-i2c-pair bash tools/build-freertos-r1.sh /new/output`
+uses the same eight task stacks, IRQ8/19/25, clock setup and MD01 monitor. It
+replaces repeated I2C NACKs with two actual-read requests to0x2d, lengths2/31.
+The external ESP must run the opt-in IRP2/IRT1 finite peer and admit a fresh
+epoch. Before each normal host UART token, its preload/refill-ready timestamp,
+request count and failure state must be verified. Readiness is not byte proof.
+
+After validating that UART token, UART queues sequence1/2 and blocks for the
+I2C owner. The owner blocks on this queue, then on its ordinary IRQ driver,
+checks every byte and buffer tail/canary, performs checked cleanup, and returns
+the same sequence. Only then does UART send its normal ACK. Queue slots2/3
+(capacity1) are already in the static pool; driver notification0 stays separate.
+No new allocation, task stack, GPIO9/32 handshake, reset or clock writer.
+
+ICMP telemetry120..151 stores complete first2/second31 bytes at141/142..149,
+actual IRQ IPSR at150 and address/count0x2d000002 at151. SPI96..119,
+UART152..183, MD01 words60..63 and reserved fault184..255 remain separate.
+`tools/check-freertos-i2c-mixed-pair.py` requires a full31-snapshot observer and
+leaves external ESP/UART/GPIO proof mandatory. Host checks are
+`tools/test-i2c-mixed-pair.py` (actual arithmetic/queue handshake) and
+`tools/test-freertos-i2c-mixed-pair.py` (synthetic numeric refusals).
+
+This finite ordering is not sustained normal I2C, simultaneous three-bus wire
+activity or general NACK recovery. Hardware validation of this image is OPEN.

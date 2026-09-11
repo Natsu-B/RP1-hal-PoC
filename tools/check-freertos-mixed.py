@@ -28,8 +28,7 @@ def elapsed(start, end):
     assert 0 < value < 0x80000000, 'time/progress reversed or stalled'
     return value
 
-def validate(text):
-    rows = decode(text)
+def validate_runtime(rows):
     for n, w in enumerate(rows):
         assert w[:2] == [0x31305452, 1], 'RT01 schema'
         assert w[2] != 0xffffffff and w[3] == 0 and w[192] != 0x31544652, 'fault/assert'
@@ -52,6 +51,9 @@ def validate(text):
         if n > 3:
             for index in [8,9,14,15,49,64,80]:
                 elapsed(rows[n-1][index],w[index])
+def validate(text):
+    rows = decode(text)
+    validate_runtime(rows)
     final = rows[-3:]
     stable = [i for i in range(96,192) if i not in [99,131,163]]
     assert all([w[i] for i in stable] == [final[0][i] for i in stable] for w in final), 'unfinished ledger'

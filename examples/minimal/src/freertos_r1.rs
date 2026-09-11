@@ -128,6 +128,8 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
         ptr::addr_of_mut!(CHECK_QUEUE).write(Some(U32Queue::create(1, 1).unwrap()));
         assert!(U32Queue::create(2, 0).is_err());
         assert!(U32Queue::create(2, 17).is_err());
+        #[cfg(feature = "freertos-r2-mixed-i2c-pair")]
+        mixed::pair::prepare();
         ptr::addr_of_mut!(SEM).write(Some(BinarySemaphore::create(0).unwrap()));
         #[cfg(not(feature = "freertos-r2-mixed"))]
         ptr::addr_of_mut!(MUTEX).write(Some(Mutex::create(0).unwrap()));
@@ -147,7 +149,7 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
             (monitor, c"monitor", 4, 256), (spin, c"spin-a", 1, 128),
             (spin, c"spin-b", 1, 128), (consumer, c"consumer", 3, 256),
             (producer, c"producer", 2, 256), (mixed::spi_worker, c"spi-rx", 5, 512),
-            (mixed::i2c_worker, c"i2c-nack", 5, 512), (mixed::uart_worker, c"uart-rx", 5, 512),
+            (mixed::i2c_worker, if cfg!(feature = "freertos-r2-mixed-i2c-pair") {c"i2c-pair"} else {c"i2c-nack"}, 5, 512), (mixed::uart_worker, c"uart-rx", 5, 512),
         ];
         #[cfg(feature = "freertos-r2-mixed")]
         {

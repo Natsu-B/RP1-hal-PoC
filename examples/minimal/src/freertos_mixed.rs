@@ -2,13 +2,17 @@
 //! Each permanent owner reserves its own notification0. No runtime PLL/reset.
 //! Selected telemetry96..127/128..159/160..191 is historical. Repeated workload
 //! uses SPI96..119/I2C120..151/UART152..183;184..255 is strictly fault-owned.
+//! The finite I2C pair replaces NACK load; it is not sustained three-bus RX.
 use super::*;
 use rp1_hal::{spi::Spi0Host, i2c::I2c1Host, uart::Uart0Tx};
 use core::sync::atomic::{AtomicU32, Ordering};
 #[path = "mixed_repeat.rs"]
 mod repeat;
+#[cfg(feature = "freertos-r2-mixed-i2c-pair")]
+#[path = "mixed_i2c_pair.rs"]
+pub mod pair;
 const REPEATED: bool = cfg!(feature = "freertos-r2-mixed-repeat");
-const REQUESTS: u32 = if REPEATED { repeat::REQUESTS } else { 2 };
+const REQUESTS: u32 = if cfg!(feature = "freertos-r2-mixed-i2c-pair") {2} else if REPEATED {repeat::REQUESTS} else {2};
 const I2C_BASE: usize = if REPEATED {120} else {128};
 const UART_BASE: usize = if REPEATED {152} else {160};
 // Only load/store, never RMW/exclusive retry. Telemetry is a mirror, not IPC.
@@ -118,6 +122,10 @@ pub unsafe extern "C" fn spi_worker(_: *mut c_void) { unsafe {
     complete(B)
 } }
 
+#[cfg(feature = "freertos-r2-mixed-i2c-pair")]
+pub use pair::worker as i2c_worker;
+
+#[cfg(not(feature = "freertos-r2-mixed-i2c-pair"))]
 pub unsafe extern "C" fn i2c_worker(_: *mut c_void) { unsafe {
     use rp1_hal::i2c_rx_state::Error as RxError;
     const B: usize = I2C_BASE;
@@ -210,6 +218,8 @@ pub unsafe extern "C" fn uart_worker(_: *mut c_void) { unsafe {
         assert!(r.generation == index as u32+1 && r.received == 19 && r.ipsr == 41 && r.irq_entries > 0);
         assert!(bytes[..19] == payload && bytes[19] == 0xc3);
         assert!(get(B+17) == 0 && os::uart0::active_generation() == 0 && !os::uart0::cancel(r.generation));
+        #[cfg(feature = "freertos-r2-mixed-i2c-pair")]
+        pair::grant_and_wait(sequence);
         driver.write_all(&ack, 100).ok().unwrap(); increment(B+2); put(B+1, 3);
     }
     for (index,address) in [(52,0x4001_8054), (53,0x4001_8058), (54,0x4001_8060), (55,0x4002_0010)] {
@@ -222,6 +232,14 @@ pub unsafe extern "C" fn uart_worker(_: *mut c_void) { unsafe {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn SPI0_IRQHandler() { unsafe { os::spi0::on_interrupt(); } }
 #[unsafe(no_mangle)]
-unsafe extern "C" fn I2C1_IRQHandler() { unsafe { os::i2c1::on_interrupt(); } }
+unsafe extern "C" fn I2C1_IRQHandler() { unsafe {
+    #[cfg(feature = "freertos-r2-mixed-i2c-pair")]
+    {
+        let ipsr:u32;
+        core::arch::asm!("mrs {0}, IPSR",out(reg) ipsr,options(nomem,nostack));
+        put(I2C_BASE+30,ipsr);
+    }
+    os::i2c1::on_interrupt();
+} }
 #[unsafe(no_mangle)]
 unsafe extern "C" fn UART0_IRQHandler() { unsafe { os::uart0::on_interrupt(); } }

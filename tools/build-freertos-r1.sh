@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-freertos-r1.sh /new/output/directory' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
-case "$feature" in freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat) ;; *) exit 2 ;; esac
+case "$feature" in freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat|freertos-r2-mixed-i2c-pair) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
@@ -41,6 +41,11 @@ export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
 if [[ "$feature" == freertos-r2-mixed* ]]; then
     cp "$repo/examples/minimal/src/freertos_mixed.rs" "$out/freertos_mixed.rs"
     cp "$repo/examples/minimal/src/mixed_repeat.rs" "$out/mixed_repeat.rs"
+fi
+if [[ "$feature" == freertos-r2-mixed-i2c-pair ]]; then
+    cp "$repo/examples/minimal/src/mixed_i2c_pair.rs" "$out/mixed_i2c_pair.rs"
+    cp "$repo/tools/test-i2c-mixed-pair.py" "$out/test-i2c-mixed-pair.py"
+    python3 -B "$repo/tools/test-i2c-mixed-pair.py" > "$out/pair-host-test.txt"
 fi
 if [[ "$feature" == freertos-r2-uart-lifecycle ]]; then
     cp "$repo/examples/minimal/src/freertos_uart_lifecycle.rs" "$out/freertos_uart_lifecycle.rs"
