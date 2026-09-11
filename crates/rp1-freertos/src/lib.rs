@@ -36,6 +36,12 @@ pub const WAIT_FOREVER: u32 = u32::MAX;
 pub const IDLE_TASK_ID: u32 = u32::MAX;
 pub const KERNEL_COMMIT: &str = "3a22924e0a9ddbbc8b0758881c33b3422a5cc20d";
 
+/// Deliberate halt through the official kernel's configASSERT. Test feature only.
+/// # Safety
+/// Running proc0 task on a recoverable test board; this never returns.
+#[cfg(feature = "assert-probe")]
+pub unsafe fn trigger_config_assert() -> ! { unsafe { ffi::rp1_freertos_config_assert_probe() } }
+
 pub type TaskEntry = unsafe extern "C" fn(*mut c_void);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -301,6 +307,8 @@ mod ffi {
             words: u32,
         ) -> i32;
         pub fn rp1_freertos_start(cpu_hz: u32) -> i32;
+        #[cfg(feature = "assert-probe")]
+        pub fn rp1_freertos_config_assert_probe() -> !;
         pub fn rp1_freertos_delay(ticks: u32) -> i32;
         pub fn rp1_freertos_tick(ticks: *mut u32) -> i32;
         pub fn rp1_freertos_current_task(id: *mut u32) -> i32;

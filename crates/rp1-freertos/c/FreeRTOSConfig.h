@@ -49,6 +49,10 @@ void rp1_freertos_trace_switch(void *task);
 #define INCLUDE_xTaskGetSchedulerState            1
 #define INCLUDE_xSemaphoreGetMutexHolder          1
 #define INCLUDE_vTaskDelete                      0
+#ifdef RP1_FREERTOS_ASSERT_PROBE
+#define INCLUDE_vTaskPrioritySet                 1
+#else
 #define INCLUDE_vTaskPrioritySet                 0
+#endif
 
 #endif

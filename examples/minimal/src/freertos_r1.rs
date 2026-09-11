@@ -4,6 +4,9 @@ use core::{ffi::c_void, ptr};
 use rp1_freertos::{self as os, BinarySemaphore, Mutex, Task, U32Queue};
 use rp1_hal::gpio::{ConfiguredPin, Output};
 
+#[cfg(all(feature = "freertos-r1-assert", any(feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart")))]
+compile_error!("C configASSERT is a separate halt/recovery cohort");
+
 #[cfg(all(feature = "freertos-r1-fault", feature = "freertos-r1-panic"))]
 compile_error!("Select exactly one deliberate fault mode");
 #[cfg(all(feature = "freertos-r1-timer-irq", any(feature = "freertos-r1-fault", feature = "freertos-r1-panic")))]
@@ -179,6 +182,16 @@ extern "C" fn rp1_freertos_fault_hook(reason: u32, detail: u32) -> ! {
             out(reg) ipsr, out(reg) control, out(reg) psp, out(reg) msp, options(nomem, nostack));
     }
     for (i, v) in [ipsr, control, psp, msp].into_iter().enumerate() { put(56+i, v); }
+    #[cfg(feature = "freertos-r1-assert")]
+    unsafe {
+        put(184,(0xe000_ed28 as *const u32).read_volatile()); // CFSR after assertion
+        put(185,(0xe000_ed2c as *const u32).read_volatile()); // HFSR after assertion
+        let (primask,basepri):(u32,u32);
+        core::arch::asm!("mrs {0}, PRIMASK", "mrs {1}, BASEPRI",
+            out(reg) primask,out(reg) basepri,options(nomem,nostack));
+        put(186,primask);put(187,basepri);put(190,0); // proc0-only build, not a core-ID register read
+        put(191,get(10)); // Last actual scheduler switch ID; no lock or C API in halt path.
+    }
     unsafe { core::arch::asm!("dsb sy", options(nostack)); }
     put(2, 0xffff_ffff);
     loop { unsafe { core::arch::asm!("wfi", options(nomem, nostack)); } }
@@ -241,7 +254,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
             if marker.is_none() { marker=unsafe { ptr::addr_of_mut!(MARKER).replace(None) }; }
             marker.as_mut().unwrap().toggle();
         }
-        #[cfg(any(feature = "freertos-r1-fault", feature = "freertos-r1-panic"))]
+        #[cfg(any(feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert"))]
         if get(14) == 5 {
             put(41, get(8)); put(42, raw_low());
             #[cfg(feature = "freertos-r1-fault")]
@@ -255,6 +268,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
             }
             #[cfg(feature = "freertos-r1-panic")]
             { put(40, 2); panic!("deliberate R1 task panic"); }
+            #[cfg(feature = "freertos-r1-assert")]
+            { put(40, 3); unsafe { os::trigger_config_assert(); } }
         }
     }
 }

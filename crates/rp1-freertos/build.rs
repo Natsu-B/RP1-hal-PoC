@@ -115,6 +115,8 @@ fn main() {
                     "-Wextra",
                     "-Werror",
                 ])
+                .args(env::var_os("CARGO_FEATURE_ASSERT_PROBE")
+                    .map(|_| "-DRP1_FREERTOS_ASSERT_PROBE=1"))
                 .arg("-I")
                 .arg(Path::new(&root).join("c"))
                 .arg("-I")

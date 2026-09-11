@@ -59,6 +59,15 @@ static uint32_t task_id(TaskHandle_t handle)
 void rp1_freertos_trace_switch(void *task) { rp1_freertos_switch_hook(task_id(task)); }
 void vApplicationTickHook(void) { rp1_freertos_tick_hook(); }
 void rp1_freertos_assert(uint32_t line) { rp1_freertos_fault_hook(1, line); }
+#ifdef RP1_FREERTOS_ASSERT_PROBE
+/* Deliberate official-kernel assertion, not the Rust API argument guard.
+ * If configASSERT were disabled/returned, record a distinct failure instead. */
+__attribute__((noreturn)) void rp1_freertos_config_assert_probe(void)
+{
+    vTaskPrioritySet(NULL, configMAX_PRIORITIES);
+    rp1_freertos_fault_hook(5, 0xa551);
+}
+#endif
 void vApplicationStackOverflowHook(TaskHandle_t task, char *name)
 {
     (void)name;
