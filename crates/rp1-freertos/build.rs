@@ -86,16 +86,17 @@ fn main() {
         compiler.lines().next().unwrap()
     );
     let mut objects = Vec::new();
-    for (index, source) in [
+    let mut sources = vec![
         vendor.join("tasks.c"),
         vendor.join("list.c"),
         vendor.join("queue.c"),
         vendor.join("portable/GCC/ARM_CM3/port.c"),
         Path::new(&root).join("c/bridge.c"),
-    ]
-    .iter()
-    .enumerate()
-    {
+    ];
+    if env::var_os("CARGO_FEATURE_CRITICAL_TIMING").is_some() {
+        sources.push(Path::new(&root).join("c/critical_timing.c"));
+    }
+    for (index, source) in sources.iter().enumerate() {
         let object = Path::new(&out).join(format!("freertos-{index}.o"));
         output(
             Command::new(&cc)

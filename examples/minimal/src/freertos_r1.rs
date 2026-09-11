@@ -6,6 +6,9 @@ use rp1_freertos::{self as os, BinarySemaphore, Task, U32Queue};
 use rp1_freertos::Mutex;
 use rp1_hal::gpio::{ConfiguredPin, Output};
 
+#[cfg(all(feature = "freertos-r1-critical-timing", any(feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")))]
+compile_error!("Critical timing initially owns words96..112 in the normal R1 cohort");
+
 #[cfg(all(feature = "freertos-r2-mixed", any(feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "uart0-rx-irq")))]
 compile_error!("Mixed R2 owns three tasks/IRQs; standalone workloads are separate");
 #[cfg(feature = "freertos-r2-mixed")]
@@ -236,6 +239,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     for (i, v) in [ipsr, control, psp, msp].into_iter().enumerate() { put(28+i, v); }
     assert_eq!(ipsr, 0); assert_eq!(control & 3, 2); assert_eq!(psp & 7, 0);
     assert!((0x2000_e000..=0x2000_f000).contains(&msp));
+    #[cfg(feature = "freertos-r1-critical-timing")]
+    unsafe { critical_timing_calibrate(); }
     #[cfg(feature = "freertos-r1-periodic-200us")]
     unsafe { put(170, task(0).priority().unwrap()); }
     #[cfg(not(feature = "freertos-r2-i2c-peer"))]
@@ -288,6 +293,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         }
         put(18, (1024 - untouched) as u32 * 4);
         assert!(untouched >= 32); // ISR/boot MSP guard remains intact
+        #[cfg(feature = "freertos-r1-critical-timing")]
+        unsafe { critical_timing_publish(); }
         increment(14); put(27, raw_low()); put(2, 5);
         #[cfg(not(feature = "freertos-r2-i2c-peer"))]
         marker.toggle();
@@ -319,6 +326,53 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
             { put(40, 3); unsafe { os::trigger_config_assert(); } }
         }
     }
+}
+
+#[cfg(feature = "freertos-r1-critical-timing")]
+unsafe fn critical_timing_calibrate() {
+    unsafe extern "C" {
+        fn vPortEnterCritical();
+        fn vPortExitCritical();
+    }
+    unsafe {
+        os::critical_timing::start().unwrap();
+        put(96, u32::from_le_bytes(*b"CT01")); put(98, 200); put(111, raw_low());
+        vPortEnterCritical();
+        vPortEnterCritical(); // One outer sample, peak nesting two.
+        let start = raw_low();
+        let mut elapsed = 0;
+        for _ in 0..1_000_000 {
+            elapsed = raw_low().wrapping_sub(start);
+            if elapsed >= 200 { break; }
+        }
+        vPortExitCritical();
+        vPortExitCritical();
+        put(99, elapsed);
+        assert!((200..=500).contains(&elapsed));
+        let sample = os::critical_timing::snapshot().unwrap();
+        put(100, sample.count);
+        assert_eq!(sample.count, 1);
+        assert_eq!(sample.max_nesting, 2);
+        assert!((200..=1000).contains(&sample.max_us));
+        put(97, 1);
+    }
+}
+
+#[cfg(feature = "freertos-r1-critical-timing")]
+unsafe fn critical_timing_publish() {
+    let sample = unsafe { os::critical_timing::snapshot().unwrap() };
+    assert!(sample.count > 1 && sample.saturated == 0);
+    let sequence = get(101).wrapping_add(2);
+    put(101, sequence | 1);
+    unsafe { core::arch::asm!("dsb sy", options(nostack)); }
+    for (i, value) in [sample.count, sample.min_us, sample.max_us, sample.last_us,
+                      sample.max_nesting, sample.saturated].into_iter().enumerate() {
+        put(102+i, value);
+    }
+    put(112, raw_low());
+    unsafe { core::arch::asm!("dsb sy", options(nostack)); }
+    put(110, sequence);
+    put(101, sequence);
 }
 
 /// Selected TIMER0 ALARM0 IRQ26 is already HW-proven. This opt-in cohort tests

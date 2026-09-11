@@ -10,6 +10,7 @@ rp1-hal = { path = "../rp1-hal", optional = true }
 
 [features]
 assert-probe = []
+critical-timing = []
 spi0-irq = ["dep:rp1-hal"]
 spi0-cancel-window-probe = ["spi0-irq"]
 i2c1-irq = ["dep:rp1-hal"]

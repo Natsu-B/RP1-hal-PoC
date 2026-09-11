@@ -77,6 +77,40 @@ Queue/semaphore timeout is `Ok(false)` or `Ok(None)`, not a kernel error.
 
 ## Telemetry hooks
 
+Optional `critical-timing` uses the **unmodified** port through linker
+`--wrap=vPortEnterCritical` / `--wrap=vPortExitCritical`; consumers must supply
+both flags. The minimal example's `freertos-r1-critical-timing` feature does so.
+Call `critical_timing::start()` once from the first privileged proc0 PSP task,
+with PRIMASK/BASEPRI clear, no enclosing critical or scheduler suspension.
+`snapshot()` returns six fixed-width words; nested sections count only once.
+The snapshot itself contributes to the following sample. Counts saturate and
+latch an error indicator instead of silently wrapping. No cross-core atomic,
+new peripheral writer, heap, or wrapped exception handler is introduced.
+
+This measures **outer task critical body elapsed time**, after the real enter
+and before exit bookkeeping / real exit. It excludes pre-scheduler execution,
+inline ISR/PendSV BASEPRI regions, and instrumentation entry/exit overhead;
+higher-priority interrupts may contribute elapsed time. Raw timer resolution is
+1us, not absolute clock-accuracy proof; each interval must be shorter than the
+32-bit wrap (~71minutes). It is not the maximum full interrupt-mask time/WCET.
+The initial normal-R1 example reserves words96..112 as `CT01`, includes a nested
+bounded200us calibration, and publishes count/min/max/last/depth/saturation
+between matching even sequence words101/110. The maximum **includes** that
+intentional hold; it cannot establish a tighter application-only maximum.
+Other task8/fault workload features are rejected until separately integrated.
+
+```sh
+cc -std=c11 -Os -Wall -Wextra -Werror crates/rp1-freertos/tests/critical_timing.c -o /tmp/rp1-critical-test
+/tmp/rp1-critical-test
+RP1_RTOS_FEATURE=freertos-r1-critical-timing tools/build-freertos-r1.sh /new/absolute/build-dir
+python3 tools/check-critical-timing.py --elf /new/absolute/build-dir/RP1.elf
+```
+
+The host C test and linked-call checker are STATIC/BUILD checks, not hardware
+proof. `check-critical-timing.py UART_LOG` is an additional CT01 validator;
+the enclosing normal-R1 context/sync/stack and external-GPIO validators must
+also pass on that same run. Current CT01 hardware acceptance remains OPEN.
+
 An application may replace these weak C symbols with strong `#[unsafe(no_mangle)]`
 Rust `extern "C"` definitions (no task APIs, allocation or unwind inside hooks):
 

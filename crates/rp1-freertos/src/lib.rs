@@ -12,6 +12,9 @@
 
 use core::ffi::{CStr, c_char, c_void};
 
+#[cfg(feature = "critical-timing")]
+pub mod critical_timing;
+
 #[cfg(all(feature = "spi0-irq", target_arch = "arm"))]
 pub mod spi0;
 
