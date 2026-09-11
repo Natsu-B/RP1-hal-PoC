@@ -10,6 +10,17 @@ No `cc` crate, heap implementation, downloaded build input, or alternate port is
 
 ## Runtime contract
 
+Selected periodic example: `freertos-r1-periodic-200us` uses the same1kHz tick,
+TIMER0 IRQ26/priority6 and eighth task priority5 for100000 absolute200us slots.
+HALce657adc / ELFec6bffff reproduced final accounting2/2 with99676/99678 raw
+timestamp acquisitions,324/322 drops and324/323 late completion samples. This
+is a negative no-miss timing result, not5kHz peripheral throughput. Only this
+feature lowers stack-monitor priority to1; timeout/assert predicates remain.
+ISR sampled maximum53us, end→task216us, MSP288B, acquisition stack free208words.
+Independent normal recoveries passed. Full IRQ WCET/critical-section maximum,
+30minute soak and integratedR2 are still OPEN. Primary evidence is rpi-cm5-hack
+artifacts/20260911-111500-rp1-rtos-periodic-200us (including retained failures).
+
 Root runtime must point vectors **directly** to `vPortSVCHandler`,
 `xPortPendSVHandler`, and `xPortSysTickHandler`, and install a valid vector-table
 initial MSP. No C/Rust handler wrapper or exception trampoline. The official
