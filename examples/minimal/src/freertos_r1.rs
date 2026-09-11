@@ -251,10 +251,12 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     put(39, 1); put(2, 4);
     let mut previous = [0; 4];
     loop {
-        #[cfg(not(feature = "freertos-r2-spi-lifecycle"))]
+        #[cfg(not(any(feature = "freertos-r2-spi-lifecycle", feature = "freertos-r2-i2c-cancel-window")))]
         unsafe { os::delay(1000).unwrap(); }
         #[cfg(feature = "freertos-r2-spi-lifecycle")]
         unsafe { spi::lifecycle::monitor_wait(1000); }
+        #[cfg(feature = "freertos-r2-i2c-cancel-window")]
+        unsafe { i2c::monitor_wait(1000); }
         #[cfg(feature = "freertos-r1-periodic-200us")]
         put(168, raw_low()); // Monitor bookkeeping interval, includes preemption.
         let current = [get(64), get(80), get(49), get(50)];

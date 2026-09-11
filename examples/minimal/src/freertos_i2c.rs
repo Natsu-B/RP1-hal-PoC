@@ -7,6 +7,8 @@ static mut HOST:Option<I2c1Host>=None;
 #[cfg(feature = "freertos-r2-i2c-peer")]
 #[path = "freertos_i2c_peer.rs"]
 mod peer;
+#[cfg(feature = "freertos-r2-i2c-cancel-window")]
+pub use peer::monitor_wait;
 #[cfg(feature = "freertos-r2-i2c-peer")]
 pub fn set_peer_pin(pin:ConfiguredPin<9,rp1_hal::gpio::Input>) { peer::set_pin(pin); }
 pub fn set_host(host:I2c1Host) { unsafe { ptr::addr_of_mut!(HOST).write(Some(host)); } }
@@ -32,7 +34,9 @@ pub unsafe extern "C" fn worker(_: *mut c_void) {
 }
 
 fn store(generation:u32,r:os::i2c1::Receipt,buffer:&Buffer) {
-    let base=136+(generation as usize-1)*16;
+    store_at(136+(generation as usize-1)*16,r,buffer);
+}
+fn store_at(base:usize,r:os::i2c1::Receipt,buffer:&Buffer) {
     for (i,v) in [r.generation,r.irq_entries,r.received,r.elapsed_us,
         r.irq_body_max_us,r.irq_end_to_task_us,r.first_fatal_causes,r.first_abort_source,
         r.discarded_after_failure,r.cleanup_elapsed_us,r.quiet_samples,r.quiet_max_gap_us,

@@ -95,7 +95,13 @@ official kernel sources plus the bridge with `-Wall -Wextra -Werror`; it does
 not prove task scheduling or hardware behavior. Final firmware link/vector/
 memory-budget checks and hardware evidence are the enclosing runtime's job.
 
-## Mixed SPI / I2C NACK / UART candidate (BUILD, HW OPEN)
+## Mixed SPI / I2C NACK / UART selected workload
+
+HAL0eff4ff8/image2de44161 later passed selected HW2/2 with two real SPI frames,
+two UART payloads and256 I2C NACK requests under one image. Six separate normal
+boots and exact ESP restore passed. This is not three-bus successful payload
+reception or continuous R2 acceptance. Evidence: rpi-cm5-hack commit7bcf42be0.
+The source/build-only notes below describe initial admission, not full R2.
 
 `freertos-r2-mixed` is a dedicated proc0 example, not the union of standalone
 task8 features. One shared PLL prerequisite runs before the three peripheral
@@ -143,6 +149,30 @@ cleanup timing assertions under load. Timeout/cancel races, continuous mixed
 stress and full R2 acceptance remain OPEN.
 
 ## SPI lifecycle workload
+
+HAL1c8f9f4/image de7c37bc subsequently passed selected completed-cancel window
+2/2 with four separate normal boots (rpi-cm5-hack3e5212db9). Injected delay was
+1357us, rearmed generation4 four IRQs/1603us; input-only MISO is not payload.
+
+## Optional I2C completed-cancel workload
+
+`RP1_RTOS_FEATURE=freertos-r2-i2c-cancel-window tools/build-freertos-r1.sh /new/out`
+uses opt-s/fat-LTO within the original SRAM/MSP budget. Proc0 only. The adapter
+hook runs after terminal IRQ masking, BEFORE ticket withdrawal and cleanup;
+the I2C controller may still be enabled. A two-tick sleep permits monitor4 to
+cancel owner5's published generation2. The owner must return Cancelled and only
+copy actual31,4e into its buffer after checked cleanup. Existing fatal precedence
+remains. Old ticket reject, buffer stability and separate generation3 NACK rearm
+are checked after the native ESP0.6.9 READYACK release. No new peer service.
+
+RI02 READY stays compatible with the existing host client, but final count3 and
+ICW1 extension at word182 require a new validator. Gen3 receipt96..111 and probe
+112..122/180..183 do not touch ASSERT184..191/fault192..255. Existing incompatible
+timer/SPI/UART example checks remain. Ordinary builds omit this hook entirely.
+This new image is BUILD-only until its own commissioning/formal2/2; SPI's result
+does not prove I2C cancellation. It is a test seam, not a production delay.
+
+## SPI lifecycle detail
 
 `RP1_RTOS_FEATURE=freertos-r2-spi-lifecycle tools/build-freertos-r1.sh /new/output`
 uses fixed Rust size optimization `s` (C remains `-Os`); earlier workloads keep

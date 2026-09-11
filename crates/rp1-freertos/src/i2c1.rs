@@ -197,6 +197,13 @@ impl Driver {
         // Stop accepting cancellation BEFORE cleanup blocks. A terminal request
         // cannot be changed by a new cancel during its sampled quiet interval.
         mask();
+        #[cfg(feature = "i2c1-cancel-window-probe")]
+        if result.is_ok() && generation == 2 {
+            // Test-only terminal-complete / PRE-cleanup scheduling window.
+            // Caller buffer still belongs to this owner and is not copied yet.
+            unsafe extern "C" { fn rp1_i2c_cancel_window_probe(generation:u32); }
+            unsafe { rp1_i2c_cancel_window_probe(generation); }
+        }
         unsafe {
             ptr::addr_of_mut!(GENERATION).write_volatile(0);
             ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::null_mut());
