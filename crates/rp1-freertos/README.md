@@ -96,3 +96,23 @@ It does not replace the separate ESP sequence/payload test or prove all R2.
 Preparation errors after possible MMIO halt with local IRQ masked: the current
 HAL cannot return a checked-abort handle on setup error. Only pre-MMIO argument
 errors return normally; automatic recovery of all setup errors remains OPEN.
+
+## Controlled C configASSERT acceptance
+
+`RP1_RTOS_FEATURE=freertos-r1-assert bash tools/build-freertos-r1.sh /new/output`
+selects the deliberate monitor-task assertion. The `assert-probe` C feature
+enables official vTaskPrioritySet only for this image; the wrapper calls it with
+NULL/current task and invalid priority8. The pinned kernel's tasks.c2857
+configASSERT invokes reason1 diagnostics and a masked halt. An unexpected API
+return produces distinct reason5/detail0xa551. This is not an argument-guard
+panic or a recovered application fault. Do not enable it in an operational image.
+
+Selected source d95b9d179112f422dd00396726776d8b85cbd985 / ELF6d2ccfb6 has
+hardware2/2: progressing task/context/synchronization prefix, actual C assert,
+27 unchanged halt snapshots and five workload GPIO edges. Each halt is followed
+by a separate normal boot; no in-place fault or watchdog recovery claim.
+The high-water values are the last pre-assert monitor sample, not deepest
+assertion-stack usage. Actual PSP/MSP are captured separately. Root evidence
+3796cda13fc926b016d4bea65f93ee032c1b4dcb contains the fixed source/build/hash,
+corrected validator/refusal tests and eight-member ordered verification.
+R1 200us/30minute coverage and integrated R2/R3 remain separate requirements.
