@@ -113,6 +113,17 @@ pub struct Uart0IrqSnapshot {
     pub payload: [u8; UART0_IRQ_PAYLOAD_MAX],
 }
 
+/// Live PL011 evidence; reading this does not pop RX or acknowledge a cause.
+#[derive(Clone, Copy, Debug)]
+pub struct Uart0RxStatus {
+    pub fr: u32,
+    pub cr: u32,
+    pub imsc: u32,
+    pub ris: u32,
+    pub mis: u32,
+    pub rsr: u32,
+}
+
 static UART0_IRQ_DECISION: AtomicU32 = AtomicU32::new(UART0_IRQ_DECISION_PENDING);
 static UART0_IRQ_EXPECTED_LEN: AtomicU32 = AtomicU32::new(0);
 static UART0_IRQ_BYTE_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -275,6 +286,67 @@ fn pinmux_init_boundary() {
 }
 
 impl Uart0Tx {
+    /// One FIFO attempt, with no busy wait. Success means FIFO accepted, not
+    /// serial idle; callers needing that guarantee must also inspect FR.BUSY.
+    pub fn try_write_byte(&mut self, byte: u8) -> bool {
+        if reg(UART0_BASE + UART_FR).read() & UART_FR_TXFF != 0 {
+            return false;
+        }
+        if self.first_byte_pending { record_snapshot(8); }
+        reg(UART0_BASE + UART_DR).write(u32::from(byte));
+        if self.first_byte_pending {
+            record_snapshot(9);
+            self.first_byte_pending = false;
+        }
+        true
+    }
+
+    /// One FIFO pop, retaining both the byte and DR[11:8] error evidence.
+    pub fn try_read_word(&mut self) -> Option<u32> {
+        if reg(UART0_BASE + UART_FR).read() & UART_FR_RXFE != 0 { None }
+        else { Some(reg(UART0_BASE + UART_DR).read()) }
+    }
+
+    pub fn rx_status(&self) -> Uart0RxStatus {
+        Uart0RxStatus {
+            fr: reg(UART0_BASE + UART_FR).read(),
+            cr: reg(UART0_BASE + UART_CR).read(),
+            imsc: reg(UART0_BASE + UART_IMSC).read(),
+            ris: reg(UART0_BASE + UART_RIS).read(),
+            mis: reg(UART0_BASE + UART_MIS).read(),
+            rsr: reg(UART0_BASE + UART_RSR_ECR).read(),
+        }
+    }
+
+    /// RTOS path: caller must first prove RX disabled/empty/acknowledged, own
+    /// IRQ25, and publish its ISR context before unmasking that NVIC route.
+    /// Only the known RX/RT sources are changed; clock, reset, TXE and UARTEN stay.
+    pub fn arm_rx_irq(&mut self) -> bool {
+        write_readback(UART0_BASE + UART_IFLS, 0);
+        let control = reg(UART0_BASE + UART_CR).read();
+        write_readback(UART0_BASE + UART_CR, control | UART_CR_RXE);
+        let imsc = reg(UART0_BASE + UART_IMSC).read();
+        write_readback(UART0_BASE + UART_IMSC, imsc | UART_INT_RX_MASK);
+        let s = self.rx_status();
+        reg(UART0_BASE + UART_IFLS).read() == 0
+            && s.cr & UART_CR_ENABLE_MASK == UART_CR_ENABLE_MASK
+            && s.imsc & UART_INT_RX_MASK == UART_INT_RX_MASK
+    }
+
+    /// Mask without ACK, so the owner can retain late data/error evidence.
+    pub fn mask_rx_irq(&mut self) { mask_uart0_rx_interrupt(); }
+
+    /// Stop new RX traffic before bounded residual draining. Does not discard
+    /// FIFO data/errors or ACK causes, and preserves UARTEN/TXE and other CR bits.
+    pub fn stop_rx_irq(&mut self) {
+        self.mask_rx_irq();
+        let control = reg(UART0_BASE + UART_CR).read();
+        write_readback(UART0_BASE + UART_CR, control & !UART_CR_RXE);
+    }
+
+    pub fn clear_rx_errors(&mut self) { write_readback(UART0_BASE + UART_RSR_ECR, 0); }
+    pub fn ack_rx_irq(&mut self) { write_barrier(UART0_BASE + UART_ICR, UART_INT_RX_MASK); }
+
     pub fn write_byte(&mut self, byte: u8) -> bool {
         if self.first_byte_pending {
             record_snapshot(8);

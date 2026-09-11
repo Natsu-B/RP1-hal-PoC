@@ -18,6 +18,9 @@ pub mod spi0;
 #[cfg(all(feature = "i2c1-irq", target_arch = "arm"))]
 pub mod i2c1;
 
+#[cfg(all(feature = "uart0-irq", target_arch = "arm"))]
+pub mod uart0;
+
 pub const TASK_SLOTS: u32 = 8;
 pub const MIN_STACK_WORDS: u32 = 128;
 pub const MAX_STACK_WORDS: u32 = 512;

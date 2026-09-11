@@ -41,7 +41,7 @@ def check(path):
     required_vectors = {1:'Reset', **{n:'RP1RtosFault' for n in range(2, 7)},
                         11:'vPortSVCHandler', 14:'xPortPendSVHandler', 15:'xPortSysTickHandler'}
     for index, name in {42:'TIMER0_ALARM0_IRQ26_CANDIDATE_IRQHandler',
-                        35:'SPI0_IRQHandler', 24:'I2C1_IRQHandler'}.items():
+                        35:'SPI0_IRQHandler', 24:'I2C1_IRQHandler', 41:'UART0_IRQHandler'}.items():
         if name in symbols: required_vectors[index] = name
     for index, name in required_vectors.items():
         assert vector[index] == symbols[name] | 1, f'vector {index} must point directly to {name}'

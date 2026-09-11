@@ -10606,6 +10606,16 @@ fn main(mut p: Peripherals) -> ! {
                     let host = p.i2c1.into_host_100khz(p.gpio.pin::<2>(), p.gpio.pin::<3>()).unwrap();
                     freertos_r1::i2c::set_host(host);
                 }
+                #[cfg(feature = "freertos-r2-uart")]
+                {
+                    // Reuse the proven clock-before-UART-reset-DONE contract.
+                    // Never retune this shared PLL from a running RTOS task.
+                    assert_eq!(pll_sys_core_lock_transition().decision, PllSysCoreLockDecision::Locked);
+                    assert!(enable_pll_sys_pri_ph_bit4().is_ok());
+                    assert!(release_uart0_reset_bank1_bit26().is_ok());
+                    let host = p.uart0.init_tx_rx_115200_clock_ready();
+                    freertos_r1::uart::set_host(host);
+                }
                 freertos_r1::run(gpio22);
             }
             #[cfg(all(
