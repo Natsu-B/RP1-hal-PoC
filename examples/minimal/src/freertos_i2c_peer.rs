@@ -44,7 +44,9 @@ pub unsafe fn run(driver:&mut os::i2c1::Driver)->! {
     let pre=[read(0x400d_004c),read(0x400f_0028),read(0x400d_0048),
         read(0x400e_0004),read(0x400e_0008),read(0x4001_4004),read(0x4001_401c)];
     for (i,v) in pre.into_iter().enumerate() { put(173+i,v); }
-    assert!(pre[..5]==[0x9f,0x96,0x0440_0000,0x0040_0000,0]
+    // I2C2/3 inputs are already configured by this workload; only GPIO9's
+    // input bit belongs to this admission. Preserve the complete readback.
+    assert!(pre[..4]==[0x9f,0x96,0x0440_0000,0x0040_0000] && pre[4]&(1<<9)==0
         && pre[5]&(1<<19)==0 && pre[6]&(1<<19)!=0);
     let _input=unsafe { ptr::addr_of_mut!(PIN).replace(None).unwrap() }.into_input_pull_up();
     let mut buffer=Buffer { before:0x5aa5_a55a,bytes:[0xc3;4],after:0xa55a_5aa5 };
