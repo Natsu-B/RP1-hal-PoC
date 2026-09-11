@@ -155,6 +155,15 @@ Preparation errors after possible MMIO halt with local IRQ masked: the current
 HAL cannot return a checked-abort handle on setup error. Only pre-MMIO argument
 errors return normally; automatic recovery of all setup errors remains OPEN.
 
+All three adapters settle an accepted cancellation after withdrawing the active
+generation, before returning the caller's notification/buffer ownership. This
+also covers preemption between the last successful completion check and
+withdrawal. Existing errors are retained; I2C cleanup fatal evidence outranks a
+late cancellation. SPI generation exhaustion halts before MMIO instead of
+recycling an old ticket. `python3 tools/test-spi-cancel.py` compiles the actual C
+transaction and Rust settlement/generation blocks with deterministic host checks.
+These are STATIC checks, not hardware coverage of every cancellation interleaving.
+
 ## Controlled C configASSERT acceptance
 
 `RP1_RTOS_FEATURE=freertos-r1-assert bash tools/build-freertos-r1.sh /new/output`

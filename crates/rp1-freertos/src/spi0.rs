@@ -72,6 +72,8 @@ impl Driver {
     {
         self.last = None;
         if timeout_ticks == 0 || timeout_ticks >= 0x8000_0000 { return Err(Error::InvalidDeadline); }
+        // Never recycle an old cancellation ticket. Reject exhaustion before MMIO.
+        let generation = self.generation.checked_add(1).expect("SPI generation exhausted; restart required");
         let deadline = unsafe { os::tick().unwrap() }.wrapping_add(timeout_ticks);
         let started = raw();
         mask();
@@ -90,8 +92,7 @@ impl Driver {
                 "SPI preparation failed after possible MMIO; recovery required");
             Error::Receive(e)
         })?;
-        self.generation = self.generation.wrapping_add(1).max(1);
-        let generation = self.generation;
+        self.generation = generation;
         unsafe {
             ptr::addr_of_mut!(WAITER).write_volatile(waiter.0);
             ptr::addr_of_mut!(CANCEL).write_volatile(0);
@@ -108,7 +109,7 @@ impl Driver {
             PENDING.write_volatile(BIT);
         }
         let mut wake_us = None;
-        let result = (|| {
+        let mut result = (|| {
             if os::deadline_remaining(unsafe { os::tick().unwrap() }, deadline).is_none() {
                 return Err(Error::Timeout);
             }
@@ -150,6 +151,11 @@ impl Driver {
             ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::null_mut());
             ptr::addr_of_mut!(WAITER).write_volatile(0);
             PENDING.write_volatile(BIT);
+        }
+        // Like UART: a task canceller either committed before withdrawal or
+        // observes zero. Do not return success for an accepted late cancel.
+        if result.is_ok() && unsafe { ptr::addr_of!(CANCEL).read_volatile() } == generation {
+            result = Err(Error::Cancelled);
         }
         barrier();
         // No ISR or canceller can publish after withdrawal. Do not let a late

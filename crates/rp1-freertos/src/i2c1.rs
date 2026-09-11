@@ -202,13 +202,18 @@ impl Driver {
             ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::null_mut());
             ptr::addr_of_mut!(WAITER).write_volatile(0);
         }
+        // The C cancellation transaction cannot cross this withdrawal. Retain
+        // any cancel accepted after Complete was observed but before it closed.
+        if result.is_ok() && unsafe { ptr::addr_of!(CANCEL).read_volatile() } == generation {
+            result = Err(Error::Cancelled);
+        }
         barrier();unsafe { os::notification_take(true,0).unwrap(); }
         unsafe { self.cleanup(result.is_err()); }
         unsafe { os::notification_take(true,0).unwrap(); }
         let c=unsafe { &mut *self.context.get() };
         // A fatal cause first observed during cleanup cannot become successful
         // payload completion merely because its selective ACK cleared the bit.
-        if result.is_ok() && (c.receipt.first_fatal_causes!=0 || c.receipt.first_abort_source!=0) {
+        if matches!(result, Ok(()) | Err(Error::Cancelled)) && (c.receipt.first_fatal_causes!=0 || c.receipt.first_abort_source!=0) {
             result=Err(Error::Receive(RxError::Fatal {
                 causes:c.receipt.first_fatal_causes,abort_source:c.receipt.first_abort_source,
             }));
