@@ -46,6 +46,17 @@ def validate(text):
             for index in (8,9,14,15,49,64,80): elapsed(rows[n-1][index],w[index])
         for base,magic in [(96,b'SPM2'),(120,b'ICM2'),(152,b'UAM2')]:
             assert w[base]==int.from_bytes(magic,'little') and w[base+11]==0,'IO fault/schema'
+            limit=24000 if base==120 else 384
+            assert all(0<=w[base+i]<=limit for i in (2,10)),'live count/generation bound'
+            assert 0<=w[base+4]<0x80000000,'live IRQ count bound'
+            if n>3:
+                # Each aligned word is sampled independently. Do not assert a
+                # coherent relation between generation and completed count.
+                assert all(rows[n-1][base+i]<=w[base+i] for i in (2,4,10)),'live IO counter regression'
+        assert 0<=w[112]<=384 and 0<=w[116]<=384 and 0<=w[119]<=192,'live SPI handshake bounds'
+        assert 0<=w[173]<=384 and 0<=w[174]<100,'live UART release bounds'
+        if n>3:
+            assert all(rows[n-1][i]<=w[i] for i in (112,116,119,173,174)),'live handshake counter regression'
     final=rows[-3:]; w=final[-1]
     stable=[i for i in range(96,184) if i not in (99,123,155)]
     assert all([f[i] for i in stable]==[final[0][i] for i in stable] for f in final),'unfinished ledger'

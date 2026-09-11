@@ -38,7 +38,9 @@ for word,value in [(3,1),(184,1),(70,1),(98,383),(116,383),(119,191),(122,0),(13
     reject(text())
     for w,v in zip(rows,before):w[word]=v
 rows[-1][173]+=1;reject(text());rows[-1][173]-=1
+rows[10][98]=385;reject(text());rows[10][98]=384
+rows[10][154]=383;reject(text());rows[10][154]=384
 reject(good+good.splitlines()[0]+'\n')
 reject(good.replace('[RTOS] 35 000','[RTOS] 36 000'))
 reject(good.replace('[RTOS] observer-complete read-only=1',''))
-print('PASS synthetic S numeric1positive/22refusals; no HW')
+print('PASS synthetic S numeric1positive/24refusals; no HW')
