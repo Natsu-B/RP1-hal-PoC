@@ -16,6 +16,8 @@ assert r1.index('mixed::pair::prepare()')<r1.index('let entries:')
 assert mixed.index('os::uart0::active_generation() == 0')<mixed.index('pair::grant_and_wait(sequence)')<mixed.index('driver.write_all(&ack')
 assert source.index('ready.receive(30_000)')<source.index('driver.receive(0x2d')
 assert source.index('os::i2c1::active_generation()==0')<source.index('done.send(generation,0)')
+assert 'assert!(get(B+30)==24);' in source
+assert not re.search(r'assert!\([^;]*higher_priority_wakes',source)
 
 def function(name):
     start=source.index('pub unsafe fn '+name+'('); depth=0

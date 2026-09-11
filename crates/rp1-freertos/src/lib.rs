@@ -127,6 +127,8 @@ impl Task {
     }
 
     /// Same notification/yield, with the kernel's higher-priority-woken result.
+    /// `Ok(false)` still means the notification was given: no immediate
+    /// higher-priority switch was requested. It is not a delivery failure.
     /// # Safety
     /// Proc0 external IRQ, logical priority 5..=7; see the module contract.
     pub unsafe fn notification_give_from_isr_woken(self) -> Result<bool, Error> {

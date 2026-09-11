@@ -72,7 +72,10 @@ pub unsafe extern "C" fn worker(_: *mut c_void) { unsafe {
             assert!(byte==frame_byte(generation,i).unwrap_or(0xc3));
         }
         assert!(os::i2c1::active_generation()==0 && !os::i2c1::cancel(generation));
-        assert!(get(B+30)==24 && r.higher_priority_wakes>0);
+        // The notification can succeed without preempting the interrupted task
+        // (equal-priority owner, or completion before this owner blocks).
+        // Keep the scheduling hint as telemetry, not a per-request success bit.
+        assert!(get(B+30)==24);
         increment(B+2); put(B+1,3);
         assert!(done.send(generation,0).unwrap());
     }

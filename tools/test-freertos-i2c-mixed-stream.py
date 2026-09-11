@@ -28,6 +28,10 @@ for n in range(36):
 encode=pair['encode']
 good=encode(rows)
 assert V['validate'](good)['i2c']['received']==6336
+for wakes in (1,192,383,384):
+    sparse=copy.deepcopy(rows)
+    for w in sparse:w[140]=wakes
+    assert V['validate'](encode(sparse))['i2c']['higher_priority_wakes']==wakes
 refused=0
 def reject(text):
     global refused
@@ -38,13 +42,13 @@ for index,value in [(3,1),(18,4096),(45,0),(60,1),(61,10000),(62,10),(63,0),
                     (70,1),(98,383),(116,383),(119,191),(120,0),(121,3),
                     (122,383),(124,383),(125,50000),(130,385),(131,1),(132,0x40),
                     (133,0x800001),(134,0),(136,0),(137,0),(138,10000),(139,6335),
-                    (140,383),(141,0),(142,0),(149,0),(150,25),(151,0x2d000002),
+                    (140,0),(140,385),(141,0),(142,0),(149,0),(150,25),(151,0x2d000002),
                     (154,383),(164,24),(169,1),(174,100),(177,0),(184,1),(192,1),
                     (129,1924999000)]:
     bad=copy.deepcopy(rows)
     for w in bad:w[index]=value
     reject(encode(bad))
-for index in (98,100,122,124,130,154,156):
+for index in (98,100,122,124,130,140,154,156):
     bad=copy.deepcopy(rows);bad[10][index]-=1;reject(encode(bad))
 bad=copy.deepcopy(rows);bad[-1][139]+=1;reject(encode(bad))
 for text in (encode(rows[:-1]),good+good,good.replace('observer-complete','unfinished')):reject(text)

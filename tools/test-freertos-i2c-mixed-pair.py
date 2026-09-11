@@ -33,11 +33,13 @@ def records():
 
 rows=records();encode=old['encode']
 assert V['validate'](encode(rows))['external_peer_and_gpio_required']
+for w in rows:w[140]=1
+assert V['validate'](encode(rows))['i2c']['higher_priority_wakes']==1
 refused=0
 for index,value in [(2,0xffffffff),(39,0),(60,1),(61,10000),(62,10),(63,0),
                     (120,0),(121,3),(122,1),(130,3),(131,1),(132,0x40),
                     (133,0x800001),(134,0),(136,0),(137,0),(138,10000),(139,32),
-                    (140,0),(141,0),(142,0),(149,0),(150,25),(151,0x2e000002),
+                    (140,0),(140,3),(141,0),(142,0),(149,0),(150,25),(151,0x2e000002),
                     (184,1),(192,1),(108,0),(116,1),(164,24),(177,0)]:
     altered=copy.deepcopy(rows)
     for w in altered:w[index]=value

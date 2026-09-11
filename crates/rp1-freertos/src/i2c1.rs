@@ -36,6 +36,7 @@ pub struct Receipt {
     pub first_fatal_causes:u32, pub first_abort_source:u32,
     pub discarded_after_failure:u32, pub cleanup_elapsed_us:u32,
     pub quiet_samples:u32, pub quiet_max_gap_us:u32,
+    /// Scheduling hints, not successful-notification count; zero is legal.
     pub higher_priority_wakes:u32,
 }
 
