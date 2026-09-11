@@ -139,6 +139,13 @@ impl Driver {
         mask();
         if result.is_err() { transfer.abort().expect("SPI checked abort failed; buffer retained by halt"); }
         assert!(matches!(transfer.state(), Spi0RxState::Complete | Spi0RxState::Failed(_)));
+        // Opt-in acceptance image only: let a real task cancel after checked
+        // completion but before withdrawal. No probe/callback in normal builds.
+        #[cfg(feature = "spi0-cancel-window-probe")]
+        if result.is_ok() && generation == 3 {
+            unsafe extern "C" { fn rp1_spi_cancel_window_probe(generation: u32); }
+            unsafe { rp1_spi_cancel_window_probe(generation); }
+        }
         let receipt = Receipt {
             generation,
             irq_entries: unsafe { ptr::addr_of!(IRQ_COUNT).read_volatile() },

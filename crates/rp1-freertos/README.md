@@ -164,6 +164,13 @@ recycling an old ticket. `python3 tools/test-spi-cancel.py` compiles the actual 
 transaction and Rust settlement/generation blocks with deterministic host checks.
 These are STATIC checks, not hardware coverage of every cancellation interleaving.
 
+`freertos-r2-spi-cancel-window` is an opt-in acceptance workload, not a production
+mode. Only generation3's checked-success path calls an example-owned probe before
+withdrawal. It sleeps2ticks so the lower-priority monitor can accept a cancellation
+of the completed request; the owner must return Cancelled. Generation4 must rearm
+successfully after notification/buffer cleanup and rejection of the old ticket.
+Normal builds contain no probe call. MISO is input-only/all-ones, not real payload.
+
 ## Controlled C configASSERT acceptance
 
 `RP1_RTOS_FEATURE=freertos-r1-assert bash tools/build-freertos-r1.sh /new/output`
