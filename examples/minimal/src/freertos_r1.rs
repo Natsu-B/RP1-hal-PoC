@@ -232,6 +232,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         #[cfg(feature = "freertos-r1-timer-irq")]
         {
             assert!(get(97) > 0 && get(98) == 0 && get(114) == 0);
+            #[cfg(not(feature = "freertos-r1-periodic-200us"))]
             unsafe { put(123, task(7).stack_high_water().unwrap()); }
         }
         #[cfg(any(feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart"))]
@@ -277,7 +278,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
 /// Selected TIMER0 ALARM0 IRQ26 is already HW-proven. This opt-in cohort tests
 /// RTOS FromISR wakeup/priority/latency, not IRQ discovery. Own ALARM0 exclusively;
 /// raw timer reads and official SysTick keep their existing independent owners.
-#[cfg(feature = "freertos-r1-timer-irq")]
+#[cfg(all(feature = "freertos-r1-timer-irq", not(feature = "freertos-r1-periodic-200us")))]
 mod timer_irq {
     use super::*;
     const BIT: u32 = 1 << 26;
@@ -380,6 +381,221 @@ mod timer_irq {
             deadline = deadline.wrapping_add(PERIOD_US);
         } }
     }
+}
+
+#[cfg(feature = "freertos-r1-periodic-200us")]
+#[path = "periodic_200us.rs"]
+mod periodic_200us;
+
+/// Proc0 internal timer timestamp acquisition, NOT peripheral/IMU 5kHz sampling.
+/// The legacy 20ms cohort above is unchanged. IRQ owns the absolute schedule
+/// after the first task arm. A one-event mailbox stays immutable until copied
+/// under IRQ26 exclusion. No heap, catch-up loop, logging, or waits in the ISR.
+#[cfg(feature = "freertos-r1-periodic-200us")]
+mod timer_irq {
+    use super::*;
+    use super::periodic_200us::{ARM_GUARD_US, PERIOD_US, SLOT_LIMIT, bounded_skip, next_deadline};
+    const BIT: u32 = 1 << 26;
+    const ALARM: *mut u32 = 0x400a_c010 as *mut u32;
+    const ARMED: *const u32 = 0x400a_c020 as *const u32;
+    const INTR: *mut u32 = 0x400a_c034 as *mut u32;
+    const INTE: *mut u32 = 0x400a_c038 as *mut u32;
+    const INTF: *const u32 = 0x400a_c03c as *const u32;
+    const INTS: *const u32 = 0x400a_c040 as *const u32;
+    const ENABLE: *mut u32 = 0xe000_e100 as *mut u32;
+    const DISABLE: *mut u32 = 0xe000_e180 as *mut u32;
+    const PENDING: *mut u32 = 0xe000_e280 as *mut u32;
+    const PRIORITY: *mut u8 = 0xe000_e41a as *mut u8;
+
+    // 96 entries,97 completions,98 IRQ errors,99 IPSR,100 priority,101 P200,
+    // 102 PRIMASK,103 BASEPRI; stable mailbox:104 entry,105 end,110 deadline,
+    // 113 entry-sequence,119 ready,141 woken,120/121 switch-hook handshake.
+    // Task:106 sample,107/108 last/max end->sample,111 max deadline->sample,
+    // 122 completed switch witness,123 stack words,124..127 task context.
+    // IRQ:109 max body,112 successful rearms (excludes initial task arm),115 source,116 next deadline,117 ARMED,
+    // 118 arm-start timestamp.114 remains zero (legacy late-rearm assertion).
+    // 128 period,129 guard,130 publications,131 skipped slots,132 occupied drops,
+    // 133 notify errors,134 >=period completion misses,135 nonblocked (woken=false),
+    // 136 higher-priority-woken,137 max deadline->entry,138 last deadline->sample,
+    // 139 last body,140 last deadline->entry,142 completion timestamp,
+    // 143/144 last/max deadline->completion,145 first deadline,
+    // 146 state (1 running,2 source gated/draining,3 stable final,4 failed),
+    // 147 slot limit,148 completed seq,149 task errors,150 current grid slot,
+    // 151 final nominal grid deadline,152 source-stop stamp,153 final task stamp,
+    // 154 task failure reason,155 first-arm stamp,156 INTE,157 INTS,
+    // 158 post-arm remaining (raw wrapping delta),159 IRQ failure reason.
+    // Every counter has one writer (IRQ or task); mailbox/hook flags are the
+    // explicit handoff exception. All timestamps/counters are wrapping u32.
+    fn barrier() { unsafe { core::arch::asm!("dsb sy", "isb", options(nostack)); } }
+    unsafe fn mask() { unsafe { DISABLE.write_volatile(BIT); } barrier(); }
+
+    pub unsafe fn prepare() { unsafe {
+        assert_eq!(ENABLE.read_volatile() & BIT, 0);
+        assert_eq!(ARMED.read_volatile(), 0);
+        assert_eq!(INTE.read_volatile() | INTF.read_volatile() | INTS.read_volatile(), 0);
+        assert_eq!(INTR.read_volatile() & !0xf, 0);
+        INTR.write_volatile(1);
+        PENDING.write_volatile(BIT); // Only before the first alarm, never on rearm.
+        PRIORITY.write_volatile(0xc0); // Logical6: the only FromISR caller.
+        barrier();
+        assert_eq!(PRIORITY.read_volatile(), 0xc0);
+        put(100, 0xc0); put(101, u32::from_le_bytes(*b"P200"));
+        put(128, PERIOD_US); put(129, ARM_GUARD_US); put(147, SLOT_LIMIT);
+    } }
+
+    /// The planned guard can be consumed by hardware/bus delays. Require a
+    /// future, still-armed readback; fail visibly, never assume ARMED disarm.
+    unsafe fn arm(deadline: u32) -> bool { unsafe {
+        let before = raw_low();
+        if os::deadline_remaining(before, deadline).is_none() { return false; }
+        ALARM.write_volatile(deadline);
+        INTE.write_volatile(1);
+        barrier();
+        let armed = ARMED.read_volatile();
+        let enabled = INTE.read_volatile();
+        let source = INTS.read_volatile();
+        let remaining = deadline.wrapping_sub(raw_low());
+        put(118, before); put(117, armed); put(156, enabled);
+        put(157, source); put(158, remaining);
+        armed & 1 == 1 && enabled == 1 && source == 0
+            && remaining != 0 && remaining < 0x8000_0000
+    } }
+
+    unsafe fn stop_irq(reason: u32) { unsafe {
+        INTE.write_volatile(0); mask();
+        increment(98); put(159, reason); put(146, 4);
+        // Return with the source gated. Task timeout/monitor halts the cohort;
+        // an already-armed comparator is NOT claimed to have been disarmed.
+    } }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn TIMER0_ALARM0_IRQ26_CANDIDATE_IRQHandler() { unsafe {
+        let entered = raw_low();
+        let (ipsr, primask, basepri): (u32, u32, u32);
+        core::arch::asm!("mrs {0}, IPSR", "mrs {1}, PRIMASK", "mrs {2}, BASEPRI",
+            out(reg) ipsr, out(reg) primask, out(reg) basepri, options(nomem, nostack));
+        let source = INTS.read_volatile();
+        INTE.write_volatile(0); INTR.write_volatile(1); barrier();
+        increment(96); put(99, ipsr); put(102, primask); put(103, basepri); put(115, source);
+        if source != 1 || ipsr != 42 || PRIORITY.read_volatile() != 0xc0 {
+            stop_irq(1); return;
+        }
+        let deadline = get(116);
+        let lateness = entered.wrapping_sub(deadline);
+        if lateness >= 0x8000_0000 { stop_irq(2); return; }
+        put(140, lateness); put(137, get(137).max(lateness));
+        let Some((next, skipped)) = next_deadline(deadline, raw_low()) else {
+            stop_irq(2); return;
+        };
+        let slot = get(150);
+        let Some((skipped, finished)) = bounded_skip(slot, skipped) else {
+            stop_irq(6); return;
+        };
+        put(131, get(131).wrapping_add(skipped));
+        if finished {
+            // INTE is already gated and current INTR acknowledged. Do not arm
+            // outside the cohort, clear pending, or write unknown ARMED bits.
+            mask();
+            put(117, ARMED.read_volatile()); put(156, INTE.read_volatile());
+            put(157, INTS.read_volatile()); put(152, raw_low()); put(146, 2);
+        } else {
+            put(116, next); put(150, slot + skipped + 1);
+            if !arm(next) { stop_irq(3); return; }
+            increment(112);
+        }
+        if get(119) == 0 {
+            put(104, entered); put(110, deadline); put(113, get(96)); put(121, 0);
+            let Some(receiver) = ptr::addr_of!(TASKS).cast::<Option<Task>>().add(7).read() else {
+                increment(133); stop_irq(5); return;
+            };
+            let woken = match receiver.notification_give_from_isr_woken() {
+                Ok(value) => value,
+                Err(_) => { increment(133); stop_irq(4); return; }
+            };
+            put(141, u32::from(woken));
+            if woken { increment(136); put(120, 1); }
+            else { increment(135); }
+            increment(130); put(119, 1);
+            // Task cannot run before IRQ return; finalize its stable end stamp.
+            put(105, raw_low());
+        } else {
+            increment(132); // No mailbox timestamp/sequence/witness overwrite.
+        }
+        let body = raw_low().wrapping_sub(entered);
+        put(139, body); put(109, get(109).max(body));
+        // End stamps exclude these final telemetry stores and exception return.
+    } }
+
+    unsafe fn task_fail(reason: u32) -> ! { unsafe {
+        mask(); INTE.write_volatile(0); barrier();
+        increment(149); put(154, reason); put(146, 4);
+        panic!("periodic 200us task failure");
+    } }
+
+    pub unsafe extern "C" fn worker(_: *mut c_void) { unsafe {
+        let (ipsr, control, psp, msp): (u32, u32, u32, u32);
+        core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL", "mrs {2}, PSP", "mrs {3}, MSP",
+            out(reg) ipsr, out(reg) control, out(reg) psp, out(reg) msp, options(nomem, nostack));
+        for (i, value) in [ipsr, control, psp, msp].into_iter().enumerate() { put(124+i, value); }
+        assert_eq!(ipsr, 0); assert_eq!(control & 3, 2); assert_eq!(psp & 7, 0);
+        assert!((0x2000_e000..=0x2000_f000).contains(&msp));
+        // New mode has only this task as123 writer; a preempted lower-priority
+        // monitor must never resume a stack telemetry store after finalstate3.
+        put(123, task(7).stack_high_water().unwrap());
+        mask();
+        assert_eq!(os::notification_take(true, 0).unwrap(), 0);
+        let started = raw_low();
+        let first = started.wrapping_add(PERIOD_US);
+        put(155, started); put(151, first.wrapping_add((SLOT_LIMIT - 1) * PERIOD_US));
+        put(146, 1);
+        put(145, first); put(116, first);
+        if !arm(first) { task_fail(1); }
+        ENABLE.write_volatile(BIT); barrier();
+        let mut last_sequence = 0u32;
+        loop {
+            let count = match os::notification_take(true, 50) {
+                Ok(value) => value, Err(_) => task_fail(2),
+            };
+            let sample = raw_low(); // The actual bounded workload: timer acquisition.
+            mask();
+            if count != 1 || get(119) != 1 || get(98) != 0 { task_fail(3); }
+            let (sequence, deadline, entered, end, woken, witness) =
+                (get(113), get(110), get(104), get(105), get(141), get(121));
+            put(119, 0); // Release only after all mailbox fields have been copied.
+            barrier();
+            if get(146) == 1 { ENABLE.write_volatile(BIT); barrier(); }
+            // New IRQs may now publish, so use ONLY the copied event fields.
+            let advance = sequence.wrapping_sub(last_sequence);
+            if advance == 0 || advance >= 0x8000_0000 || (woken != 0 && witness != 8)
+                || sample.wrapping_sub(entered) >= 50_000 {
+                task_fail(4);
+            }
+            last_sequence = sequence;
+            let completion = raw_low();
+            let latency = sample.wrapping_sub(end);
+            let lateness = sample.wrapping_sub(deadline);
+            let completed_after = completion.wrapping_sub(deadline);
+            put(106, sample); put(107, latency); put(108, get(108).max(latency));
+            put(138, lateness); put(111, get(111).max(lateness));
+            put(142, completion); put(143, completed_after); put(144, get(144).max(completed_after));
+            if completed_after >= PERIOD_US { increment(134); }
+            put(122, witness); put(148, sequence); increment(97);
+            // Completion excludes telemetry bookkeeping; next notification may
+            // already be pending, which is counted separately by woken=false.
+            if get(146) == 2 {
+                // IRQ has permanently gated this finite source. Drain any final
+                // notification/mailbox before publishing a stable final ledger.
+                mask();
+                if get(119) == 0 && get(130) == get(97) {
+                    put(123, task(7).stack_high_water().unwrap());
+                    put(153, raw_low()); barrier(); put(146, 3); barrier();
+                    // The monitor never writes123 in this mode. Only base
+                    // telemetry continues; all96..159 stay unchanged hereafter.
+                    loop { os::delay(1000).unwrap(); }
+                }
+            }
+        }
+    } }
 }
 
 /// Known task-frame contents for the halt-only diagnostic/reboot test. No Rust

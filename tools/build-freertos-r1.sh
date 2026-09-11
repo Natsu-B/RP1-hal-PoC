@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-freertos-r1.sh /new/output/directory' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
-case "$feature" in freertos-r1|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-uart) ;; *) exit 2 ;; esac
+case "$feature" in freertos-r1|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-uart) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
@@ -24,6 +24,13 @@ else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 fi
 printf 'rust_opt_level=%s\n' "$CARGO_PROFILE_RELEASE_OPT_LEVEL"
+if [[ "$feature" == freertos-r1-periodic-200us ]]; then
+    # Test the actual firmware arithmetic; retain this new source in provenance
+    # even before its first commit (git diff alone omits untracked files).
+    cp "$repo/examples/minimal/src/periodic_200us.rs" "$out/periodic_200us.rs"
+    rustc +stable --edition=2024 --test "$out/periodic_200us.rs" -o "$out/periodic-200us-test"
+    "$out/periodic-200us-test" > "$out/arithmetic-test.txt"
+fi
 export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
 cargo +stable rustc --offline --locked --release --target thumbv7m-none-eabi \
   -p rp1-example-minimal --no-default-features --features "$feature" -- -C "link-arg=-Map=$out/RP1.map"
