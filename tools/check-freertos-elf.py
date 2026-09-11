@@ -55,11 +55,50 @@ def check(path):
     assert len(spin) == 1 and not re.search(r'\bblx?\s', spin[0]), 'non-yielding spin task missing/contains call'
     for register in range(4, 12):
         assert re.search(rf'cmp(?:\.w)?\s+r{register},', spin[0]), f'r{register} test optimized away'
+    proc1 = None
+    if 'Proc1RuntimeEntry' in symbols:
+        names = ['text', 'vectors', 'data', 'bss', 'lifecycle', 'request', 'response', 'fault']
+        regions = [(symbols[f'__proc1_{n}_start'], symbols[f'__proc1_{n}_end']) for n in names]
+        stack = (symbols['__proc1_guard_low'], symbols['__proc1_stack_end'])
+        assert all(a <= b for a, b in regions)
+        assert all(a[1] <= b[0] for a, b in zip(regions, regions[1:] + [stack]))
+        assert stack[1] <= symbols['__sbss'] <= symbols['__ebss'] <= 0x2000e000
+        assert stack[1] - stack[0] == 2064
+        assert symbols['__proc1_stack_top'] - symbols['__proc1_stack_low'] == 2048
+        assert symbols['__proc1_stack_low'] % 8 == 0
+        va = symbols['__proc1_vectors_start']
+        assert va % 512 == 0 and regions[1][1] - va == 320
+        contents = [struct.unpack_from('<80I', data, off + va - a)
+                    for a, _, off, size in loads if a <= va and va + 320 <= a + size]
+        assert len(contents) == 1
+        assert contents[0][0] == symbols['__proc1_stack_top']
+        assert all(v == symbols['Proc1RuntimeFault'] | 1 for v in contents[0][1:])
+        # Proc1 owns no RTOS state. Its worker must not call any external routine
+        # (including panic/atomic helpers or the proc0 FreeRTOS bridge).
+        worker_dis = subprocess.check_output(['arm-none-eabi-objdump', '-d', '-j', '.proc1_text', str(path)], text=True)
+        assert not re.search(r'\bblx?\s', worker_dis), 'proc1 worker contains an external call'
+        for line in worker_dis.splitlines():
+            branch = re.search(r'\s(?:b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(?:\.[nw])?|cbnz|cbz)\s+(?:r\d+,\s*)?([0-9a-f]+)\s+<', line)
+            if branch:
+                assert regions[0][0] <= int(branch[1], 16) < regions[0][1], 'proc1 tail branch leaves owned code'
+        # This pinned build pushes r7/lr and reserves20 bytes before its MSP
+        # snapshot. Refuse a prologue change until explicitly reviewed.
+        body = worker_dis.split('<Proc1RuntimeBody>:', 1)[1].strip().splitlines()
+        assert re.search(r'push\s+\{r7, lr\}', body[0]), 'proc1 body push changed'
+        assert re.search(r'sub\s+sp, #20\b', body[2]), 'proc1 body reservation changed'
+        assert re.search(r'mrs\s+r0, MSP', body[4]), 'proc1 MSP snapshot moved'
+        proc1 = {'sections': dict(zip(names, [[hex(a), hex(b)] for a, b in regions])),
+                 'guarded_stack': [hex(v) for v in stack], 'stack_bytes': 2048,
+                 'stack_low': symbols['__proc1_stack_low'], 'stack_top': symbols['__proc1_stack_top'],
+                 'body_msp': symbols['__proc1_stack_top'] - 28, 'body_entry': symbols['Proc1RuntimeBody'],
+                 'vectors': va, 'encoded_entry': (symbols['Proc1RuntimeEntry'] | 1) ^ 0x4ff83f2d,
+                 'proc0_vtor': 0x20000000, 'proc0_stack_floor': 0x2000e000,
+                 'global_bss_clear_excludes_proc1': True, 'external_calls': 0}
     return {'classification':'BUILD', 'status':'PASS', 'entry':hex(entry),
             'pt_load_end':hex(max(row[1] for row in loads)), 'msp':[hex(0x2000e000),hex(vector[0])],
             'bss_bytes':symbols['__ebss']-symbols['__sbss'], 'direct_rtos_vectors':True,
             'checked_vector_indices': sorted(required_vectors),
-            'exclusive_instructions':0, 'hardware':'OPEN'}
+            'exclusive_instructions':0, 'proc1':proc1, 'hardware':'OPEN'}
 
 
 if __name__ == '__main__':

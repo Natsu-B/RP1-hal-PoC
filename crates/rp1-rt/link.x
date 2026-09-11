@@ -9,6 +9,8 @@ SECTIONS
     KEEP(*(.vector_table .vector_table.*));
   } > RP1_APP_SRAM
 
+  INCLUDE rp1-proc1.x
+
   .text : ALIGN(4)
   {
     *(.text .text.*);

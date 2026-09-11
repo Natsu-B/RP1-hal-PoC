@@ -6,6 +6,12 @@ use rp1_freertos::{self as os, BinarySemaphore, Task, U32Queue};
 use rp1_freertos::Mutex;
 use rp1_hal::gpio::{ConfiguredPin, Output};
 
+#[cfg(all(feature = "freertos-r3-proc1-worker", any(feature = "freertos-r1-critical-timing", feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")))]
+compile_error!("Initial proc1 worker owns task8/words96..172; normal R1 only");
+#[cfg(feature = "freertos-r3-proc1-worker")]
+#[path = "freertos_proc1.rs"]
+pub mod proc1;
+
 #[cfg(all(feature = "freertos-r1-critical-timing", any(feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")))]
 compile_error!("Critical timing initially owns words96..112 in the normal R1 cohort");
 
@@ -43,7 +49,7 @@ pub mod uart;
 const TELEMETRY: *mut u32 = 0x2000_f800 as *mut u32;
 static mut DATA_SENTINEL: u32 = 0x1357_9bdf;
 static mut BSS_SENTINEL: u32 = 0;
-const TASK_COUNT: usize = if cfg!(any(feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")) { 8 } else { 7 };
+const TASK_COUNT: usize = if cfg!(any(feature = "freertos-r3-proc1-worker", feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")) { 8 } else { 7 };
 static mut TASKS: [Option<Task>; TASK_COUNT] = [None; TASK_COUNT];
 static mut QUEUE: Option<U32Queue> = None;
 static mut CHECK_QUEUE: Option<U32Queue> = None;
@@ -182,6 +188,11 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
         #[cfg(feature = "freertos-r2-uart")]
         {
             let handle = Task::create(7, c"uart-rx", uart::worker, ptr::null_mut(), 5, 512).unwrap();
+            ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
+        }
+        #[cfg(feature = "freertos-r3-proc1-worker")]
+        {
+            let handle = Task::create(7, c"proc1-owner", proc1::worker, ptr::null_mut(), 5, 512).unwrap();
             ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
         }
         os::start(hz).unwrap();

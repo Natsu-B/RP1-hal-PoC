@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=link.x");
+    println!("cargo:rerun-if-changed=proc1.x");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FREERTOS_PROC1_WORKER");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FREERTOS");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PCIE_EP_INIT");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_STACK_LOW");
@@ -61,6 +63,11 @@ __rp1_debug_mailbox = ORIGIN(RP1_DEBUG_STUB);
     );
 
     fs::write(out_dir.join("rp1-memory.x"), memory_x).unwrap();
+    // Always resolvable; non-proc1 images retain their original empty layout.
+    let proc1 = if env::var_os("CARGO_FEATURE_FREERTOS_PROC1_WORKER").is_some() {
+        fs::read_to_string(PathBuf::from(&manifest_dir).join("proc1.x")).unwrap()
+    } else { String::new() };
+    fs::write(out_dir.join("rp1-proc1.x"), proc1).unwrap();
 
     println!("cargo:rustc-link-search={}", manifest_dir);
     println!("cargo:rustc-link-search={}", out_dir.display());
