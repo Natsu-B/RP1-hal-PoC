@@ -8,7 +8,7 @@ static mut HOST:Option<I2c1Host>=None;
 #[path = "freertos_i2c_peer.rs"]
 mod peer;
 #[cfg(feature = "freertos-r2-i2c-peer")]
-pub fn set_peer_pin(pin:rp1_hal::gpio::Pin<9>) { peer::set_pin(pin); }
+pub fn set_peer_pin(pin:ConfiguredPin<9,rp1_hal::gpio::Input>) { peer::set_pin(pin); }
 pub fn set_host(host:I2c1Host) { unsafe { ptr::addr_of_mut!(HOST).write(Some(host)); } }
 #[repr(C)]
 struct Buffer { before:u32,bytes:[u8;4],after:u32 }

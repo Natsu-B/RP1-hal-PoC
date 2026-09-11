@@ -3,8 +3,8 @@
 //! No firmware success before an actual IRQ wakes a blocked task with0x31,0x4e.
 use super::*;
 use rp1_hal::{i2c,i2c_rx_state::OWNED_CAUSES};
-static mut PIN:Option<rp1_hal::gpio::Pin<9>>=None;
-pub fn set_pin(pin:rp1_hal::gpio::Pin<9>) { unsafe { ptr::addr_of_mut!(PIN).write(Some(pin)); } }
+static mut PIN:Option<ConfiguredPin<9,rp1_hal::gpio::Input>>=None;
+pub fn set_pin(pin:ConfiguredPin<9,rp1_hal::gpio::Input>) { unsafe { ptr::addr_of_mut!(PIN).write(Some(pin)); } }
 
 fn read(address:usize)->u32 { unsafe { (address as *const u32).read_volatile() } }
 fn idle_high()->Option<bool> {
@@ -39,16 +39,14 @@ unsafe fn pulse(marker:&mut ConfiguredPin<22,Output>,width:u32,index:usize) {
 pub unsafe fn run(driver:&mut os::i2c1::Driver)->! {
     let mut marker=unsafe { ptr::addr_of_mut!(MARKER).replace(None).unwrap() };
     marker.set_low();put(128,u32::from_le_bytes(*b"RI02"));put(133,0x2d);
-    // Reuse GIB1's exact cold-boot admission and normal typed input setup.
-    // No output grant is inferred from stale configuration or retained firmware.
+    // R1 startup already configures this input plus idle CS0/CS1/SCLK outputs.
+    // Take that same typed handle; do not reconfigure or assume a cold reset.
     let pre=[read(0x400d_004c),read(0x400f_0028),read(0x400d_0048),
         read(0x400e_0004),read(0x400e_0008),read(0x4001_4004),read(0x4001_401c)];
     for (i,v) in pre.into_iter().enumerate() { put(173+i,v); }
-    // I2C2/3 inputs are already configured by this workload; only GPIO9's
-    // input bit belongs to this admission. Preserve the complete readback.
-    assert!(pre[..4]==[0x9f,0x96,0x0440_0000,0x0040_0000] && pre[4]&(1<<9)==0
+    assert!(pre[0]==0x85 && pre[1]==0xda && pre[2]&(1<<13)==0 && pre[3]==0x0040_0980
         && pre[5]&(1<<19)==0 && pre[6]&(1<<19)!=0);
-    let _input=unsafe { ptr::addr_of_mut!(PIN).replace(None).unwrap() }.into_input_pull_up();
+    let _input=unsafe { ptr::addr_of_mut!(PIN).replace(None).unwrap() };
     let mut buffer=Buffer { before:0x5aa5_a55a,bytes:[0xc3;4],after:0xa55a_5aa5 };
     unsafe { wait(true,3000); pulse(&mut marker,13,168); }
     put(129,10); // READY: host may arm only after the whole marker pair.

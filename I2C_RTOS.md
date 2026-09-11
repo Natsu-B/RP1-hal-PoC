@@ -36,8 +36,8 @@ STATIC/BUILD until a separately identified formal hardware cohort passes.
 ## Current peer workload
 
 `freertos-r2-i2c-peer` uses the same driver/task slot and current ESP32 native
-READYACK service. A typed GPIO9 input-pull-up is admitted only from the previously
-tested cold-boot register/reset state; it never drives that wire. GPIO22 belongs
+READYACK service. It takes R1 startup's existing typed GPIO9 input-pull-up handle,
+checking its configured register/reset state; it never drives that wire. GPIO22 belongs
 to this worker during the handshake, then transfers to the monitor after the
 final HIGH dwell. Seven other kernel-test tasks continue throughout.
 
