@@ -117,7 +117,9 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
         ptr::addr_of_mut!(SEM).write(Some(BinarySemaphore::create(0).unwrap()));
         ptr::addr_of_mut!(MUTEX).write(Some(Mutex::create(0).unwrap()));
         let entries: [(os::TaskEntry, &core::ffi::CStr, u32, u32); 7] = [
-            (monitor, c"monitor", 4, 512), (spin, c"spin-a", 1, 128),
+            // Under 5kHz load, stack scans must share the lowest application
+            // priority, not starve either producer or the mutex owner.
+            (monitor, c"monitor", if cfg!(feature = "freertos-r1-periodic-200us") { 1 } else { 4 }, 512), (spin, c"spin-a", 1, 128),
             (spin, c"spin-b", 1, 128), (consumer, c"consumer", 3, 256),
             (producer, c"producer", 2, 256), (mutex_low, c"mutex-low", 1, 256),
             (mutex_high, c"mutex-high", 3, 256),
@@ -206,6 +208,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     for (i, v) in [ipsr, control, psp, msp].into_iter().enumerate() { put(28+i, v); }
     assert_eq!(ipsr, 0); assert_eq!(control & 3, 2); assert_eq!(psp & 7, 0);
     assert!((0x2000_e000..=0x2000_f000).contains(&msp));
+    #[cfg(feature = "freertos-r1-periodic-200us")]
+    unsafe { put(170, task(0).priority().unwrap()); }
     #[cfg(not(feature = "freertos-r2-i2c-peer"))]
     let mut marker = unsafe { ptr::addr_of!(MARKER).read().unwrap() };
     #[cfg(feature = "freertos-r2-i2c-peer")]
