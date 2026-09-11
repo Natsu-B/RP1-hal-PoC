@@ -176,6 +176,10 @@ or proof of arbitrary slave/active-cancel recovery.
 
 ## UART lifecycle workload
 
+P selected source3b4772bb/image1706e912 subsequently passed formal2/2 with
+four independent normal boots: empty timeout, accepted cancellation, then
+actual19B payloads in requestgen3/4. This does not prove all UART lifecycle cases.
+
 `RP1_RTOS_FEATURE=freertos-r2-uart-lifecycle tools/build-freertos-r1.sh /new/out`
 adds a hook-free no-response20tick timeout and active cancellation before the
 existing two USB-UART payload exchanges. Monitor waits boundedly for published
@@ -188,8 +192,28 @@ cleanup, stale-ticket rejection and stable buffers. Source `uart0.rs` unchanged.
 UL01 uses failed receipts96..119, monitor ledger120..122, existing context123..133,
 canaries134..135 and successful receipts136..183; ASSERT/fault184..255 stay free.
 Only the optional example uses this schema. Build uses existing opt-s/fat-LTO
-within the original task/MSP budget. HW OPEN until its own fixed-image cohort;
+within the original task/MSP budget. The fixed-image cohort above is selected;
 partial-data cancel, overflow/error and fullR2 are not implied.
+
+## UART software-ring overflow candidate
+
+`RP1_RTOS_FEATURE=freertos-r2-uart-overflow tools/build-freertos-r1.sh /new/out`
+uses the production driver unchanged. A1024B prompt starts with
+`RP1U0 OVERFLOWREADY 0001\r\n`, then ASCII x padding and `\r\nEND\r\n`.
+The external USB-UART peer sends one burst bytes0..79 while the owner is still
+transmitting; expected RX96 exceeds the burst and the64B ring. Only Overflow
+with actual IRQ41 and no physical RSR/DR error passes. Checked cleanup precedes
+`\r\nRP1U0 OVERFLOWOK 0001\r\n`; a proper partial prompt is expected, not the
+whole1024B. A late peer/full prompt must fail, not silently change the window.
+Captured first64bytes, remaining32sentinels/canaries and post-return stability
+are checked. Subsequent existing normal wire1/2 payloads are requestgen2/3.
+
+Overflow TX waits via delay(1), so higher_priority_wakes may be0; terminal
+IRQ-to-owner resumption is not called IRQ-caused wake. Normal rearms still
+require positive IRQ-caused wakes. UO01 receipt96..114, buffer evidence115..121,
+context123..133, normal canaries134/135 and normal receipts136..183 leave
+ASSERT/fault184..255 reserved. P and Q features are mutually exclusive.
+HW OPEN. This is not physical framing/overrun/BREAK recovery or sustained load.
 
 ## SPI lifecycle detail
 

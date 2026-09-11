@@ -31,6 +31,8 @@ compile_error!("Select one task8 workload; keep intentional faults separate");
 pub mod i2c;
 #[cfg(all(feature = "freertos-r2-uart", any(feature = "freertos-r2-i2c-nack", feature = "freertos-r2-spi", feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "uart0-rx-irq")))]
 compile_error!("UART RTOS workload owns task8/vector41; legacy IRQ proof is separate");
+#[cfg(all(feature = "freertos-r2-uart-lifecycle", feature = "freertos-r2-uart-overflow"))]
+compile_error!("UART timeout/cancel and overflow workloads have separate receipt ABIs");
 #[cfg(feature = "freertos-r2-uart")]
 #[path = "freertos_uart.rs"]
 pub mod uart;
