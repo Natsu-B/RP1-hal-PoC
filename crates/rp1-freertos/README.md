@@ -109,6 +109,21 @@ memory-budget checks and hardware evidence are the enclosing runtime's job.
 
 ## Mixed SPI / I2C NACK / UART selected workload
 
+Opt-in `freertos-r2-mixed-repeat` is the finite sustained-load candidate:384
+SPI/UART requests,192 absolute10s cycles with request2 at+4500ms (~32min), and
+I2C0x2e NACK requests every100ticks until both owners finish. UART tags0001..0384
+are monotonic, SPI wire IDs alternate1/2. A release/acquire load/store handshake
+publishes input-high SPI readiness before UART READY, with no exclusive/RMW loop.
+SPI waiting is bounded10100ticks; UART requests4500ticks; start lateness>=100ticks
+halts rather than silently stretching the schedule. Host common request budget
+remains4s (not the inadmissible early1s prototype). No maximum-throughput claim.
+SPM2/ICM2/UAM2 ledger uses96..119/120..151/152..183, preserving184..255 for faults.
+Rolling receipts/maxima and every-request payload checks replace growing arrays.
+Build with `RP1_RTOS_FEATURE=freertos-r2-mixed-repeat tools/build-freertos-r1.sh OUT`;
+run `python3 tools/test-mixed-repeat.py` for the actual arithmetic checks.
+Host repeated-peer/trace/observer/controller admission and hardware remain OPEN.
+This candidate is not covered by the old selected2-frame hardware evidence.
+
 HAL0eff4ff8/image2de44161 later passed selected HW2/2 with two real SPI frames,
 two UART payloads and256 I2C NACK requests under one image. Six separate normal
 boots and exact ESP restore passed. This is not three-bus successful payload
