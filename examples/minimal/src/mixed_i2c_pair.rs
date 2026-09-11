@@ -1,4 +1,4 @@
-//! Finite IRP2 profile0 pair. Host validates ESP readiness before each UART token.
+//! IRP2 pair / optional bounded IRP3 stream, readiness before every UART token.
 //! Static queues keep readiness/ACK separate from IRQ driver notification0.
 use super::*;
 const B:usize=I2C_BASE;
@@ -13,7 +13,7 @@ pub unsafe fn prepare() { unsafe {
 pub unsafe fn grant_and_wait(sequence:u32) { unsafe {
     // Validated host token grants this generation. Normal UART ACK follows
     // checked I2C completion, not just peer readiness or queue acceptance.
-    assert!((1..=2).contains(&sequence));
+    assert!((1..=REQUESTS).contains(&sequence));
     let ready=ptr::addr_of!(READY).read().unwrap();
     let done=ptr::addr_of!(DONE).read().unwrap();
     assert!(ready.send(sequence,0).unwrap());
@@ -22,23 +22,31 @@ pub unsafe fn grant_and_wait(sequence:u32) { unsafe {
 
 // PAIR_FRAME_BEGIN: compiled directly by the small host check.
 fn frame_length(generation:u32)->Option<usize> {
-    match generation {1=>Some(2),2=>Some(31),_=>None}
+    if !(1..=REQUESTS).contains(&generation) {return None;}
+    Some(if generation&1==1 {2} else {31})
 }
 fn frame_byte(generation:u32,index:usize)->Option<u8> {
     let len=frame_length(generation)?;
     if index>=len {return None;}
-    Some((0x31u32+(generation-1)*0x83+index as u32*0x1d) as u8)
+    let frame=generation-1;
+    Some(if cfg!(feature = "freertos-r2-mixed-i2c-stream") {
+        match index {
+            0=>(frame as u8)^0x31,
+            1=>((frame>>8) as u8)^0x4e,
+            _=>(0xb4+index as u32*0x1d+frame*7) as u8,
+        }
+    } else {(0x31u32+frame*0x83+index as u32*0x1d) as u8})
 }
 // PAIR_FRAME_END
 
 pub unsafe extern "C" fn worker(_: *mut c_void) { unsafe {
-    enter(B,*b"ICMP",7);
+    enter(B,if cfg!(feature = "freertos-r2-mixed-i2c-stream") {*b"ICMS"} else {*b"ICMP"},7);
     let driver=os::i2c1::Driver::new(ptr::addr_of_mut!(I2C).replace(None).unwrap());
     let ready=ptr::addr_of!(READY).read().unwrap();
     let done=ptr::addr_of!(DONE).read().unwrap();
-    put(B+17,u32::MAX); put(B+31,0x2d00_0002);
+    put(B+17,u32::MAX); put(B+31,0x2d00_0000|REQUESTS);
     let mut buffer=Buffer::<32>::new();
-    for generation in 1..=2 {
+    for generation in 1..=REQUESTS {
         assert!(ready.receive(30_000).unwrap()==Some(generation));
         let length=frame_length(generation).unwrap();
         buffer.bytes.fill(0xc3); put(B+1,2);

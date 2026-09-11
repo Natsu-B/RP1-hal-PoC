@@ -34,6 +34,8 @@ static mut DONE:Option<U32Queue>=None;
 static SENT:AtomicBool=AtomicBool::new(true);
 static NEXT:AtomicU32=AtomicU32::new(1);
 static CALLS:Mutex<Vec<(u32,u32,u32)>>=Mutex::new(Vec::new());
+const STREAM:bool=cfg!(feature = "freertos-r2-mixed-i2c-stream");
+const REQUESTS:u32=if STREAM {384} else {2};
 impl U32Queue {
     unsafe fn create(slot:u32,capacity:u32)->Result<Self,()> {
         assert!(capacity==1 && (slot==2 || slot==3));Ok(Self(slot))
@@ -49,29 +51,40 @@ impl U32Queue {
 '''+frame+function('prepare')+'\n'+function('grant_and_wait')+r'''
 fn main() {
     std::panic::set_hook(Box::new(|_|{}));
-    assert!(frame_length(0).is_none() && frame_length(3).is_none());
+    assert!(frame_length(0).is_none() && frame_length(REQUESTS+1).is_none());
     assert!(frame_byte(u32::MAX,usize::MAX).is_none());
-    for (g,n) in [(1,2),(2,31)] {
+    let mut seen=std::collections::HashSet::new();
+    for g in 1..=REQUESTS {
+        let n=if g&1==1 {2} else {31};
         assert_eq!(frame_length(g),Some(n));
-        for i in 0..n {assert_eq!(frame_byte(g,i),Some((0x31+(g-1)*0x83+i as u32*0x1d) as u8));}
+        for i in 0..n {
+            let f=g-1;
+            let expected=if STREAM {
+                if i==0 {(f as u8)^0x31} else if i==1 {((f>>8) as u8)^0x4e}
+                else {(0xb4+i as u32*0x1d+f*7) as u8}
+            } else {(0x31+f*0x83+i as u32*0x1d) as u8};
+            assert_eq!(frame_byte(g,i),Some(expected));
+        }
+        assert!(seen.insert((frame_byte(g,0).unwrap(),frame_byte(g,1).unwrap())));
         assert_eq!(frame_byte(g,n),None);
     }
     assert_eq!(frame_byte(1,0),Some(0x31));assert_eq!(frame_byte(1,1),Some(0x4e));
     unsafe {prepare();}
-    for g in [1,2] {
+    for g in 1..=REQUESTS {
         NEXT.store(g,SeqCst);CALLS.lock().unwrap().clear();
         unsafe {grant_and_wait(g);}
         assert_eq!(*CALLS.lock().unwrap(),vec![(2,g,0),(3,0,1000)]);
     }
-    for (g,sent,next) in [(0,true,1),(3,true,1),(1,false,1),(1,true,0),(1,true,2)] {
+    for (g,sent,next) in [(0,true,1),(REQUESTS+1,true,1),(1,false,1),(1,true,0),(1,true,2)] {
         SENT.store(sent,SeqCst);NEXT.store(next,SeqCst);CALLS.lock().unwrap().clear();
         assert!(std::panic::catch_unwind(||unsafe {grant_and_wait(g)}).is_err());
-        assert_eq!(CALLS.lock().unwrap().len(),if !(1..=2).contains(&g) {0} else if !sent {1} else {2});
+        assert_eq!(CALLS.lock().unwrap().len(),if !(1..=REQUESTS).contains(&g) {0} else if !sent {1} else {2});
     }
-    println!("STATIC pair actual arithmetic/queue handshake: two payloads, five refusals, bounded waits PASS");
+    println!("STATIC actual arithmetic/queue handshake: {REQUESTS} payloads, five refusals, bounded waits PASS");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='rp1-i2c-pair-test-') as d:
     p=Path(d);(p/'main.rs').write_text(program)
-    subprocess.run(['rustc','+stable','--edition=2024','-O','-Dwarnings',str(p/'main.rs'),'-o',str(p/'check')],check=True)
-    subprocess.run([str(p/'check')],check=True)
+    for flags in ([],['--cfg','feature="freertos-r2-mixed-i2c-stream"']):
+        subprocess.run(['rustc','+stable','--edition=2024','-O','-Dwarnings',*flags,str(p/'main.rs'),'-o',str(p/'check')],check=True)
+        subprocess.run([str(p/'check')],check=True)

@@ -365,3 +365,26 @@ leaves external ESP/UART/GPIO proof mandatory. Host checks are
 
 This finite ordering is not sustained normal I2C, simultaneous three-bus wire
 activity or general NACK recovery. Hardware validation of this image is OPEN.
+
+## Bounded normal I2C stream in the mixed example (unverified candidate)
+
+`RP1_RTOS_FEATURE=freertos-r2-mixed-i2c-stream bash tools/build-freertos-r1.sh /new/output`
+extends the same queue/IRQ/checked-completion path to384 requests. The distinct
+ICMS schema requires ESP IRP3/IRT2; IRP2 payloads are not interchangeable.
+Lengths alternate2/31; zero-based frame `f` has bytes0/1 `(f&255)^0x31`,
+`(f>>8)^0x4e`, and subsequent byte `i` `(0xb4+i*0x1d+f*7)&255`.
+Every byte/tail is checked before DONE and UART ACK. Normal task waits and50tick
+I2C deadline remain; no busy-loop, new task/stack, allocation or reset is added.
+
+The existing 10second-per-pair SPI/UART release schedule remains. I2C waits
+for each validated UART grant and finishes before that grant's ACK, so this
+does not claim three simultaneous wire transfers. `loaded_sequence` and
+publication timestamps must be externally checked before every grant.
+Telemetry139 sums all6336 received bytes;141 keeps the initial two bytes,
+142..149 holds the most recent subsequent buffer including tail,150 isIPSR24,
+151 is0x2d000180. All other mixed memory/IRQ ownership is unchanged.
+
+`tools/test-i2c-mixed-pair.py` compiles both actual payload/queue modes. The
+old finite-pair numeric validator intentionally rejects ICMS. A dedicated
+36-sample sustained validator and external causal join are still required
+before hardware admission; this candidate is not HW-proven or a release.

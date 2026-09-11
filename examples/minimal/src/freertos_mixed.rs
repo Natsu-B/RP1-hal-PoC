@@ -12,7 +12,7 @@ mod repeat;
 #[path = "mixed_i2c_pair.rs"]
 pub mod pair;
 const REPEATED: bool = cfg!(feature = "freertos-r2-mixed-repeat");
-const REQUESTS: u32 = if cfg!(feature = "freertos-r2-mixed-i2c-pair") {2} else if REPEATED {repeat::REQUESTS} else {2};
+const REQUESTS: u32 = if cfg!(feature = "freertos-r2-mixed-i2c-stream") {repeat::REQUESTS} else if cfg!(feature = "freertos-r2-mixed-i2c-pair") {2} else if REPEATED {repeat::REQUESTS} else {2};
 const I2C_BASE: usize = if REPEATED {120} else {128};
 const UART_BASE: usize = if REPEATED {152} else {160};
 // Only load/store, never RMW/exclusive retry. Telemetry is a mirror, not IPC.
