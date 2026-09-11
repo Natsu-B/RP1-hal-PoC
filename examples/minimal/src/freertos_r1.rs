@@ -225,6 +225,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         unsafe { os::delay(1000).unwrap(); }
         #[cfg(feature = "freertos-r2-spi-lifecycle")]
         unsafe { spi::lifecycle::monitor_wait(1000); }
+        #[cfg(feature = "freertos-r1-periodic-200us")]
+        put(168, raw_low()); // Monitor bookkeeping interval, includes preemption.
         let current = [get(64), get(80), get(49), get(50)];
         for i in 0..4 { assert_ne!(current[i], previous[i]); }
         previous = current;
@@ -254,6 +256,11 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         if get(129)==4 {
             if marker.is_none() { marker=unsafe { ptr::addr_of_mut!(MARKER).replace(None) }; }
             marker.as_mut().unwrap().toggle();
+        }
+        #[cfg(feature = "freertos-r1-periodic-200us")]
+        {
+            let end=raw_low(); put(169,end);
+            put(171,get(171).max(end.wrapping_sub(get(168)))); increment(172);
         }
         #[cfg(any(feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert"))]
         if get(14) == 5 {
@@ -632,7 +639,16 @@ unsafe extern "C" fn consumer(_: *mut c_void) {
     let sem = unsafe { ptr::addr_of!(SEM).read().unwrap() };
     let mut expected = 0u32;
     loop { unsafe {
-        assert_eq!(os::notification_take(true, 100).unwrap(), 1);
+        #[cfg(feature = "freertos-r1-periodic-200us")]
+        { put(160,raw_low()); put(163,get(8)); increment(167); }
+        let notification=os::notification_take(true, 100);
+        #[cfg(feature = "freertos-r1-periodic-200us")]
+        {
+            put(161,raw_low()); put(164,get(8));
+            put(162,notification.unwrap_or(u32::MAX));
+            put(165,expected); put(166,get(48));
+        }
+        assert_eq!(notification.unwrap(), 1);
         expected = expected.wrapping_add(1);
         assert_eq!(q.receive(10).unwrap(), Some(expected));
         assert!(sem.take(10).unwrap());
