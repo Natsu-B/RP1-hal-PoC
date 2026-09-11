@@ -385,6 +385,8 @@ Telemetry139 sums all6336 received bytes;141 keeps the initial two bytes,
 151 is0x2d000180. All other mixed memory/IRQ ownership is unchanged.
 
 `tools/test-i2c-mixed-pair.py` compiles both actual payload/queue modes. The
-old finite-pair numeric validator intentionally rejects ICMS. A dedicated
-36-sample sustained validator and external causal join are still required
+old finite-pair numeric validator intentionally rejects ICMS. The dedicated
+36-sample `tools/check-freertos-i2c-mixed-stream.py` reuses its ownership and
+payload checks with strict384-count/32minute bounds. Synthetic51-refusal tests
+also run the finite-pair regressions. External causal join is still required
 before hardware admission; this candidate is not HW-proven or a release.
