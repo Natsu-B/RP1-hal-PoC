@@ -1,12 +1,15 @@
 # Selected watchdog-to-UART restart candidate
 
-Status: source/compiled review only; hardware OPEN until a matching formal cohort.
-Base: AT `98663f8e24b6f7de78f397a9cf3502ff4947830c`. Official FreeRTOS
+Status: hardware OPEN until a matching formal cohort. Prior AU size/fatLTO
+commissioning failed cold host admission before WDT9; it was not a UART proof.
+Base: AU `762d99d6ae9c70a00825063452af0014bb0e303d`. Official FreeRTOS
 ARM_CM3 remains pinned by the existing vendor/build contract. Proc0 only.
 
 Build with `RP1_RTOS_FEATURE=freertos-r3-watchdog-warm-uart` and
 `bash tools/build-freertos-r1.sh /absolute/new/output`. This feature fixes Rust
-size optimization and fat LTO; O3 without LTO exceeds the unchanged SRAM limit.
+O3 and fat LTO; O3 without LTO exceeded the unchanged SRAM limit, while this
+combination fits. The selected source/MMIO behavior is unchanged; O3 cold-start
+instruction timing is compared with the earlier working watchdog image.
 The exact ELF checker rejects a changed compiler image until reviewed again.
 
 Cold boot runs seven R1 tasks and the existing watchdog task. A fresh warm

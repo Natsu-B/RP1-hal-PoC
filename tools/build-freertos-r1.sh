@@ -29,7 +29,8 @@ else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 fi
 if [[ "$requested_feature" == freertos-r3-watchdog-warm-uart ]]; then
-    export CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_PROFILE_RELEASE_LTO=fat
+    # Preserve O3 cold-start loop code; fat LTO makes this selected image fit.
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=3 CARGO_PROFILE_RELEASE_LTO=fat
     printf 'rust_lto=%s\n' "$CARGO_PROFILE_RELEASE_LTO"
     for name in warm_uart_prepare warm_uart; do
         cp "$repo/examples/minimal/src/$name.rs" "$out/$name.rs"

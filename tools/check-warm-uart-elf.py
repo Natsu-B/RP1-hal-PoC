@@ -3,7 +3,7 @@
 import hashlib,json,runpy,subprocess,sys
 from pathlib import Path
 assert __debug__
-PIN='50d5898b4879a2df4dcf7cd5cf1671c73670be5441fcb173e79de8d848e34589'
+PIN='f762446744a19c141f0efc3cfe10a4a462d3aebf02f2371cd08a50493f7d347c'
 def identity(data):
     assert hashlib.sha256(data).hexdigest()==PIN,'Image changed: new source/compiled review required'
 if __name__=='__main__':
