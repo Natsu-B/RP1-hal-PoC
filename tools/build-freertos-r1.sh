@@ -125,4 +125,8 @@ fi
 if [[ "$feature" == freertos-r3-watchdog-expiry-entry ]]; then
     python3 -B "$repo/tools/check-reset-entry-elf.py" --expiry-entry --self-test "$out/RP1.elf" > "$out/reset-entry-elf-validation.json"
 fi
+if [[ "$feature" == freertos-r3-watchdog-kernel-restart ]]; then
+    python3 -B "$repo/tools/check-kernel-restart-elf.py" --self-test "$out/RP1.elf" > "$out/kernel-restart-elf-validation.json"
+    python3 -B "$repo/tools/test-kernel-restart.py" > "$out/kernel-restart-validator-test.txt"
+fi
 date --iso-8601=seconds

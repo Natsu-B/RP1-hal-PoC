@@ -21,7 +21,8 @@ def markers(events):
     assert starts,'missing entry frame'
     return marker,starts[0]
 
-def decode(events, nonce, expected_reason):
+def decode(events, nonce, expected_reason, *, expected_type=0xb):
+    assert expected_type in (0xb,0xc),'unsupported entry type'
     marker,start=markers(events)
     assert len(marker)-start==66,'truncated/duplicate/extra suffix'
     pairs=[marker[start+2*i:start+2*i+2] for i in range(33)]
@@ -36,7 +37,7 @@ def decode(events, nonce, expected_reason):
         word=(word<<1)|int(width>100_000)
     check=0
     for shift in range(0,32,4):check^=(word>>shift)&15
-    assert word>>28==0xb and check==0,'type/checksum'
+    assert word>>28==expected_type and check==0,'type/checksum'
     assert (word>>12)&0xffff==nonce and 0<nonce<=0xffff,'run nonce'
     reason=(word>>4)&255
     allowed=expected_reason if isinstance(expected_reason,tuple) else (expected_reason,)

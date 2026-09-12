@@ -14,7 +14,7 @@ LATE = 0xa618
 
 
 def gates(text, *, version=4):
-    assert version in (4,5,6,7)
+    assert version in (4,5,6,7,8)
     patterns = [
         r'\[TFTP\] Rp1Gem release before RP1 reload complete ncr=0x([0-9a-f]{8})',
         r'\[RP1BOOT\] image loaded', r'\[RP1BOOT\] proc0 started',
