@@ -1,4 +1,4 @@
-//! Deliberate software Reset-entry diagnostic, NOT watchdog expiry/restart.
+//! Early Reset-entry reporter for separate software/WDT7 expiry experiments.
 //! Proc0/peripheral-free only. Consume the cookie before BSS clear; stop before
 //! PCIe/application init because warm .data/peripheral contracts are still OPEN.
 use super::{get, put, raw_low, reset_identity as model, watchdog_quiescence};
@@ -33,6 +33,16 @@ pub unsafe extern "C" fn rp1_freertos_capture_reset_entry() -> u32 {
     let prior = unsafe { record() };
     if model::valid_arm(prior) {
         let reason = unsafe { (0x4015_4008 as *const u32).read_volatile() };
+        #[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+        unsafe {
+            // Only our valid ARM cookie authorizes this already-proven disable.
+            // Do not let an unknown CTRL state enter warm runtime initialization.
+            let ctrl = 0x4015_4000 as *mut u32;
+            if !super::boot_entry::known_ctrl(ctrl.read_volatile()) { halt(); }
+            ctrl.write_volatile(0);
+            asm!("dsb sy", options(nostack));
+            if ctrl.read_volatile() & 0xff00_0000 != 0 { halt(); }
+        }
         if let Some(entry) = model::entry_from_arm(prior, reason) {
             unsafe {
                 publish(entry);
@@ -40,7 +50,12 @@ pub unsafe extern "C" fn rp1_freertos_capture_reset_entry() -> u32 {
             return 1;
         }
     }
-    // No ARM magic means cold/invalid/stale entry, never positive reentry.
+    #[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+    if matches!(prior[0],model::ARM_MAGIC | model::ENTRY_MAGIC) {
+        halt(); // Corrupt/consumed retained record must not start a warm kernel.
+    }
+    // Absent/unrecognized cookie cannot distinguish a cold boot from lost SRAM.
+    // It is never positive reentry evidence.
     unsafe {
         RECORD.write_volatile(0);
         asm!("dsb sy", options(nostack));
@@ -102,6 +117,7 @@ pub unsafe extern "C" fn rp1_freertos_reset_entry_halt() -> ! {
 }
 
 /// Existing GPIO monitor owns the deliberate branch after the disabled ACK.
+#[cfg(feature = "freertos-r3-reset-entry-selftest")]
 pub unsafe fn reenter_pending(marker: &mut ConfiguredPin<22, Output>) -> bool {
     if get(98) != 6 {
         return false;
@@ -121,4 +137,55 @@ pub unsafe fn reenter_pending(marker: &mut ConfiguredPin<22, Output>) -> bool {
         // not AIRCR reset, watchdog reset, or a hardware reset-domain test.
         asm!("cpsid i", "b Reset", options(noreturn));
     }
+}
+
+#[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+unsafe fn boot_tuple() -> [u32;3] {
+    unsafe { [(0x4015_400c as *const u32).read_volatile(),
+        (0x4015_4010 as *const u32).read_volatile(),
+        (0x4015_4018 as *const u32).read_volatile()] }
+}
+
+/// Only the consumed proc0 encoded-entry word is republished. No reset trigger.
+#[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+pub(super) unsafe fn arm_boot(nonce: u32) -> bool {
+    let before=unsafe { boot_tuple() };
+    let sp=unsafe { (0x2000_0000 as *const u32).read_volatile() };
+    let entry=unsafe { (0x2000_0004 as *const u32).read_volatile() };
+    let Some(desired)=super::boot_entry::planned_tuple(before,sp,entry) else { return false; };
+    if unsafe { record() } != [0,0,0,nonce] { return false; }
+    let Some(cookie)=model::arm_words(nonce) else { return false; };
+    unsafe {
+        publish(cookie);
+        (0x4015_4010 as *mut u32).write_volatile(desired[1]);
+        asm!("dsb sy", options(nostack));
+        super::boot_entry::owned_tuple(boot_tuple(),desired)
+    }
+}
+
+/// Alive/error path must reclaim its own future-start token and cookie.
+#[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+pub(super) unsafe fn cancel_boot() -> bool {
+    let prior=unsafe { record() };
+    if !model::valid_arm(prior) { return prior[0]==0; }
+    if prior[1]!=get(182) { return false; } // Own the final ACK's nonce only.
+    let before=[super::boot_entry::BOOT_MAGIC,0,super::boot_entry::VECTOR_SP];
+    let sp=unsafe { (0x2000_0000 as *const u32).read_volatile() };
+    let entry=unsafe { (0x2000_0004 as *const u32).read_volatile() };
+    let Some(desired)=super::boot_entry::planned_tuple(before,sp,entry) else { return false; };
+    let current=unsafe { boot_tuple() };
+    // Failed publication may leave the exact original tuple; no write needed.
+    // A foreign/partial tuple is not ours to clear, even with our cookie present.
+    if !super::boot_entry::restored_tuple(current,before) &&
+       !super::boot_entry::owned_tuple(current,desired) { return false; }
+    unsafe {
+        if current != before {
+            (0x4015_4010 as *mut u32).write_volatile(0);
+            asm!("dsb sy", options(nostack));
+        }
+        if !super::boot_entry::restored_tuple(boot_tuple(),before) { return false; }
+        RECORD.write_volatile(0);
+        asm!("dsb sy", options(nostack));
+    }
+    true
 }

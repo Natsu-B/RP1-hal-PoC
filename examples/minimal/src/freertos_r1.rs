@@ -19,12 +19,17 @@ mod watchdog_quiescence;
 #[path = "watchdog_postack.rs"]
 mod watchdog_postack;
 
-#[cfg(feature = "freertos-r3-reset-entry-selftest")]
+#[cfg(any(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-expiry-entry"))]
 #[path = "watchdog_reset_identity.rs"]
 mod reset_identity;
-#[cfg(feature = "freertos-r3-reset-entry-selftest")]
+#[cfg(any(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-expiry-entry"))]
 #[path = "reset_entry_target.rs"]
 mod reset_entry;
+#[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+#[path = "watchdog_boot_entry.rs"]
+mod boot_entry;
+#[cfg(all(feature = "freertos-r3-watchdog-expiry-entry", feature = "freertos-r3-watchdog-late-disable"))]
+compile_error!("Expiry entry and late-disable control are separate experiments");
 #[cfg(all(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-postack"))]
 compile_error!("Reset-entry selftest performs no long watchdog arm; select it separately");
 

@@ -5,6 +5,7 @@ pub const ZERO_ALIVE_DISABLED: u16 = 0xa31d;
 pub const ERROR: u16 = 0xa41a;
 pub const LATE_COUNT_DISABLED: u16 = 0xa618;
 pub const LATE_CONTROL: bool = cfg!(feature = "freertos-r3-watchdog-late-disable");
+pub const EXPIRY_ENTRY: bool = cfg!(feature = "freertos-r3-watchdog-expiry-entry");
 pub const TIMEOUT_US: u32 = if LATE_CONTROL { 16_000_000 } else { 20_000_000 };
 pub const fn valid_frame(word: u16) -> bool {
     matches!(word, ARMED | ZERO_ALIVE_DISABLED | ERROR | LATE_COUNT_DISABLED)
@@ -36,6 +37,11 @@ pub const fn valid_late(ctrl: u32, elapsed: u32) -> bool {
     (ctrl & 0x00ff_ffff) <= 2_000_000 && elapsed >= 15_000_000 && elapsed < 15_200_000
 }
 
+pub const fn terminal_due(ctrl: u32, elapsed: u32) -> bool {
+    if LATE_CONTROL { valid_late(ctrl,elapsed) }
+    else { valid_zero(ctrl,elapsed) && (!EXPIRY_ENTRY || elapsed>=19_000_000) }
+}
+
 #[cfg(target_arch = "arm")]
 mod target {
     use super::*;
@@ -50,6 +56,8 @@ mod target {
         unsafe { (address as *mut u32).write_volatile(value); asm!("dsb sy", options(nostack)); }
     }
     unsafe fn disable() -> bool {
+        let before = unsafe { read(CTRL) };
+        if !matches!(before & 0xff00_0000, 0 | 0x4000_0000) { return false; }
         unsafe { write(CTRL,0); }
         let ctrl = unsafe { read(CTRL) }; put(165,ctrl);
         ctrl & 0xff00_0000 == 0
@@ -71,6 +79,8 @@ mod target {
         // fields of our own armed interval are restored by this returning path.
         let restored = if armed { unsafe { disable() } }
             else { (unsafe { read(CTRL) } & 0xff00_0000) == 0 };
+        #[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+        let restored = restored && unsafe { crate::freertos_r1::reset_entry::cancel_boot() };
         put(167,code); put(168,u32::from(restored)); put(98,9);
         let sent = unsafe { emit(marker,ERROR) }; put(169,u32::from(sent));
     }
@@ -92,6 +102,10 @@ mod target {
             !valid_ack(ack) || get(145) != 1 || get(146) != 1 || get(99) != 0 {
             unsafe { error(marker,1,false); } return true;
         }
+        #[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+        if !unsafe { crate::freertos_r1::reset_entry::arm_boot(ack[6]) } {
+            unsafe { error(marker,12,false); } return true;
+        }
         put(98,7);
         let start = raw_low(); put(158,start); // Deadline includes the enabled packet.
         unsafe { write(0x4015_4004,LOAD); write(CTRL,1<<30); }
@@ -105,8 +119,7 @@ mod target {
             let now = raw_low(); let ctrl = unsafe { read(CTRL) };
             put(160,ctrl); put(161,now.wrapping_sub(start)); put(162,iteration);
             if timed_out(now,start) { unsafe { error(marker,5,true); } return true; }
-            let terminal = if LATE_CONTROL { valid_late(ctrl,now.wrapping_sub(start)) }
-                else { valid_zero(ctrl,now.wrapping_sub(start)) };
+            let terminal = terminal_due(ctrl,now.wrapping_sub(start));
             if terminal {
                 put(163,unsafe { read(0x4015_4008) });
                 if !unsafe { disable() } { unsafe { error(marker,7,true); } return true; }
@@ -116,10 +129,20 @@ mod target {
                 if LATE_CONTROL && !valid_late(ctrl,disabled_at.wrapping_sub(start)) {
                     unsafe { error(marker,11,false); } return true;
                 }
+                #[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+                if !unsafe { crate::freertos_r1::reset_entry::cancel_boot() } {
+                    unsafe { error(marker,13,false); } return true;
+                }
                 let word = if LATE_CONTROL { LATE_COUNT_DISABLED } else { ZERO_ALIVE_DISABLED };
                 let sent = unsafe { emit(marker,word) }; put(166,u32::from(sent));
                 if !sent { unsafe { error(marker,10,false); } return true; }
                 put(98,8); return true;
+            }
+            // Do not race a just-zero counter with immediate software disable.
+            // Give the selected expiry route until19s, still within20s bound.
+            if EXPIRY_ENTRY && valid_zero(ctrl,now.wrapping_sub(start)) {
+                if !unsafe { delay(1) } { unsafe { error(marker,8,true); } return true; }
+                continue;
             }
             if ctrl & 0xff00_0000 != 0x4000_0000 || ctrl & LOAD == 0 {
                 unsafe { error(marker,6,true); } return true;
@@ -135,6 +158,17 @@ pub use target::emit_pending;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
+    fn expiry_zero_is_not_disabled_immediately() {
+        for ctrl in [0,0x4000_0000] {
+            for us in [16_000_000,16_777_215,18_999_999] { assert!(!terminal_due(ctrl,us)); }
+            for us in [19_000_000,19_999_999] { assert!(terminal_due(ctrl,us)); }
+            assert!(!terminal_due(ctrl,20_000_000));
+        }
+        assert!(!terminal_due(0x4000_0001,19_000_000));
+        assert!(!terminal_due(0xc000_0000,19_000_000));
+    }
     #[test]
     fn typed_frames_and_bounded_budget() {
         for word in [ARMED, ZERO_ALIVE_DISABLED, ERROR, LATE_COUNT_DISABLED] {

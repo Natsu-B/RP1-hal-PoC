@@ -8,7 +8,7 @@ import sys
 assert __debug__
 P=runpy.run_path(str(Path(__file__).with_name('check-watchdog-postack.py')))
 
-def decode(events, nonce, expected_reason):
+def markers(events):
     marker=[e for e in events if e['source']=='gpio25']
     assert all(type(e['timestamp_us']) is int and e['timestamp_us']>=0 and
         type(e['level']) is int and e['level'] in (0,1) and
@@ -19,7 +19,10 @@ def decode(events, nonce, expected_reason):
         marker[i]['timestamp_us']-marker[i-1]['timestamp_us']>=400_000 and
         125_000<=marker[i+1]['timestamp_us']-marker[i]['timestamp_us']<=175_000]
     assert starts,'missing entry frame'
-    start=starts[0]
+    return marker,starts[0]
+
+def decode(events, nonce, expected_reason):
+    marker,start=markers(events)
     assert len(marker)-start==66,'truncated/duplicate/extra suffix'
     pairs=[marker[start+2*i:start+2*i+2] for i in range(33)]
     assert all(a['level']==1 and b['level']==0 for a,b in pairs)
@@ -35,8 +38,10 @@ def decode(events, nonce, expected_reason):
     for shift in range(0,32,4):check^=(word>>shift)&15
     assert word>>28==0xb and check==0,'type/checksum'
     assert (word>>12)&0xffff==nonce and 0<nonce<=0xffff,'run nonce'
-    assert (word>>4)&255==expected_reason==2,'software entry reason changed'
-    return dict(word=f'{word:08x}',nonce=nonce,raw_reason=expected_reason,
+    reason=(word>>4)&255
+    allowed=expected_reason if isinstance(expected_reason,tuple) else (expected_reason,)
+    assert reason in allowed,'entry reason changed'
+    return dict(word=f'{word:08x}',nonce=nonce,raw_reason=reason,
         first_timestamp_us=marker[start]['timestamp_us'],last_timestamp_us=marker[-1]['timestamp_us'],
         prefix_edges=start,events=len(events),high_min_us=min(highs[:32]),
         high_max_us=max(highs[:32]),low_min_us=min(lows),low_max_us=max(lows),
@@ -44,6 +49,7 @@ def decode(events, nonce, expected_reason):
 
 def validate(text,protocol,before,after):
     words=P['W3']['validate_uart'](text,version=6)
+    assert words[112]==2,'software entry requires unchanged reason2'
     gate=P['gates'](text,version=6)
     events=P['W3']['W']['R1']['decode_trace'](protocol,before,after)
     frame=decode(events,words[182],words[112])

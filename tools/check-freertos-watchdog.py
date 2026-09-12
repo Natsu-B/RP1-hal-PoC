@@ -23,7 +23,7 @@ def validate_disabled_record(w,magic=MAGIC,version=2,request=REQUEST):
     assert 256<=v[6]<=1000 and 0<v[7]<=100000
     assert v[8:12]==[2,2,0,0]
     assert 0<w[101] and v[6]<=((w[102]-w[101])&0xffffffff)<10000
-    if version == 6:
+    if version in (6,7):
         assert 0<request[6]<=0xffff and w[139]==request[6]
         assert not any(w[136:139])
     else: assert not any(w[136:140])

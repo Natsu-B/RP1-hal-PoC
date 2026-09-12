@@ -1,7 +1,10 @@
 //! Disabled watchdog handoff shared by WDT3 and opt-in WDT4 post-ACK logic.
 //! Default WDT3's32-bit type1 packet is not counter-zero/expiry/reset evidence.
 //! WDT4 uses the separate watchdog_postack monitor hook, not this packet emitter.
-pub const ACK_MAGIC: u32 = if cfg!(feature = "freertos-r3-reset-entry-selftest") {
+pub const NONCE_LINKED: bool = cfg!(any(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-expiry-entry"));
+pub const ACK_MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-expiry-entry") {
+    u32::from_le_bytes(*b"QA07")
+} else if cfg!(feature = "freertos-r3-reset-entry-selftest") {
     u32::from_le_bytes(*b"QA06")
 } else if cfg!(feature = "freertos-r3-watchdog-late-disable") {
     u32::from_le_bytes(*b"QA05")
@@ -10,15 +13,16 @@ pub const ACK_MAGIC: u32 = if cfg!(feature = "freertos-r3-reset-entry-selftest")
 } else { u32::from_le_bytes(*b"QA03") };
 pub const FRAME: u32 = 0xa501_01ff; // magic A5, type1, sequence1, XOR-with-5A checksum
 pub const fn ack_words() -> [u32; 8] {
-    let version = if cfg!(feature = "freertos-r3-reset-entry-selftest") { 6 }
+    let version = if cfg!(feature = "freertos-r3-watchdog-expiry-entry") { 7 }
+        else if cfg!(feature = "freertos-r3-reset-entry-selftest") { 6 }
         else if cfg!(feature = "freertos-r3-watchdog-late-disable") { 5 }
         else if cfg!(feature = "freertos-r3-watchdog-postack") { 4 } else { 3 };
-    let nonce=if cfg!(feature = "freertos-r3-reset-entry-selftest") {1} else {0};
+    let nonce=if NONCE_LINKED {1} else {0};
     [ACK_MAGIC, version, 1, 2, 0, 0, nonce, 0x5744_5432 ^ version ^ 1 ^ 2 ^ nonce]
 }
 pub fn valid_ack(words: [u32; 8]) -> bool {
     let mut expected=ack_words();
-    if cfg!(feature = "freertos-r3-reset-entry-selftest") {
+    if NONCE_LINKED {
         if words[6]==0 || words[6]>0xffff { return false; }
         expected[7]^=expected[6]^words[6];expected[6]=words[6];
     }
@@ -47,7 +51,7 @@ mod target {
         unsafe { asm!("dmb sy", options(nostack)); }
         let words = core::array::from_fn(|i| get(176+i));
         assert!(valid_ack(words) && get(176) == ACK_MAGIC);
-        #[cfg(feature = "freertos-r3-reset-entry-selftest")]
+        #[cfg(any(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-expiry-entry"))]
         assert_eq!(words[6],get(139)); // Bind ACK to the accepted request nonce.
         assert_eq!((get(98),get(100),get(103)), (4,1,1));
         assert_eq!(get(109) & 0xff00_0000, 0);
@@ -85,7 +89,7 @@ pub use target::{emit_pending, wait_for_quiesce};
 mod tests {
     use super::*;
     #[test]
-    #[cfg(feature = "freertos-r3-reset-entry-selftest")]
+    #[cfg(any(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-expiry-entry"))]
     fn nonce_is_checked_with_checksum() {
         for nonce in [1,2,0xffff] {
             let mut words=ack_words();words[7]^=words[6]^nonce;words[6]=nonce;
