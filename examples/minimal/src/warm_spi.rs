@@ -1,12 +1,15 @@
-//! AW: sole fresh warm SPI0 owner, two existing ESP32 69963c01/02 frames.
+//! AX: exact initial-mask correction for AW's sole fresh warm SPI0 owner.
+//! Two existing ESP32 69963c01/02 frames; AW01 telemetry prefix is unchanged.
 //! Reuses checked IRQ19 receive/finish/cancel; no UART data owner or recovery.
 //! Host check: rustc --edition=2024 --test warm_spi.rs -o /tmp/warm-spi-test
 //! Words124=AW01,125=phase[7:0]/completed[9:8]/idle checks[31:16].
 //! 126..139: CTRL1/DONE1 before/after, initial body[version,CTRLR0,quiet-OR,
 //! SR,RISR,route], configured MISO[CTRL,PAD,STATUS,RIO_OE]. Quiet-OR combines
-//! SSIENR/SER/IMR/ISR/TXFLR/RXFLR/DMACR, all required zero before any body write.
+//! SSIENR/SER/IMR/ISR/TXFLR/RXFLR/DMACR, all required zero after checked IMR0.
 //! 140/150 receipts: generation,payload,IRQs,IPSR,elapsed,IRQmax,wake-us,
 //! before/after canaries, final SR<<16|priority<<8|route. Word160 is owner HWM.
+//! 161..176: pre/post-mask[VERSION,SSIENR,SER,IMR,SR], post-mask body[6].
+//! E66=pretuple,E6b=pre-mask NVIC,E67=posttuple,E6a=post-mask quiet/NVIC.
 //! Phase1=prepared,2=owner,3/5=waiting peer,4/6=received,7=ready,ff=failure
 //! (failure code replaces idle checks). WDT96..123/fault184..255 unchanged.
 
@@ -14,12 +17,19 @@ const RESET: u32 = 1 << 10;
 const FIRST: usize = 124;
 const RECEIPT_FIRST: usize = 140;
 const RECEIPT_WORDS: usize = 10;
+const MASK_FIRST: usize = 161;
+const PREP_WORDS: usize = 30;
 const BEFORE: u32 = 0x5aa5_a55a;
 const AFTER: u32 = 0xa55a_5aa5;
 const _: () = assert!(RECEIPT_FIRST + 2 * RECEIPT_WORDS == 160);
+const _: () = assert!(FIRST + 2 + 14 == RECEIPT_FIRST && MASK_FIRST + PREP_WORDS - 14 == 177);
 
 fn initial_reset(ctrl: u32, done: u32) -> bool { ctrl & RESET != 0 && done & RESET == 0 }
 fn released(ctrl: u32, done: u32) -> bool { ctrl & RESET == 0 && done & RESET != 0 }
+
+// G4 prewrite tuple and G5's one-write posttuple; no other reset defaults inferred.
+fn pre_mask(s: [u32; 5]) -> bool { s == [0x3430_322a, 0, 0, 0x3f, 6] }
+fn post_mask(s: [u32; 5]) -> bool { s == [0x3430_322a, 0, 0, 0, 6] }
 
 // Known quiet source/serial-idle and wrapper0/1 contracts, not guessed defaults.
 // CTRLR0 is observed here; the established host constructor programs it later.
@@ -55,7 +65,7 @@ mod target {
     use rp1_freertos as os;
     use rp1_hal::{gpio::Gpio, spi::{Spi0, Spi0Host}};
 
-    static mut PREP: [u32; 14] = [0; 14];
+    static mut PREP: [u32; PREP_WORDS] = [0; PREP_WORDS];
     static mut HOST: Option<Spi0Host> = None;
     static mut HOST_STATE: u32 = 0; // 0=fresh,1=published,2=permanently taken.
     static mut IRQ_ENTRIES: u32 = 0; // Only the direct IRQ19 handler writes.
@@ -64,6 +74,10 @@ mod target {
     static mut READY_IRQS: u32 = 0; // Publish last, zero is never ready.
 
     fn read(address: usize) -> u32 { unsafe { (address as *const u32).read_volatile() } }
+    fn mask_tuple() -> [u32; 5] {
+        let b = rp1_hal::addr::SPI0_BASE;
+        [read(b+0x5c), read(b+0x08), read(b+0x10), read(b+0x2c), read(b+0x28)]
+    }
     fn body() -> [u32; 6] {
         let b = rp1_hal::addr::SPI0_BASE;
         [read(b+0x5c), read(b), [0x08,0x10,0x2c,0x30,0x20,0x24,0x4c]
@@ -94,7 +108,18 @@ mod target {
         if !released(ctrl,done) { return Err(0x61); }
         let before = body();
         for (i,v) in before.into_iter().enumerate() { saved(4+i,v); }
-        if !quiet(before) || !nvic_quiet() { return Err(0x62); }
+        let pre = mask_tuple();
+        for (i,v) in pre.into_iter().enumerate() { saved(14+i,v); }
+        if !pre_mask(pre) { return Err(0x66); }
+        if !nvic_quiet() { return Err(0x6b); }
+        rp1_hal::spi::spi0_mask_tx_empty_irq();
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+        let post = mask_tuple();
+        for (i,v) in post.into_iter().enumerate() { saved(19+i,v); }
+        if !post_mask(post) { return Err(0x67); }
+        let masked = body();
+        for (i,v) in masked.into_iter().enumerate() { saved(24+i,v); }
+        if !quiet(masked) || !nvic_quiet() { return Err(0x6a); }
         // The same released-input / CS-high / SCLK-low prerequisite as cold R1.
         let _miso = gpio.pin::<9>().into_input_pull_up();
         let _sda = gpio.pin::<2>().into_input_pull_up();
@@ -123,6 +148,7 @@ mod target {
     pub fn publish() {
         put(FIRST,u32::from_le_bytes(*b"AW01")); put(FIRST+1,1);
         for i in 0..14 { put(FIRST+2+i,unsafe { ptr::addr_of!(PREP).cast::<u32>().add(i).read_volatile() }); }
+        for i in 14..PREP_WORDS { put(MASK_FIRST+i-14,unsafe { ptr::addr_of!(PREP).cast::<u32>().add(i).read_volatile() }); }
     }
     fn irq_entries() -> u32 { unsafe { ptr::addr_of!(IRQ_ENTRIES).read_volatile() } }
     fn fail(code: u32) -> ! {
@@ -220,6 +246,22 @@ pub use target::{prepare,publish,ready,worker};
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_exact_pre_and_post_mask_tuples_are_admitted() {
+        let pre = [0x3430_322a,0,0,0x3f,6];
+        let post = [0x3430_322a,0,0,0,6];
+        assert!(pre_mask(pre)); assert!(post_mask(post));
+        assert!(!pre_mask(post)); assert!(!post_mask(pre));
+        for i in 0..5 { for bit in 0..32 {
+            let mut bad = pre; bad[i] ^= 1 << bit; assert!(!pre_mask(bad));
+            let mut bad = post; bad[i] ^= 1 << bit; assert!(!post_mask(bad));
+        } }
+        // SR4 is allowed by the later broad quiet gate, never by this exact gate.
+        let mut bad = pre; bad[4] = 4; assert!(!pre_mask(bad));
+        let mut bad = post; bad[4] = 4; assert!(!post_mask(bad));
+        assert_eq!(FIRST+2+13,139);
+        assert_eq!(MASK_FIRST+PREP_WORDS-14-1,176);
+    }
     #[test]
     fn only_safe_reset_quiet_body_and_released_miso_are_admitted() {
         for ctrl in [0,RESET,u32::MAX,!RESET] { for done in [0,RESET,u32::MAX,!RESET] {

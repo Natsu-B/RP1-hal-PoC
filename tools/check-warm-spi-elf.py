@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Selected AW warm SPI reviewed image identity + existing ELF/probe checks, NOT HW proof."""
+"""Selected AX warm SPI reviewed image identity + existing ELF/probe checks, NOT HW proof."""
 import hashlib,json,runpy,subprocess,sys
 from pathlib import Path
 assert __debug__
-PIN='d04f38bda7e6040d9862cc873cf553c8cd93b460f5c48ea63df4f523f0037614'
+PIN='5f421f30e88cc3550819c21a3507266f138c9663bf7d21bca8802b522d1dea9d'
 def identity(data):
     assert hashlib.sha256(data).hexdigest()==PIN,'Image changed: new source/compiled review required'
 if __name__=='__main__':

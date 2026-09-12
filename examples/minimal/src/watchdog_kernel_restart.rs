@@ -39,7 +39,7 @@ pub(crate) fn diagnostic_packet(nonce: u32, code: u32) -> Option<u32> {
         && (matches!(code, 0x40..=0x4f) && code != 0x45 || matches!(code, 0x50..=0x54))
         || cfg!(feature = "freertos-r3-watchdog-warm-uart") && code == 0x55;
     let spi_code = cfg!(feature = "freertos-r3-watchdog-warm-spi")
-        && matches!(code, 0x60..=0x65 | 0x68..=0x69);
+        && matches!(code, 0x60..=0x6b) && code != 0x62;
     if !uart_code && !spi_code && !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
         return None;
     }
@@ -208,7 +208,7 @@ mod tests {
                     || cfg!(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi"))
                         && (matches!(code, 0x40..=0x4f) && code!=0x45 || matches!(code, 0x50..=0x54))
                     || cfg!(feature = "freertos-r3-watchdog-warm-uart") && code == 0x55
-                    || cfg!(feature = "freertos-r3-watchdog-warm-spi") && matches!(code, 0x60..=0x65 | 0x68..=0x69);
+                    || cfg!(feature = "freertos-r3-watchdog-warm-spi") && matches!(code, 0x60..=0x6b) && code != 0x62;
                 assert_eq!(diagnostic_packet(nonce,code).is_some(), allowed);
                 if let Some(p)=diagnostic_packet(nonce,code) {
                     assert_eq!(p>>28,0xe);
@@ -219,6 +219,10 @@ mod tests {
         }
         for nonce in [0,0x10000,u32::MAX] { assert_eq!(diagnostic_packet(nonce,1),None); }
         for code in [256,u32::MAX] { assert_eq!(diagnostic_packet(1,code),None); }
+        assert_eq!(diagnostic_packet(1,0x62),None);
+        for code in [0x66,0x67,0x6a,0x6b] {
+            assert_eq!(diagnostic_packet(1,code).is_some(),cfg!(feature = "freertos-r3-watchdog-warm-spi"));
+        }
     }
 
     #[test]

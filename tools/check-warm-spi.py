@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AW warm SPI owner diagnostic OR selected F witness, never old C/D."""
+"""AX warm SPI owner diagnostic OR selected F witness, never old C/D."""
 import json
 from pathlib import Path
 import runpy
@@ -11,7 +11,8 @@ E=A['E']; P=A['P']
 PASS='RP1_WATCHDOG_FRESH_PROC0_SPI_IRQ_OWNER_SELECTED_PASS'
 DIAGNOSTIC='RP1_WATCHDOG_WARM_SPI_DIAGNOSTIC_CAPTURED'
 GATE_CODES=(*range(1,6),*range(0x10,0x13),*range(0x20,0x24),*range(0x30,0x35),
-    *(n for n in range(0x40,0x50) if n!=0x45),*range(0x50,0x55),*range(0x60,0x66),0x68)
+    *(n for n in range(0x40,0x50) if n!=0x45),*range(0x50,0x55),
+    *(n for n in range(0x60,0x68) if n!=0x62),0x68,0x6a,0x6b)
 
 
 def decode(events,nonce,*,fixed_source_admitted=False):
@@ -47,7 +48,7 @@ def decode(events,nonce,*,fixed_source_admitted=False):
     for bit in range(4):
         rise,fall=marker[start+34+2*bit:start+36+2*bit]
         kind=(kind<<1)|int(fall['timestamp_us']-rise['timestamp_us']>100_000)
-    assert kind in (0xf,0xe),'not an AW guard/SPI owner frame; prior C/D cannot substitute'
+    assert kind in (0xf,0xe),'not an AX guard/SPI owner frame; prior C/D cannot substitute'
     diagnostic=kind==0xe
     entry=E['decode'](marker[start+33:],nonce,GATE_CODES if diagnostic else (1,3),expected_type=kind)
     dt=entry['first_timestamp_us']-arm['frames'][0]['first_timestamp_us']
@@ -85,7 +86,7 @@ def validate(text,protocol,before,after,*,fixed_source_admitted=False):
             'both spinners, queue/inheritance progress and no faults; not externally sampled counters.'
             if external.get('candidate_result')==PASS else 'No fresh-kernel progress claim: diagnostic only.'),
         exact_progress_counters_externally_sampled=False,R3='OPEN',
-        boundary='E is diagnostic, never AW success. F is selected fresh proc0 kernel plus first warm SPI IRQ ownership, conditional on source/ELF/hash and independent real peer admission. Old AT C and AV D are rejected. No in-flight SPI recovery, PCIe/UART/I2C recovery, full R2 recovery, autonomous feeding or general recovery claim.')
+        boundary='E is diagnostic, never AX success. F is selected fresh proc0 kernel plus first warm SPI IRQ ownership, conditional on source/ELF/hash and independent real peer admission. Old AW E62, AT C and AV D are rejected. No in-flight SPI recovery, PCIe/UART/I2C recovery, full R2 recovery, autonomous feeding or general recovery claim.')
 
 
 if __name__=='__main__':
