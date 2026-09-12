@@ -81,7 +81,10 @@ def decode_packets(events, *, version=4):
     elapsed = None
     if words == [ARMED, terminal]:
         elapsed = frames[1]['first_timestamp_us']-frames[0]['first_timestamp_us']
-        low, high = (15_000_000,15_200_000) if version == 5 else (16_000_000,20_000_000)
+        # ARMED follows a one-tick decrement check; terminal does not. Edge
+        # separation is not raw enable-to-disable time. Selected 10ms allowance
+        # covers that offset/tick quantization, not a universal scheduler bound.
+        low, high = (14_990_000,15_210_000) if version == 5 else (16_000_000,20_000_000)
         assert low <= elapsed < high, 'selected countdown timing envelope'
         result = ('RP1_WATCHDOG_POSTACK_LATE_COUNT_DISABLED_SELECTED_PASS' if version == 5 else
                   'RP1_WATCHDOG_POSTACK_COUNTER_ZERO_ALIVE_DISABLED_SELECTED_PASS')
@@ -89,6 +92,7 @@ def decode_packets(events, *, version=4):
                 marker_edges=len(marker), trace_events=len(events),
                 armed_to_zero_first_edge_us=elapsed if version == 4 else None,
                 armed_to_terminal_first_edge_us=elapsed, version=version, timestamp_resolution_us=1,
+                edge_window_allowance_us=10_000 if version == 5 else 0,
                 absolute_clock_accuracy_proven=False, restart_proven=False)
 
 

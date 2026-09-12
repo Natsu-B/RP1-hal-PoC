@@ -18,7 +18,10 @@ ESP recovery remains mandatory. Terminal transmission occurs after disable and
 is outside the armed-phase timeout. No new task, stack, vector or IRQ priority.
 
 The normal GPIO validator accepts `--late-disable`, exact ordered A21C/A618,
-first-edge delta15..15.2s, full suffix, count and overflow checks. First packet
+first-edge delta14.990..15.210s, full suffix, count and overflow checks. The 10ms
+external allowance includes the one-tick decrement check before ARMED and tick
+quantization; it is not a scheduler latency bound. Internal raw/count/disable
+guards remain15.000..15.200s. First packet
 qualification requires the known magic-leading ONE (125..175ms); boot's guarded
 ~39ms ZERO must not masquerade as its start. This is a selected diagnostic
 protocol, not authenticated traffic. Existing WDT4 decoder refusal is retained

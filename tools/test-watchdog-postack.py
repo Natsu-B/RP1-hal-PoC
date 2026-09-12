@@ -132,11 +132,13 @@ for old,new in [(REQUEST,request5),(ACK,ack5)]:
     u5 = u5.replace(' '.join(f'{x:08x}' for x in old),' '.join(f'{x:08x}' for x in new))
 control = trace([0xa21c,0xa618],interval=15000000)
 assert M['validate'](u5,*inputs(control),version=5)['result'] == 'RP1_WATCHDOG_POSTACK_LATE_COUNT_DISABLED_SELECTED_PASS'
-for text,ev in [(good,control),(u5,events),(u5,trace([0xa21c,0xa618],interval=14999999)),
-                (u5,trace([0xa21c,0xa618],interval=15200000)),(u5,trace([0xa618])),
+for delta in [14_990_000,14_999_000,15_209_999]:
+    assert M['validate'](u5,*inputs(trace([0xa21c,0xa618],interval=delta)),version=5)['result'].endswith('_PASS')
+for text,ev in [(good,control),(u5,events),(u5,trace([0xa21c,0xa618],interval=14989999)),
+                (u5,trace([0xa21c,0xa618],interval=15210000)),(u5,trace([0xa618])),
                 (u5,trace([0xa21c,0xa618,0xa618],interval=15000000))]:
     try: M['validate'](text,*inputs(ev),version=5)
     except (AssertionError,ValueError): negative += 1
     else: raise AssertionError('bad WDT5 control accepted')
 reject(ev=control) # WDT4 may not accept WDT5's terminal type.
-print(f'PASS: synthetic WDT4/WDT5 3 selected positives / 4 explicit inconclusive / {negative} refusals; NOT HW')
+print(f'PASS: synthetic WDT4/WDT5 6 selected positives / 4 explicit inconclusive / {negative} refusals; NOT HW')
