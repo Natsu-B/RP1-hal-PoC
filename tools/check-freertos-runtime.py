@@ -70,8 +70,8 @@ def validate(text, *, footer=READ_ONLY_FOOTER):
             'calibration_hz':b[5:8], 'R1':'PARTIAL', 'R2':'OPEN', 'R3':'OPEN'}
 
 
-def validate_trace(protocol, before, after):
-    """Independent 1Hz GPIO22 -> ESP GPIO25 witness, not a context-switch trace."""
+def decode_trace(protocol, before, after):
+    """Validate the complete transport envelope before interpreting GPIO payload."""
     def counts(status):
         match = re.search(r'^trace_count=(\d+) overflow=(\d+) gpio_edges=(\d+) ', status, re.M)
         assert match and status.rstrip().endswith('OK'), 'trace status incomplete'
@@ -85,6 +85,12 @@ def validate_trace(protocol, before, after):
     for previous, event in zip(events, events[1:]):
         assert event['seq'] == previous['seq'] + 1, 'trace sequence gap'
         assert event['timestamp_us'] >= previous['timestamp_us'], 'trace time reversed'
+    return events
+
+def validate_trace(protocol, before, after):
+    """Independent 1Hz GPIO22 -> ESP GPIO25 witness, not a context-switch trace."""
+    events = decode_trace(protocol, before, after)
+    count = len(events)
     marker = [e for e in events if e['source'] == 'gpio25']
     # Boot/power edges precede the workload. Validate a fixed final 36-edge
     # window, never cherry-pick a middle interval while a stalled tail is ignored.
@@ -99,7 +105,7 @@ def validate_trace(protocol, before, after):
         intervals.append(dt)
     return {'trace_events': count, 'checked_marker_edges': len(marker),
             'marker_interval_min_us': min(intervals), 'marker_interval_max_us': max(intervals),
-            'marker_checked_elapsed_us': sum(intervals), 'overflow': overflow,
+            'marker_checked_elapsed_us': sum(intervals), 'overflow': 0,
             'timestamp_resolution_us': 1, 'absolute_clock_accuracy_proven': False}
 
 

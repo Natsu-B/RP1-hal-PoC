@@ -1,5 +1,8 @@
 # WDT3 disabled observation handoff — HW OPEN
 
+The separate opt-in [WDT4 post-ACK candidate](WATCHDOG_POSTACK.md) retains this
+WDT3 ABI; its long countdown and 16-bit events are not this disabled-only test.
+
 Build `freertos-r3-watchdog-quiescence` with tools/build-freertos-r1.sh.
 It inherits the bounded watchdog receipt and its normal-R1-only feature guards.
 This is instrumentation, not deliberate expiry, feeding or reset routing.

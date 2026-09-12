@@ -13,20 +13,25 @@ ACK=[int.from_bytes(b'QA03','little'),3,1,2,0,0,0,0x57445432^3^1^2]
 END='[WQ3] observer-quiesced no-more-rp1-access=1'
 FRAME=0xa50101ff
 
-def validate_uart(text):
-    assert text.count(END)==1 and '[WQ3] failure=' not in text
-    records=re.findall(r'\[WQ3\] record (\d{3}) ((?:[0-9a-f]{8} ?){4})',text)
+def validate_uart(text, *, version=3):
+    assert version in (3,4)
+    prefix=f'[WQ{version}]'
+    end=prefix+' observer-quiesced no-more-rp1-access=1'
+    request=[int.from_bytes(f'WQ0{version}'.encode(),'little'),version,1,1,0xffffff,256,0,0x57445432^version^1^1^0xffffff^256]
+    ack=[int.from_bytes(f'QA0{version}'.encode(),'little'),version,1,2,0,0,0,0x57445432^version^1^2]
+    assert text.count(end)==1 and prefix+' failure=' not in text
+    records=re.findall(re.escape(prefix)+r' record (\d{3}) ((?:[0-9a-f]{8} ?){4})',text)
     assert [int(n) for n,_ in records]==list(range(0,256,4)),'missing/duplicate record'
     words=[int(n,16) for _,row in records for n in row.split()]
-    for label,expected in [('request',REQUEST),('ack-issued',ACK)]:
-        lines=re.findall(r'\[WQ3\] '+label+r' ((?:[0-9a-f]{8} ?){8})',text)
+    for label,expected in [('request',request),('ack-issued',ack)]:
+        lines=re.findall(re.escape(prefix)+' '+label+r' ((?:[0-9a-f]{8} ?){8})',text)
         assert len(lines)==1 and [int(n,16) for n in lines[0].split()]==expected
-    assert text.index('[WQ3] request ')<text.index('[WQ3] record 000 ')<text.index('[WQ3] record 252 ')<text.index('[WQ3] ack-issued ')<text.index(END)
-    assert '[WQ3]' not in text.split(END,1)[1] and '[RTOS]' not in text.split(END,1)[1]
+    assert text.index(prefix+' request ')<text.index(prefix+' record 000 ')<text.index(prefix+' record 252 ')<text.index(prefix+' ack-issued ')<text.index(end)
+    assert prefix not in text.split(end,1)[1] and '[RTOS]' not in text.split(end,1)[1]
     assert words[:5]==[0x31305452,1,5,0,0] and (words[70]|words[86])==0
     assert words[66]==words[82]==2 and words[67]!=words[83]
     for n in [67,83]:assert 0x20000000<=words[n]<0x2000e000 and words[n]&7==0
-    W['validate_disabled_record'](words,magic=int.from_bytes(b'WDT3','little'),version=3,request=REQUEST)
+    W['validate_disabled_record'](words,magic=int.from_bytes(f'WDT{version}'.encode(),'little'),version=version,request=request)
     return words
 
 def decode_frame(events):

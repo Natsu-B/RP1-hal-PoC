@@ -1,9 +1,13 @@
-//! WDT3 instrumentation only: watchdog already disabled before host handoff.
-//! GPIO packet type1 is NOT counter-zero, expiry, reset or restart evidence.
-pub const ACK_MAGIC: u32 = u32::from_le_bytes(*b"QA03");
+//! Disabled watchdog handoff shared by WDT3 and opt-in WDT4 post-ACK logic.
+//! Default WDT3's32-bit type1 packet is not counter-zero/expiry/reset evidence.
+//! WDT4 uses the separate watchdog_postack monitor hook, not this packet emitter.
+pub const ACK_MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-postack") {
+    u32::from_le_bytes(*b"QA04")
+} else { u32::from_le_bytes(*b"QA03") };
 pub const FRAME: u32 = 0xa501_01ff; // magic A5, type1, sequence1, XOR-with-5A checksum
 pub const fn ack_words() -> [u32; 8] {
-    [ACK_MAGIC, 3, 1, 2, 0, 0, 0, 0x5744_5432 ^ 3 ^ 1 ^ 2]
+    let version = if cfg!(feature = "freertos-r3-watchdog-postack") { 4 } else { 3 };
+    [ACK_MAGIC, version, 1, 2, 0, 0, 0, 0x5744_5432 ^ version ^ 1 ^ 2]
 }
 pub fn valid_ack(words: [u32; 8]) -> bool { words == ack_words() }
 pub const fn high_ticks(bit: u32) -> u32 { if FRAME & (1 << bit) != 0 { 150 } else { 50 } }
@@ -68,6 +72,9 @@ mod tests {
     fn ack_and_packet_are_fixed_and_typed() {
         assert!(valid_ack(ack_words()));
         for i in 0..8 { let mut bad=ack_words();bad[i]^=1;assert!(!valid_ack(bad)); }
+        let other = if cfg!(feature = "freertos-r3-watchdog-postack") { 3 } else { 4 };
+        let other_magic = if other == 3 { *b"QA03" } else { *b"QA04" };
+        assert!(!valid_ack([u32::from_le_bytes(other_magic),other,1,2,0,0,0,0x5744_5432^other^1^2]));
         let bytes=FRAME.to_be_bytes();assert_eq!(bytes,[0xa5,1,1,0xff]);
         assert_eq!(bytes[3],bytes[0]^bytes[1]^bytes[2]^0x5a);
         let decoded=(0..32).rev().fold(0,|word,bit|(word<<1)|u32::from(high_ticks(bit)==150));
