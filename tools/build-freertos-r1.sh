@@ -5,6 +5,10 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 requested_feature=$feature
+if [[ "$feature" == freertos-r3-watchdog-refresh ]]; then
+    # Same cold probe family, distinct request/receipt and no post-ACK arm.
+    feature=freertos-r3-watchdog-arm-receipt
+fi
 # Reuse the WDT9 test/build family, but pass the actual opt-in feature to Cargo.
 if [[ "$feature" == freertos-r3-watchdog-kernel-restart-masked || "$feature" == freertos-r3-watchdog-warm-uart || "$feature" == freertos-r3-watchdog-warm-spi || "$feature" == freertos-r3-watchdog-warm-i2c || "$feature" == freertos-r3-watchdog-warm-combined || "$feature" == freertos-r3-watchdog-warm-persistent ]]; then
     feature=freertos-r3-watchdog-warm-guard
@@ -82,6 +86,9 @@ export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
 if [[ ( "$feature" == freertos-r3-watchdog-warm-guard || "$feature" == freertos-r3-watchdog-kernel-restart ) || "$feature" == freertos-r3-watchdog-expiry-entry || "$feature" == freertos-r3-reset-entry-selftest || "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
     cp "$repo/examples/minimal/src/freertos_watchdog.rs" "$out/freertos_watchdog.rs"
     model_flags=()
+    if [[ "$requested_feature" == freertos-r3-watchdog-refresh ]]; then
+        model_flags+=(--cfg 'feature="freertos-r3-watchdog-refresh"')
+    fi
     if [[ ( "$feature" == freertos-r3-watchdog-warm-guard || "$feature" == freertos-r3-watchdog-kernel-restart ) ]]; then
         model_flags+=(--cfg 'feature="freertos-r3-watchdog-expiry-entry"')
         cp "$repo/crates/rp1-rt/src/warm_data.rs" "$out/warm_data.rs"
@@ -167,6 +174,12 @@ arm-none-eabi-nm -n "$out/RP1.elf" > "$out/symbols.txt"
 arm-none-eabi-objdump -d "$out/RP1.elf" > "$out/disassembly.txt"
 arm-none-eabi-size "$out/RP1.elf"
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" > "$out/elf-validation.json"
+if [[ "$requested_feature" == freertos-r3-watchdog-refresh ]]; then
+    python3 -B "$repo/tools/test-watchdog-refresh.py" > "$out/refresh-validator-test.txt"
+    sha256sum "$out/RP1.elf" > "$out/output.sha256"
+    printf 'BD_foundation_build=PASS refresh_compiled_envelope_review=OPEN hardware_admission=REFUSED\n'
+    exit 3
+fi
 if [[ "$requested_feature" == freertos-r3-watchdog-warm-persistent ]]; then
     # New linked code cannot inherit AZ's exact image/opcode admission.
     python3 -B "$repo/tools/check-warm-persistent-elf.py" --self-test "$out/RP1.elf" > "$out/persistent-elf-validation.json"
