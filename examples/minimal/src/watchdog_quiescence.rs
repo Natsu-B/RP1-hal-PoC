@@ -2,7 +2,8 @@
 //! Default WDT3's32-bit type1 packet is not counter-zero/expiry/reset evidence.
 //! WDT4 uses the separate watchdog_postack monitor hook, not this packet emitter.
 pub const NONCE_LINKED: bool = cfg!(any(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-expiry-entry"));
-pub const ACK_MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-expiry-entry") {
+pub const ACK_MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-kernel-restart") { u32::from_le_bytes(*b"QA08") }
+else if cfg!(feature = "freertos-r3-watchdog-expiry-entry") {
     u32::from_le_bytes(*b"QA07")
 } else if cfg!(feature = "freertos-r3-reset-entry-selftest") {
     u32::from_le_bytes(*b"QA06")
@@ -13,7 +14,8 @@ pub const ACK_MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-expiry-entry"
 } else { u32::from_le_bytes(*b"QA03") };
 pub const FRAME: u32 = 0xa501_01ff; // magic A5, type1, sequence1, XOR-with-5A checksum
 pub const fn ack_words() -> [u32; 8] {
-    let version = if cfg!(feature = "freertos-r3-watchdog-expiry-entry") { 7 }
+    let version = if cfg!(feature = "freertos-r3-watchdog-kernel-restart") { 8 }
+        else if cfg!(feature = "freertos-r3-watchdog-expiry-entry") { 7 }
         else if cfg!(feature = "freertos-r3-reset-entry-selftest") { 6 }
         else if cfg!(feature = "freertos-r3-watchdog-late-disable") { 5 }
         else if cfg!(feature = "freertos-r3-watchdog-postack") { 4 } else { 3 };

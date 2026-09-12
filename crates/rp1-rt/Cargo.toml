@@ -8,6 +8,7 @@ build = "build.rs"
 default = []
 freertos = []
 freertos-reset-entry = ["freertos"]
+freertos-warm-data = ["freertos-reset-entry"]
 freertos-proc1-worker = ["freertos"]
 pcie-ep-init = []
 debug-stack-low = []

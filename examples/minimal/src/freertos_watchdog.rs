@@ -1,7 +1,8 @@
 //! WDT2 bounded receipt candidate. No expiry, feed policy, reset or POWER write.
 //! Normal R1 only; words96..175 are firmware-owned,176..183 host-owned.
 pub const NONCE_LINKED: bool = cfg!(any(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-expiry-entry"));
-pub const MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-expiry-entry") {
+pub const MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-kernel-restart") { u32::from_le_bytes(*b"WDT8") }
+else if cfg!(feature = "freertos-r3-watchdog-expiry-entry") {
     u32::from_le_bytes(*b"WDT7")
 } else if cfg!(feature = "freertos-r3-reset-entry-selftest") {
     u32::from_le_bytes(*b"WDT6")
@@ -12,12 +13,14 @@ pub const MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-expiry-entry") {
 } else if cfg!(feature = "freertos-r3-watchdog-quiescence") {
     u32::from_le_bytes(*b"WDT3")
 } else { u32::from_le_bytes(*b"WDT2") };
-pub const VERSION: u32 = if cfg!(feature = "freertos-r3-watchdog-expiry-entry") { 7 }
+pub const VERSION: u32 = if cfg!(feature = "freertos-r3-watchdog-kernel-restart") { 8 }
+    else if cfg!(feature = "freertos-r3-watchdog-expiry-entry") { 7 }
     else if cfg!(feature = "freertos-r3-reset-entry-selftest") { 6 }
     else if cfg!(feature = "freertos-r3-watchdog-late-disable") { 5 }
     else if cfg!(feature = "freertos-r3-watchdog-postack") { 4 }
     else if cfg!(feature = "freertos-r3-watchdog-quiescence") { 3 } else { 2 };
-pub const REQUEST: u32 = if cfg!(feature = "freertos-r3-watchdog-expiry-entry") {
+pub const REQUEST: u32 = if cfg!(feature = "freertos-r3-watchdog-kernel-restart") { u32::from_le_bytes(*b"WQ08") }
+else if cfg!(feature = "freertos-r3-watchdog-expiry-entry") {
     u32::from_le_bytes(*b"WQ07")
 } else if cfg!(feature = "freertos-r3-reset-entry-selftest") {
     u32::from_le_bytes(*b"WQ06")

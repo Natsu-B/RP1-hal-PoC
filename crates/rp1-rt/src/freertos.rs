@@ -9,11 +9,14 @@ unsafe extern "C" {
 
 #[cfg(feature = "freertos-reset-entry")]
 unsafe extern "C" {
-    // Capture touches only the reserved record and known read-only REASON.
+    // Capture touches the reserved record, REASON, and the checked known CTRL
+    // disable path in expiry experiments.
     // It must not depend on BSS, initialized data, locks or a running kernel.
     fn rp1_freertos_capture_reset_entry() -> u32;
     fn rp1_freertos_reset_entry_halt() -> !;
 }
+#[cfg(feature = "freertos-warm-data")]
+unsafe extern "C" { fn rp1_freertos_warm_start() -> !; }
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -41,6 +44,10 @@ pub unsafe extern "C" fn Reset() {
 unsafe extern "C" fn rp1_freertos_reset() -> ! {
     #[cfg(feature = "freertos-reset-entry")]
     let reentered = unsafe { rp1_freertos_capture_reset_entry() };
+    #[cfg(feature = "freertos-warm-data")]
+    if !unsafe { super::warm_data::prepare(reentered == 1) } {
+        loop { unsafe { core::arch::asm!("wfe", options(nomem, nostack)); } }
+    }
     unsafe {
         super::zero_bss();
         super::configure_vector_table();
@@ -48,8 +55,10 @@ unsafe extern "C" fn rp1_freertos_reset() -> ! {
         let ccr = 0xe000_ed14 as *mut u32;
         ccr.write_volatile(ccr.read_volatile() | (1 << 9));
     }
-    // A reset-entry observation is not a warm runtime/PCIe reinit contract.
-    // Report and stop before either optional PCIe init or application entry.
+    // Warm kernel mode bypasses PCIe/application initialization. The separate
+    // entry-only mode still reports and halts; neither is runtime PCIe reinit.
+    #[cfg(feature = "freertos-warm-data")]
+    if reentered == 1 { unsafe { rp1_freertos_warm_start() } }
     #[cfg(feature = "freertos-reset-entry")]
     if reentered == 1 { unsafe { rp1_freertos_reset_entry_halt() } }
     #[cfg(feature = "pcie-ep-init")]

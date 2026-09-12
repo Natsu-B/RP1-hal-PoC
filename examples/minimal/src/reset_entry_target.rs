@@ -6,7 +6,7 @@ use core::arch::asm;
 use rp1_hal::gpio::{ConfiguredPin, Output};
 
 const RECORD: *mut u32 = 0x2000_fa20 as *mut u32; // R1 words136..139, not panic/fault.
-unsafe fn record() -> [u32; 4] {
+pub(super) unsafe fn record() -> [u32; 4] {
     unsafe {
         [
             RECORD.read_volatile(),

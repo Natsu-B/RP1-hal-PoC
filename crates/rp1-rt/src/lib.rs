@@ -7,6 +7,9 @@ mod freertos;
 #[cfg(all(feature = "freertos", target_arch = "arm"))]
 use freertos::Reset;
 
+#[cfg(all(feature = "freertos-warm-data", target_arch = "arm"))]
+pub mod warm_data;
+
 #[cfg(all(
     any(feature = "debug-mailbox-init", feature = "debug-stub"),
     target_arch = "arm"

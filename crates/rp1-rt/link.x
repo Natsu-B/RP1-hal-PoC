@@ -19,7 +19,9 @@ SECTIONS
 
   .data : ALIGN(8)
   {
+    __data_start = .;
     *(.data .data.*);
+    __data_end = .;
   } > RP1_APP_SRAM
 
   .bss (NOLOAD) : ALIGN(8)
@@ -29,6 +31,8 @@ SECTIONS
     *(COMMON);
     __ebss = .;
   } > RP1_APP_SRAM
+
+  INCLUDE rp1-warm-data.x
 
   .inbound_dummy_page (NOLOAD) : ALIGN(4096)
   {

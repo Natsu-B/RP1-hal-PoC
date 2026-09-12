@@ -28,6 +28,9 @@ mod reset_entry;
 #[cfg(feature = "freertos-r3-watchdog-expiry-entry")]
 #[path = "watchdog_boot_entry.rs"]
 mod boot_entry;
+#[cfg(feature = "freertos-r3-watchdog-kernel-restart")]
+#[path = "watchdog_kernel_restart.rs"]
+mod kernel_restart;
 #[cfg(all(feature = "freertos-r3-watchdog-expiry-entry", feature = "freertos-r3-watchdog-late-disable"))]
 compile_error!("Expiry entry and late-disable control are separate experiments");
 #[cfg(all(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-postack"))]
@@ -144,6 +147,8 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
         put(19, ptr::addr_of!(DATA_SENTINEL).read_volatile());
         put(20, ptr::addr_of!(BSS_SENTINEL).read_volatile());
         assert_eq!(get(19), 0x1357_9bdf); assert_eq!(get(20), 0);
+        #[cfg(feature = "freertos-r3-watchdog-kernel-restart")]
+        ptr::addr_of_mut!(DATA_SENTINEL).write_volatile(0xdead_beef);
         ptr::addr_of_mut!(BSS_SENTINEL).write_volatile(0x2468_ace0);
         ptr::addr_of_mut!(MARKER).write(Some(marker));
         // PRIGROUP=0: all implemented priority bits used for preemption. No reset.
@@ -224,8 +229,14 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
         }
         #[cfg(feature = "freertos-r3-watchdog-arm-receipt")]
         {
-            let handle = Task::create(7, c"wd-receipt", watchdog::worker, ptr::null_mut(), 5, 512).unwrap();
-            ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
+            #[cfg(feature = "freertos-r3-watchdog-kernel-restart")]
+            let create_receipt = !kernel_restart::is_warm();
+            #[cfg(not(feature = "freertos-r3-watchdog-kernel-restart"))]
+            let create_receipt = true;
+            if create_receipt {
+                let handle = Task::create(7, c"wd-receipt", watchdog::worker, ptr::null_mut(), 5, 512).unwrap();
+                ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
+            }
         }
         os::start(hz).unwrap();
     }
@@ -357,6 +368,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         #[cfg(feature = "freertos-r1-critical-timing")]
         unsafe { critical_timing_publish(); }
         increment(14); put(27, raw_low()); put(2, 5);
+        #[cfg(feature = "freertos-r3-watchdog-kernel-restart")]
+        if unsafe { kernel_restart::emit_pending(&mut marker) } { continue; }
         #[cfg(feature = "freertos-r3-reset-entry-selftest")]
         if unsafe { reset_entry::reenter_pending(&mut marker) } { continue; }
         #[cfg(feature = "freertos-r3-watchdog-postack")]
