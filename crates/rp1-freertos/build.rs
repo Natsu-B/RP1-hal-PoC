@@ -136,33 +136,47 @@ fn main() {
         );
         objects.push(object);
     }
-    if env::var_os("CARGO_FEATURE_NEWLIB_MEMCPY").is_some() {
-        // Reuse the installed, pinned Cortex-M3 soft-ABI libc member only.
-        // No full libc, allocator, syscalls, or home-grown memcpy implementation.
+    for (feature, members) in [
+        ("memcpy", &[
+            ("memcpy", "0fdf219488b13b471c3b667e5450cba6e4982cbb672624159453a311a92cde73", "", "memcpy"),
+            ("aeabi_memcpy", "c60f15b208dbfd9ba3857c0b24abf198df018813001e820607a878b2749cc3be", "U memcpy", "__aeabi_memcpy __aeabi_memcpy4 __aeabi_memcpy8"),
+        ][..]),
+        ("memset", &[
+            ("memset", "e35e6e2ee6e2c57a8775b57520cbff6f2b8eb82eac11b18c277347c64399e07d", "", "memset"),
+            ("aeabi_memset", "76454e09c3d824631080c0d6e27a1904a77a799c0fd0d609168094932165d881", "U memset", "__aeabi_memset __aeabi_memset4 __aeabi_memset8"),
+            ("aeabi_memclr", "207ab5288298b9b329767a83dc5da3526d4db311c17dc39a5bcb9f52047c047c", "U __aeabi_memset", "__aeabi_memclr __aeabi_memclr4 __aeabi_memclr8"),
+        ][..]),
+    ] {
+        if env::var_os(format!("CARGO_FEATURE_NEWLIB_{}", feature.to_uppercase())).is_none() {
+            continue;
+        }
+        // Reuse installed, pinned Cortex-M3 soft-ABI libc members only.
+        // No full libc, allocator, syscalls, or home-grown memory implementation.
         let archive = output(Command::new(&cc).args([
             "-mcpu=cortex-m3", "-mthumb", "-mfloat-abi=soft", "-print-file-name=libc.a"]));
         assert!(Path::new(&archive).is_file(), "Cortex-M3 newlib archive missing");
         println!("cargo:rerun-if-changed={archive}");
         let mut provenance = format!("archive={archive}\n");
-        for (name, expected, dependencies) in [
-            ("memcpy", "0fdf219488b13b471c3b667e5450cba6e4982cbb672624159453a311a92cde73", ""),
-            ("aeabi_memcpy", "c60f15b208dbfd9ba3857c0b24abf198df018813001e820607a878b2749cc3be", "U memcpy"),
-        ] {
+        for &(name, expected, dependencies, definitions) in members {
             let member_name = format!("libc_a-{name}.o");
             let member = Command::new(&ar).args(["p", &archive, &member_name])
-                .output().expect("extract newlib memcpy member");
-            assert!(member.status.success(), "newlib memcpy extraction failed");
+                .output().expect("extract newlib memory member");
+            assert!(member.status.success(), "newlib {feature} extraction failed");
             let object = Path::new(&out).join(format!("newlib-{name}.o"));
             fs::write(&object, member.stdout).unwrap();
             let hash = output(Command::new("sha256sum").arg(&object));
             assert_eq!(hash.split_whitespace().next().unwrap(), expected,
-                "newlib memcpy change requires explicit source/ABI review");
+                "newlib {feature} change requires explicit source/ABI review");
             assert_eq!(output(Command::new("arm-none-eabi-nm").arg("-u").arg(&object)),
-                dependencies, "memcpy members must have no other runtime dependencies");
-            provenance.push_str(&format!("member={member_name}\n{hash}\n"));
+                dependencies, "{feature} members must have no other runtime dependencies");
+            let defined = output(Command::new("arm-none-eabi-nm")
+                .args(["--defined-only", "--extern-only", "--format=posix"]).arg(&object));
+            assert_eq!(defined.lines().map(|line| line.split_whitespace().next().unwrap())
+                .collect::<Vec<_>>().join(" "), definitions, "unexpected {feature} symbols");
+            provenance.push_str(&format!("member={member_name}\n{hash}\nundefined={dependencies}\ndefined={definitions}\n"));
             objects.push(object);
         }
-        fs::write(Path::new(&out).join("newlib-memcpy.txt"), provenance).unwrap();
+        fs::write(Path::new(&out).join(format!("newlib-{feature}.txt")), provenance).unwrap();
     }
     output(
         Command::new(ar)

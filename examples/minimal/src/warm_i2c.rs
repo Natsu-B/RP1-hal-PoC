@@ -83,7 +83,10 @@ mod target {
         save(2,ctrl); save(3,done);
         if !released(ctrl,done) { return Err(0x71); }
         // Non-clearing reads BEFORE constructor disable/mask/CLR_INTR writes.
-        let b = body(); for (i,v) in b.into_iter().enumerate() { save(4+i,v); }
+        let b = body();
+        // BC has no raw PREP mirror; the reads and initial_body gate remain.
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-persistent"))]
+        for (i,v) in b.into_iter().enumerate() { save(4+i,v); }
         if !initial_body(b) { return Err(0x72); }
         if !nvic_quiet() { return Err(0x73); }
         let pin = gpio.pin::<9>().into_input_pull_up();

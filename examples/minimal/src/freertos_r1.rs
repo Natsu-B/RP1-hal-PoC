@@ -117,13 +117,21 @@ unsafe fn task(slot: usize) -> Task {
     unsafe { ptr::addr_of!(TASKS).cast::<Option<Task>>().add(slot).read().unwrap() }
 }
 
+#[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+#[path="tick_calibration.rs"]
+mod tick_calibration;
+
 /// SysTick processor-clock calibration, interrupts disabled, five 10ms samples.
 /// No CLOCKS/PLL writes, no DWT or TENMS assumption. Raw timer is the established
 /// microsecond reference. Record spread; reject stuck/implausible/unstable counts.
 fn calibrate_cpu_hz() -> u32 {
     let mut min = u32::MAX;
     let mut max = 0;
+    #[cfg(not(feature="freertos-r3-watchdog-warm-persistent"))]
     let mut total = 0u64;
+    // Five individually admitted <=500MHz samples sum to <=2,500,000,000.
+    #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+    let mut total = 0u32;
     unsafe {
         let ctrl = 0xe000_e010 as *mut u32;
         let reload = 0xe000_e014 as *mut u32;
@@ -146,9 +154,16 @@ fn calibrate_cpu_hz() -> u32 {
             let dt = t1.wrapping_sub(t0);
             assert!((10_000..=11_000).contains(&dt));
             let cycles = c0.wrapping_sub(c1) & 0x00ff_ffff;
+            #[cfg(not(feature="freertos-r3-watchdog-warm-persistent"))]
             let hz = (u64::from(cycles) * 1_000_000 / u64::from(dt)) as u32;
+            #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+            let hz = tick_calibration::processor_hz(cycles, dt);
             assert!((1_000_000..=500_000_000).contains(&hz));
-            min = min.min(hz); max = max.max(hz); total += u64::from(hz);
+            min = min.min(hz); max = max.max(hz);
+            #[cfg(not(feature="freertos-r3-watchdog-warm-persistent"))]
+            { total += u64::from(hz); }
+            #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+            { total += hz; }
         }
         ctrl.write_volatile(0);
         value.write_volatile(0);
@@ -316,6 +331,8 @@ extern "C" fn rp1_freertos_switch_hook(id: u32) {
 #[unsafe(no_mangle)]
 extern "C" fn rp1_freertos_fault_hook(reason: u32, detail: u32) -> ! {
     unsafe { core::arch::asm!("cpsid i", options(nostack)); }
+    #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+    put(161,0);
     put(3, reason); put(4, detail);
     let (ipsr, control, psp, msp): (u32, u32, u32, u32);
     unsafe {
@@ -395,6 +412,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         unsafe { uart::lifecycle::monitor_wait(1000); }
         #[cfg(feature = "freertos-r1-periodic-200us")]
         put(168, raw_low()); // Monitor bookkeeping interval, includes preemption.
+        #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+        put(161,0); // Eligibility is republished only after this pass's R1 guards.
         let current = [get(64), get(80), get(49), get(50)];
         let checked = if cfg!(feature = "freertos-r2-mixed") { 3 } else { 4 };
         for i in 0..checked { assert_ne!(current[i], previous[i]); }
@@ -409,7 +428,11 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         #[cfg(any(feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart"))]
         unsafe { put(123, task(7).stack_high_water().unwrap()); }
         unsafe {
-            for slot in 0..7 { put(32+slot, task(slot).stack_high_water().unwrap()); }
+            for slot in 0..7 {
+                put(32+slot, task(slot).stack_high_water().unwrap());
+                #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+                assert!(get(32+slot)>=32);
+            }
             #[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
             if kernel_restart::is_warm() {
                 let free = task(7).stack_high_water().unwrap();

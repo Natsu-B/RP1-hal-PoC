@@ -4,6 +4,11 @@ This repository is the workspace for RP1 firmware HAL work. It contains the
 shared ABI definitions, a minimal runtime, a small HAL facade, entry-point
 macro support, build-time RP1 note generation, and a minimal firmware example.
 
+The proc0 FreeRTOS warm IRQ-owner build candidate is documented in
+[BC01 runtime](docs/rtos-warm-persistent.md). Its eight-generation commissioning
+feature is not yet a hardware-verified release; the older minimal introduction
+below does not describe that RTOS feature.
+
 ## `rp1-abi`
 
 `crates/rp1-abi` defines the initial fixed `.note.rp1` ABI shared by RP1

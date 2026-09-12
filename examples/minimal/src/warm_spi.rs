@@ -81,12 +81,12 @@ mod target {
     fn body() -> [u32; 6] {
         let b = rp1_hal::addr::SPI0_BASE;
         [read(b+0x5c), read(b), [0x08,0x10,0x2c,0x30,0x20,0x24,0x4c]
-            .into_iter().fold(0, |v,o| v | read(b+o)), read(b+0x28), read(b+0x34), read(b+0x108)]
+            .iter().copied().fold(0, |v,o| v | read(b+o)), read(b+0x28), read(b+0x34), read(b+0x108)]
     }
     fn miso() -> [u32; 4] { [read(0x400d_004c),read(0x400f_0028),read(0x400d_0048),read(0x400e_0004)] }
     fn wires_idle() -> bool { read(0x400e_0008) & ((1<<7)|(1<<8)|(1<<11)) == ((1<<7)|(1<<8)) }
     fn nvic_quiet() -> bool {
-        [0xe000_e100,0xe000_e200,0xe000_e300].into_iter().all(|a| read(a) & (1<<19) == 0)
+        [0xe000_e100,0xe000_e200,0xe000_e300].iter().copied().all(|a| read(a) & (1<<19) == 0)
     }
     fn priority() -> u32 { unsafe { (0xe000_e413 as *const u8).read_volatile().into() } }
     fn saved(index: usize, value: u32) {
@@ -112,17 +112,23 @@ mod target {
         saved(2,ctrl); saved(3,done);
         if !released(ctrl,done) { return Err(0x61); }
         let before = body();
+        // BC has no PREP mirror. Keep all reads/predicates, omit only the
+        // otherwise live no-op iterator calls left by the size-optimized build.
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-persistent"))]
         for (i,v) in before.into_iter().enumerate() { saved(4+i,v); }
         let pre = mask_tuple();
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-persistent"))]
         for (i,v) in pre.into_iter().enumerate() { saved(14+i,v); }
         if !pre_mask(pre) { return Err(0x66); }
         if !nvic_quiet() { return Err(0x6b); }
         rp1_hal::spi::spi0_mask_tx_empty_irq();
         unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
         let post = mask_tuple();
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-persistent"))]
         for (i,v) in post.into_iter().enumerate() { saved(19+i,v); }
         if !post_mask(post) { return Err(0x67); }
         let masked = body();
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-persistent"))]
         for (i,v) in masked.into_iter().enumerate() { saved(24+i,v); }
         if !quiet(masked) || !nvic_quiet() { return Err(0x6a); }
         // The same released-input / CS-high / SCLK-low prerequisite as cold R1.
@@ -139,6 +145,7 @@ mod target {
             .map_err(|_| 0x63u32)?;
         let pad = crate::spi0_miso_input_observation::apply_guarded_bias().map_err(|_| 0x64u32)?;
         let pins = miso();
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-persistent"))]
         for (i,v) in pins.into_iter().enumerate() { saved(10+i,v); }
         if !miso_safe(pins) || pad != pins[1] || pins[2] & (1<<17) == 0 || !wires_idle() { return Err(0x64); }
         let after = body();

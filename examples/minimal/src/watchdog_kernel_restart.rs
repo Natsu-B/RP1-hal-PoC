@@ -84,6 +84,8 @@ mod target {
         // touching its marker. No worker/ISR can resume after this diagnostic.
         unsafe {
             asm!("cpsid i", "dsb sy", "isb", options(nostack));
+            #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+            put(161,0);
             let out = 0x400e_0000 as *mut u32;
             out.write_volatile(out.read_volatile() & !(1 << 22));
             asm!("dsb sy", options(nostack));
@@ -93,12 +95,22 @@ mod target {
     #[cfg(any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
     #[inline(never)]
     pub fn i2c_monitor_ready() -> bool {
+        #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+        {
+            if !freertos_r1::warm_combined::healthy() {i2c_failure(0x79);}
+            let ready=freertos_r1::warm_combined::ready();
+            if !ready && get(14)>=80 {i2c_failure(0x78);}
+            return ready;
+        }
+        #[cfg(not(feature="freertos-r3-watchdog-warm-persistent"))]
+        {
         #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
         let owner_ready = freertos_r1::warm_combined::ready();
         #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
         let owner_ready = freertos_r1::warm_i2c::ready();
         match i2c_monitor_gate(get(14),owner_ready,unsafe { ptr::addr_of!(SENT).read() }) {
             Ok(ready) => ready, Err(code) => i2c_failure(code),
+        }
         }
     }
 
@@ -132,7 +144,7 @@ mod target {
         // No unknown peripheral reset, NVIC probing, or attempted ISR recovery.
         if unsafe { read(0xe000_e004) } & 0xf != 1 { reject(5); }
         for bank in 0..2 {
-            for (kind, base) in [0xe000_e100, 0xe000_e200, 0xe000_e300].into_iter().enumerate() {
+            for (kind, &base) in [0xe000_e100, 0xe000_e200, 0xe000_e300].iter().enumerate() {
                 let value = unsafe { read(base + bank * 4) };
                 #[cfg(feature = "freertos-r3-watchdog-kernel-restart-masked")]
                 if bank == 1 && kind == 1
@@ -222,8 +234,11 @@ mod target {
         // Normal runtime telemetry remains available locally; host does not
         // access RP1 after its ACK in this selected external-observer cohort.
         for (i,v) in [u32::from_le_bytes(*b"KRN8"),entry[1],entry[2],len,digest,
-            get(8),get(9),get(49),get(50)].into_iter().enumerate() { put(96+i,v); }
+            get(8),get(9),get(49),get(50)].iter().copied().enumerate() { put(96+i,v); }
         unsafe { ptr::addr_of_mut!(SENT).write(true); }
+        // Multi-second packet serialization is not a fresh health witness.
+        #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+        put(161,0);
         marker.set_low(); unsafe { os::delay(500).unwrap(); }
         for bit in (0..32).rev() {
             marker.set_high();
@@ -232,6 +247,8 @@ mod target {
         }
         marker.set_high(); unsafe { os::delay(400).unwrap(); }
         marker.set_low();
+        #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
+        freertos_r1::warm_combined::handback();
         true // Continue kernel/monitor checks, no new arm and no extra packet.
     }
 }

@@ -33,7 +33,7 @@ pub fn prepare() -> Result<(), u32> {
         read(0x4001_401c),read(0x4002_0000),read(0x4002_0004),
         read(0x4002_0008),read(0x4002_000c),read(0x4002_0010),
         read(0x4002_0014),read(0x4001_8054),read(0x4001_8058),read(0x4001_8060)];
-    for (i,value) in before.into_iter().enumerate() {
+    for (i,&value) in before.iter().enumerate() {
         unsafe { core::ptr::addr_of_mut!(SNAPSHOT).cast::<u32>().add(i).write_volatile(value); }
     }
     if !initial_resets(before[0],before[1],before[2],before[3]) {
@@ -54,7 +54,7 @@ pub fn prepare() -> Result<(), u32> {
         return Err(0x54);
     }
     // Remains a local receipt: no post-ACK host read or raw-register dump claim.
-    for (i,value) in [u32::from_le_bytes(*b"WUP1"),read(0x4001_8054),read(0x4002_0010)].into_iter().enumerate() {
+    for (i,&value) in [u32::from_le_bytes(*b"WUP1"),read(0x4001_8054),read(0x4002_0010)].iter().enumerate() {
         unsafe { core::ptr::addr_of_mut!(SNAPSHOT).cast::<u32>().add(13+i).write_volatile(value); }
     }
     Ok(())

@@ -29,6 +29,7 @@ freertos-r3-watchdog-warm-uart = ["freertos-r3-watchdog-kernel-restart-masked", 
 freertos-r3-watchdog-warm-spi = ["freertos-r3-watchdog-kernel-restart-masked", "uart0-functional-clock-before-reset-done", "spi0-reset-only", "rp1-rt/spi0-local-irq", "rp1-freertos/spi0-irq"]
 freertos-r3-watchdog-warm-i2c = ["freertos-r3-watchdog-kernel-restart-masked", "uart0-functional-clock-before-reset-done", "i2c1-reset-only", "rp1-rt/i2c1-local-irq", "rp1-freertos/i2c1-irq", "rp1-freertos/task-pool-2304"]
 freertos-r3-watchdog-warm-combined = ["freertos-r3-watchdog-kernel-restart-masked", "uart0-functional-clock-before-reset-done", "spi0-reset-only", "i2c1-reset-only", "rp1-rt/spi0-local-irq", "rp1-rt/i2c1-local-irq", "rp1-rt/uart0-rx-irq", "rp1-freertos/spi0-irq", "rp1-freertos/i2c1-irq", "rp1-freertos/uart0-irq", "rp1-freertos/task-pool-2304", "rp1-freertos/sync-pool-r1", "rp1-freertos/newlib-memcpy"]
+freertos-r3-watchdog-warm-persistent = ["freertos-r3-watchdog-warm-combined", "rp1-freertos/newlib-memset"]
 freertos-r1-critical-timing = ["freertos-r1", "rp1-freertos/critical-timing"]
 freertos-r1-fault = ["freertos-r1"]
 freertos-r1-panic = ["freertos-r1"]
