@@ -1,13 +1,18 @@
 //! WDT2 bounded receipt candidate. No expiry, feed policy, reset or POWER write.
 //! Normal R1 only; words96..175 are firmware-owned,176..183 host-owned.
-pub const MAGIC: u32 = u32::from_le_bytes(*b"WDT2");
-pub const REQUEST: u32 = u32::from_le_bytes(*b"WQ02");
+pub const MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-quiescence") {
+    u32::from_le_bytes(*b"WDT3")
+} else { u32::from_le_bytes(*b"WDT2") };
+pub const VERSION: u32 = if cfg!(feature = "freertos-r3-watchdog-quiescence") { 3 } else { 2 };
+pub const REQUEST: u32 = if cfg!(feature = "freertos-r3-watchdog-quiescence") {
+    u32::from_le_bytes(*b"WQ03")
+} else { u32::from_le_bytes(*b"WQ02") };
 pub const LOAD: u32 = 0x00ff_ffff;
 pub const WINDOW_US: u32 = 256;
 pub const SEED: u32 = 0x5744_5432;
 
 pub const fn request_words() -> [u32; 8] {
-    [REQUEST, 2, 1, 1, LOAD, WINDOW_US, 0, SEED ^ 2 ^ 1 ^ 1 ^ LOAD ^ WINDOW_US]
+    [REQUEST, VERSION, 1, 1, LOAD, WINDOW_US, 0, SEED ^ VERSION ^ 1 ^ 1 ^ LOAD ^ WINDOW_US]
 }
 pub fn valid_request(words: [u32; 8]) -> bool { words == request_words() }
 
@@ -77,7 +82,7 @@ mod target {
     }
 
     pub unsafe extern "C" fn worker(_: *mut c_void) {
-        put(97, 2); put(98, 0); put(99, 0);
+        put(97, VERSION); put(98, 0); put(99, 0);
         unsafe { os::delay(2000).unwrap(); }
         let progress = [get(64), get(80), get(49), get(50)];
         for (i, value) in progress.into_iter().enumerate() { put(128+i, value); }
@@ -112,6 +117,9 @@ mod target {
         unsafe { put(144, task(7).stack_high_water().unwrap()); }
         assert_eq!(get(70) | get(86), 0);
         put(98, 4); // terminal receipt immutable; no second request/arm/reload
+        #[cfg(feature = "freertos-r3-watchdog-quiescence")]
+        unsafe { crate::freertos_r1::watchdog_quiescence::wait_for_quiesce(); }
+        #[cfg(not(feature = "freertos-r3-watchdog-quiescence"))]
         loop { unsafe { os::delay(1000).unwrap(); } }
     }
 }

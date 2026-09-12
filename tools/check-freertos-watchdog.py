@@ -12,6 +12,24 @@ LOAD=0xffffff
 REQUEST=[int.from_bytes(b'WQ02','little'),2,1,1,LOAD,256,0,0x57445432^2^1^1^LOAD^256]
 MAGIC=int.from_bytes(b'WDT2','little')
 
+def validate_disabled_record(w,magic=MAGIC,version=2,request=REQUEST):
+    assert len(w)==256 and w[96:100]==[magic,version,4,0] and w[100]==1 and w[103]==1
+    assert w[176:184]==request and not any(w[184:256])
+    v=w[104:116]
+    assert v[0:3]==[0,3,50]
+    assert v[3]&0xff000000==v[4]&0xff000000==0x40000000
+    assert (v[3]&LOAD)>(v[4]&LOAD)>LOAD-65536
+    assert v[5]&0xff000000==0
+    assert 256<=v[6]<=1000 and 0<v[7]<=100000
+    assert v[8:12]==[2,2,0,0]
+    assert 0<w[101] and v[6]<=((w[102]-w[101])&0xffffffff)<10000
+    assert not any(w[116:128]+w[136:140]+w[145:176])
+    for before,after in zip(w[128:132],w[132:136]):
+        assert before>0 and 0<((after-before)&0xffffffff)<0x80000000
+    for before,after in [(w[140],w[141]),(w[142],w[143])]:
+        assert 0<((after-before)&0xffffffff)<0x80000000
+    assert 0<w[144]<512
+
 def validate(text):
     footer=R1['WATCHDOG_FOOTER']
     result=R1['validate'](text,footer=footer)
@@ -22,22 +40,7 @@ def validate(text):
     assert all(w[99]==0 and w[98]!=0xffffffff for w in samples)
     terminal=None
     for w in samples[8:]:
-        assert w[96:100]==[MAGIC,2,4,0] and w[100]==1 and w[103]==1
-        assert w[176:184]==REQUEST and not any(w[184:256])
-        v=w[104:116]
-        assert v[0:3]==[0,3,50]
-        assert v[3]&0xff000000==v[4]&0xff000000==0x40000000
-        assert (v[3]&LOAD)>(v[4]&LOAD)>LOAD-65536
-        assert v[5]&0xff000000==0
-        assert 256<=v[6]<=1000 and 0<v[7]<=100000
-        assert v[8:12]==[2,2,0,0]
-        assert 0<w[101] and v[6]<=((w[102]-w[101])&0xffffffff)<10000
-        assert not any(w[116:128]+w[136:140]+w[145:176])
-        for before,after in zip(w[128:132],w[132:136]):
-            assert before>0 and 0<((after-before)&0xffffffff)<0x80000000
-        for before,after in [(w[140],w[141]),(w[142],w[143])]:
-            assert 0<((after-before)&0xffffffff)<0x80000000
-        assert 0<w[144]<512
+        validate_disabled_record(w)
         if terminal is None: terminal=w[96:184]
         assert terminal==w[96:184], 'terminal receipt changed/rearmed'
     final=samples[-1]

@@ -12,6 +12,10 @@ compile_error!("WDT2 owns task8/words96..183; normal R1 only, no proc1/fault/IO 
 #[path = "freertos_watchdog.rs"]
 pub mod watchdog;
 
+#[cfg(feature = "freertos-r3-watchdog-quiescence")]
+#[path = "watchdog_quiescence.rs"]
+mod watchdog_quiescence;
+
 #[cfg(all(feature = "freertos-r3-proc1-worker", any(feature = "freertos-r1-critical-timing", feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")))]
 compile_error!("Initial proc1 worker owns task8/words96..172; normal R1 only");
 #[cfg(feature = "freertos-r3-proc1-worker")]
@@ -336,6 +340,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         #[cfg(feature = "freertos-r1-critical-timing")]
         unsafe { critical_timing_publish(); }
         increment(14); put(27, raw_low()); put(2, 5);
+        #[cfg(feature = "freertos-r3-watchdog-quiescence")]
+        if unsafe { watchdog_quiescence::emit_pending(&mut marker) } { continue; }
         #[cfg(not(feature = "freertos-r2-i2c-peer"))]
         marker.toggle();
         #[cfg(feature = "freertos-r2-mixed-repeat")]
