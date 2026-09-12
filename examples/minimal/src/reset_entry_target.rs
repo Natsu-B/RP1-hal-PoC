@@ -85,8 +85,14 @@ fn halt() -> ! {
 /// setup only: no HAL singleton, .data/.bss, RTOS, reset or clock writer.
 #[cfg(feature = "freertos-r3-watchdog-warm-guard")]
 pub(super) unsafe fn diagnostic_halt(code: u32) -> ! {
+    unsafe { asm!("cpsid i", options(nomem, nostack)); diagnostic_halt_with_entry(code, record()) }
+}
+
+/// Fresh warm runtime uses its saved epoch: run() has cleared the early record.
+/// The early caller above still needs no initialized data/BSS/kernel state.
+#[cfg(feature = "freertos-r3-watchdog-warm-guard")]
+pub(super) unsafe fn diagnostic_halt_with_entry(code: u32, entry: [u32; 4]) -> ! {
     unsafe { asm!("cpsid i", options(nomem, nostack)); }
-    let entry = unsafe { record() };
     if !model::valid_entry(entry) { halt(); }
     let Some(word) = super::kernel_restart::diagnostic_packet(entry[1], code) else { halt(); };
     unsafe fn level(high: bool) {

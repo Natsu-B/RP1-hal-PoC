@@ -130,6 +130,7 @@ pub const BIAS_MAGIC: u32 = u32::from_le_bytes(*b"S0B1");
 
 #[cfg(any(
     feature = "spi0-miso-guarded-input-bias",
+    feature = "freertos-r3-watchdog-warm-spi",
     feature = "spi0-timed-peer-zero-irq-proof",
     feature = "spi0-low-high-irq-rearm-proof",
     feature = "spi0-retained-rx-ser-proof",
@@ -143,6 +144,7 @@ fn input_route_disabled(regs: [u32; REG_COUNT]) -> bool {
 
 #[cfg(any(
     feature = "spi0-miso-guarded-input-bias",
+    feature = "freertos-r3-watchdog-warm-spi",
     feature = "spi0-timed-peer-zero-irq-proof",
     feature = "spi0-low-high-irq-rearm-proof",
     feature = "spi0-retained-rx-ser-proof",
@@ -163,6 +165,7 @@ fn guarded_pad(regs: [u32; REG_COUNT]) -> Option<u32> {
     target_arch = "arm",
     any(
         feature = "spi0-miso-guarded-input-bias",
+        feature = "freertos-r3-watchdog-warm-spi",
         feature = "spi0-timed-peer-zero-irq-proof",
         feature = "spi0-low-high-irq-rearm-proof",
         feature = "spi0-retained-rx-ser-proof",

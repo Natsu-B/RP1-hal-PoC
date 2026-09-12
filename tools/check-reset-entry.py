@@ -22,7 +22,7 @@ def markers(events):
     return marker,starts[0]
 
 def decode(events, nonce, expected_reason, *, expected_type=0xb):
-    assert expected_type in (0xb,0xc,0xd,0xe),'unsupported entry type'
+    assert expected_type in (0xb,0xc,0xd,0xe,0xf),'unsupported entry type'
     marker,start=markers(events)
     assert len(marker)-start==66,'truncated/duplicate/extra suffix'
     pairs=[marker[start+2*i:start+2*i+2] for i in range(33)]

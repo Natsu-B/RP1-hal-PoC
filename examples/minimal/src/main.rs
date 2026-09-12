@@ -137,6 +137,7 @@ mod spi0_caller_deadline_abort_proof;
 
 #[cfg(any(
     feature = "spi0-miso-input-observation",
+    feature = "freertos-r3-watchdog-warm-spi",
     feature = "spi0-miso-configured-hold",
     feature = "spi0-miso-guarded-input-bias",
     feature = "spi0-timed-peer-zero-irq-proof",
@@ -10522,7 +10523,7 @@ fn main(mut p: Peripherals) -> ! {
     #[cfg(feature = "rp1-clock-independence-proof")]
     clock_independence::initialize();
 
-    #[cfg(all(feature = "pll-sys-core-lock-only", not(feature = "freertos-r3-watchdog-warm-uart")))]
+    #[cfg(all(feature = "pll-sys-core-lock-only", not(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi"))))]
     match release_pll_sys_reset_bit29() {
         Ok(()) => pulse_width(&mut gpio22, 72),
         Err(_) => {

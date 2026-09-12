@@ -8,12 +8,22 @@ use super::reset_identity as identity;
 
 fn packet(nonce: u32, reason: u32) -> Option<u32> {
     if !matches!(reason, 1 | 3) { return None; }
-    // Reuse the checked nonce/reason layout; B -> C also updates XOR nibble.
+    // Reuse the checked nonce/reason layout; B -> C/D/F updates XOR nibble too.
     identity::encode_entry(nonce, reason).map(|word| word ^ packet_xor())
 }
 
 const fn packet_xor() -> u32 {
-    if cfg!(feature = "freertos-r3-watchdog-warm-uart") {0x6000_0006} else {0x7000_0007}
+    if cfg!(feature = "freertos-r3-watchdog-warm-spi") {0x4000_0004}
+    else if cfg!(feature = "freertos-r3-watchdog-warm-uart") {0x6000_0006} else {0x7000_0007}
+}
+
+// Peer timing supplies stimuli only. F still requires the real owner proof;
+// bounded deferral keeps all normal R1 checks running while the owner blocks.
+#[cfg(any(test, feature = "freertos-r3-watchdog-warm-spi"))]
+fn spi_monitor_gate(passes: u32, owner_ready: bool, sent: bool) -> Result<bool, u32> {
+    if sent && !owner_ready { return Err(0x69); }
+    if !owner_ready && passes >= 35 { return Err(0x68); }
+    Ok(!sent && passes >= 5 && owner_ready)
 }
 
 // Five actual monitor passes, >=5k ticks/switches, both non-yielding spinners,
@@ -25,9 +35,12 @@ fn ready(v: [u32; 10]) -> bool {
 
 // E's byte is a failed guard, NOT watchdog REASON and never a success packet.
 pub(crate) fn diagnostic_packet(nonce: u32, code: u32) -> Option<u32> {
-    let uart_code = cfg!(feature = "freertos-r3-watchdog-warm-uart")
-        && (matches!(code, 0x40..=0x4f) && code != 0x45 || matches!(code, 0x50..=0x55));
-    if !uart_code && !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
+    let uart_code = cfg!(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi"))
+        && (matches!(code, 0x40..=0x4f) && code != 0x45 || matches!(code, 0x50..=0x54))
+        || cfg!(feature = "freertos-r3-watchdog-warm-uart") && code == 0x55;
+    let spi_code = cfg!(feature = "freertos-r3-watchdog-warm-spi")
+        && matches!(code, 0x60..=0x65 | 0x68..=0x69);
+    if !uart_code && !spi_code && !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
         return None;
     }
     identity::encode_entry(nonce, code).map(|word| word ^ 0x5000_0005)
@@ -119,6 +132,8 @@ mod target {
                 if let Err(code) = crate::freertos_r1::warm_uart_prepare::prepare() { reject(code); }
                 crate::freertos_r1::warm_uart::set_host(p.uart0.init_tx_rx_115200_clock_ready());
             }
+            #[cfg(feature = "freertos-r3-watchdog-warm-spi")]
+            if let Err(code) = crate::freertos_r1::warm_spi::prepare(p.spi0, &mut p.gpio) { reject(code); }
             freertos_r1::run(marker); // New queues/TCBs/PSP stacks and official SVC.
         }
     }
@@ -132,7 +147,16 @@ mod target {
             assert_eq!(read(0xe000_e304) & 0x0020_0000, 0);
         }
         // Always own GPIO on the warm epoch, including before/after the packet.
-        if unsafe { ptr::addr_of!(SENT).read() } || get(14) < 5 { return true; }
+        let sent = unsafe { ptr::addr_of!(SENT).read() };
+        #[cfg(feature = "freertos-r3-watchdog-warm-spi")]
+        match spi_monitor_gate(get(14), crate::freertos_r1::warm_spi::ready(), sent) {
+            Ok(false) => return true,
+            Err(code) => unsafe {
+                reset_entry::diagnostic_halt_with_entry(code, ptr::addr_of!(EPOCH).read())
+            },
+            Ok(true) => {},
+        }
+        if sent || get(14) < 5 { return true; }
         assert!(ready([get(14),get(8),get(9),get(64),get(80),get(49),get(50),
             get(3)|get(4),get(70),get(86)]));
         assert_eq!((get(19),get(20),get(39)),(0x1357_9bdf,0,1));
@@ -181,8 +205,10 @@ mod tests {
         for nonce in [1,0x8001,0xffff] {
             for code in 0..=255 {
                 let allowed = matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34)
-                    || cfg!(feature = "freertos-r3-watchdog-warm-uart")
-                        && (matches!(code, 0x40..=0x4f) && code!=0x45 || matches!(code, 0x50..=0x55));
+                    || cfg!(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi"))
+                        && (matches!(code, 0x40..=0x4f) && code!=0x45 || matches!(code, 0x50..=0x54))
+                    || cfg!(feature = "freertos-r3-watchdog-warm-uart") && code == 0x55
+                    || cfg!(feature = "freertos-r3-watchdog-warm-spi") && matches!(code, 0x60..=0x65 | 0x68..=0x69);
                 assert_eq!(diagnostic_packet(nonce,code).is_some(), allowed);
                 if let Some(p)=diagnostic_packet(nonce,code) {
                     assert_eq!(p>>28,0xe);
@@ -209,5 +235,17 @@ mod tests {
             }
         }
         assert!(!masked_pending_ok(u32::MAX,0));
+    }
+
+    #[test]
+    fn spi_wait_is_bounded_and_success_requires_five_passes_and_owner() {
+        for passes in 0..=36 {
+            assert_eq!(spi_monitor_gate(passes, true, false), Ok(passes >= 5));
+            assert_eq!(spi_monitor_gate(passes, false, false), if passes < 35 {Ok(false)} else {Err(0x68)});
+            assert_eq!(spi_monitor_gate(passes, true, true), Ok(false));
+            assert_eq!(spi_monitor_gate(passes, false, true), Err(0x69));
+        }
+        #[cfg(feature = "freertos-r3-watchdog-warm-spi")]
+        assert_eq!(packet(1,1).unwrap() >> 28, 0xf);
     }
 }
