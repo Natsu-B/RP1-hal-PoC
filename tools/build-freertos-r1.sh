@@ -103,4 +103,7 @@ if [[ "$feature" == freertos-r3-reset-entry-selftest || "$feature" == freertos-r
     python3 -B "$repo/tools/check-freertos-watchdog-elf.py" --self-test "$out/RP1.elf" > "$out/watchdog-elf-validation.json"
 fi
 sha256sum "$out/RP1.elf" > "$out/output.sha256"
+if [[ "$feature" == freertos-r3-reset-entry-selftest ]]; then
+    python3 -B "$repo/tools/check-reset-entry-elf.py" --self-test "$out/RP1.elf" > "$out/reset-entry-elf-validation.json"
+fi
 date --iso-8601=seconds

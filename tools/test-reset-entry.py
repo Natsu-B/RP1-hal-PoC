@@ -41,4 +41,24 @@ for index in [139,176,182,183,184]:
 protocol,before,after=T['inputs'](events)
 for args in [(protocol,before,after.replace('overflow=0','overflow=1')),
              (protocol,before,after.replace(f'count={len(events)}','count=1'))]:reject(args=args)
+# Instrumentation errors must not become a valid nonce/entry claim.
+from copy import deepcopy
+for index,field,value in [(10,'timestamp_us',events[9]['timestamp_us']+100000),
+                           (11,'timestamp_us',events[10]['timestamp_us']+100000),
+                           (10,'level',1),(10,'edge','rising'),
+                           (10,'timestamp_us',events[9]['timestamp_us']),
+                           (len(events)-1,'timestamp_us',events[-2]['timestamp_us']+100000)]:
+    bad=deepcopy(events);bad[index][field]=value;reject(ev=bad)
+# Earlier complete wrong frame is never skipped to select a later good frame.
+reject(ev=T['trace']([packet(n=1),packet()],bits=32))
+for n in [1,0xffff]:
+    assert M['decode'](T['trace']([packet(n=n)],bits=32),n,2)['nonce']==n
+# The known boot transient is ZERO-width, not an entry's leading ONE.
+noise=[dict(seq=0,timestamp_us=0,source='gpio25',level=0,edge='falling'),
+       dict(seq=1,timestamp_us=600000,source='gpio25',level=1,edge='rising'),
+       dict(seq=2,timestamp_us=639203,source='gpio25',level=0,edge='falling')]
+shifted=[dict(e,seq=e['seq']+3,timestamp_us=e['timestamp_us']+1000000) for e in events[1:]]
+noise+=shifted
+for i,e in enumerate(noise):e['seq']=i
+assert run(ev=noise)['frame']['nonce']==nonce
 print(f'PASS: software-entry synthetic positive / {negative} refusals; NOT HW/reset/runtime restart')
