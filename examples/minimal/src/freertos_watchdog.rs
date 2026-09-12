@@ -1,13 +1,18 @@
 //! WDT2 bounded receipt candidate. No expiry, feed policy, reset or POWER write.
 //! Normal R1 only; words96..175 are firmware-owned,176..183 host-owned.
-pub const MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-postack") {
+pub const MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-late-disable") {
+    u32::from_le_bytes(*b"WDT5")
+} else if cfg!(feature = "freertos-r3-watchdog-postack") {
     u32::from_le_bytes(*b"WDT4")
 } else if cfg!(feature = "freertos-r3-watchdog-quiescence") {
     u32::from_le_bytes(*b"WDT3")
 } else { u32::from_le_bytes(*b"WDT2") };
-pub const VERSION: u32 = if cfg!(feature = "freertos-r3-watchdog-postack") { 4 }
+pub const VERSION: u32 = if cfg!(feature = "freertos-r3-watchdog-late-disable") { 5 }
+    else if cfg!(feature = "freertos-r3-watchdog-postack") { 4 }
     else if cfg!(feature = "freertos-r3-watchdog-quiescence") { 3 } else { 2 };
-pub const REQUEST: u32 = if cfg!(feature = "freertos-r3-watchdog-postack") {
+pub const REQUEST: u32 = if cfg!(feature = "freertos-r3-watchdog-late-disable") {
+    u32::from_le_bytes(*b"WQ05")
+} else if cfg!(feature = "freertos-r3-watchdog-postack") {
     u32::from_le_bytes(*b"WQ04")
 } else if cfg!(feature = "freertos-r3-watchdog-quiescence") {
     u32::from_le_bytes(*b"WQ03")

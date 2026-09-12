@@ -1,5 +1,8 @@
 # WDT4 post-ACK countdown — hardware qualification pending
 
+The distinct [WDT5 late-disable control](WATCHDOG_LATE_DISABLE.md) stops while
+the count is still nonzero; its A618 event must never be interpreted as ZERO.
+
 Opt-in `freertos-r3-watchdog-postack` inherits the selected R1-only WDT3
 256us enable/countdown/disable prerequisite. It does not include the integrated
 R2 peripheral workload. WDT3 behavior and its 32-bit packet remain unchanged.

@@ -14,7 +14,7 @@ END='[WQ3] observer-quiesced no-more-rp1-access=1'
 FRAME=0xa50101ff
 
 def validate_uart(text, *, version=3):
-    assert version in (3,4)
+    assert version in (3,4,5)
     prefix=f'[WQ{version}]'
     end=prefix+' observer-quiesced no-more-rp1-access=1'
     request=[int.from_bytes(f'WQ0{version}'.encode(),'little'),version,1,1,0xffffff,256,0,0x57445432^version^1^1^0xffffff^256]

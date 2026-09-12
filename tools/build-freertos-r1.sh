@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-freertos-r1.sh /new/output/directory' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
-case "$feature" in freertos-r3-watchdog-postack|freertos-r3-watchdog-quiescence|freertos-r3-watchdog-arm-receipt|freertos-r3-proc1-worker|freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat|freertos-r2-mixed-i2c-pair|freertos-r2-mixed-i2c-stream) ;; *) exit 2 ;; esac
+case "$feature" in freertos-r3-watchdog-late-disable|freertos-r3-watchdog-postack|freertos-r3-watchdog-quiescence|freertos-r3-watchdog-arm-receipt|freertos-r3-proc1-worker|freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat|freertos-r2-mixed-i2c-pair|freertos-r2-mixed-i2c-stream) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
@@ -43,22 +43,25 @@ if [[ "$feature" == freertos-r3-proc1-worker ]]; then
     "$out/proc1-test" > "$out/proc1-host-test.txt"
 fi
 export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
-if [[ "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack ]]; then
+if [[ "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
     cp "$repo/examples/minimal/src/freertos_watchdog.rs" "$out/freertos_watchdog.rs"
     model_flags=()
-    if [[ "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack ]]; then
+    if [[ "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
         model_flags=(--cfg 'feature="freertos-r3-watchdog-quiescence"')
         cp "$repo/examples/minimal/src/watchdog_quiescence.rs" "$out/watchdog_quiescence.rs"
         rustc +stable --edition=2024 -C strip=debuginfo --test "$out/watchdog_quiescence.rs" -o "$out/quiescence-test"
         "$out/quiescence-test" > "$out/quiescence-host-test.txt"
         python3 -B "$repo/tools/test-watchdog-quiescence.py" > "$out/quiescence-validator-test.txt"
     fi
-    if [[ "$feature" == freertos-r3-watchdog-postack ]]; then
+    if [[ "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
         model_flags+=(--cfg 'feature="freertos-r3-watchdog-postack"')
-        rustc +stable --edition=2024 -C strip=debuginfo --cfg 'feature="freertos-r3-watchdog-postack"' --test "$out/watchdog_quiescence.rs" -o "$out/postack-ack-test"
+        if [[ "$feature" == freertos-r3-watchdog-late-disable ]]; then
+            model_flags+=(--cfg 'feature="freertos-r3-watchdog-late-disable"')
+        fi
+        rustc +stable --edition=2024 -C strip=debuginfo "${model_flags[@]}" --test "$out/watchdog_quiescence.rs" -o "$out/postack-ack-test"
         "$out/postack-ack-test" > "$out/postack-ack-host-test.txt"
         cp "$repo/examples/minimal/src/watchdog_postack.rs" "$out/watchdog_postack.rs"
-        rustc +stable --edition=2024 -C strip=debuginfo --test "$out/watchdog_postack.rs" -o "$out/postack-test"
+        rustc +stable --edition=2024 -C strip=debuginfo "${model_flags[@]}" --test "$out/watchdog_postack.rs" -o "$out/postack-test"
         "$out/postack-test" > "$out/postack-host-test.txt"
         python3 -B "$repo/tools/test-watchdog-postack.py" > "$out/postack-validator-test.txt"
     fi
@@ -88,7 +91,7 @@ arm-none-eabi-nm -n "$out/RP1.elf" > "$out/symbols.txt"
 arm-none-eabi-objdump -d "$out/RP1.elf" > "$out/disassembly.txt"
 arm-none-eabi-size "$out/RP1.elf"
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" > "$out/elf-validation.json"
-if [[ "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack ]]; then
+if [[ "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
     python3 -B "$repo/tools/test-freertos-watchdog.py" > "$out/watchdog-validator-test.txt"
     python3 -B "$repo/tools/check-freertos-watchdog-elf.py" --self-test "$out/RP1.elf" > "$out/watchdog-elf-validation.json"
 fi

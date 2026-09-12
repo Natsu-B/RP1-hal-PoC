@@ -28,7 +28,7 @@ def uart(words):
     return '\n'.join(lines)+'\n'
 
 
-def trace(words=(0xa21c,0xa31d), bits=16):
+def trace(words=(0xa21c,0xa31d), bits=16, interval=16777215):
     events = []
     def edge(t, level):
         events.append(dict(seq=len(events),timestamp_us=t,source='gpio25',level=level,
@@ -39,7 +39,7 @@ def trace(words=(0xa21c,0xa31d), bits=16):
     t = events[-1]['timestamp_us']+500000
     first = t
     for index, word in enumerate(words):
-        if index: t = max(t+500000, first+index*16777215)
+        if index: t = max(t+500000, first+index*interval)
         for b in range(bits-1,-1,-1):
             edge(t,1); t += 150000 if word & (1<<b) else 50000
             edge(t,0); t += 50000
@@ -114,4 +114,29 @@ for args in [(protocol.replace('\nOK\n',''),before,after),
              (protocol,before,after.replace('overflow=0','overflow=1')),
              (protocol,before,after.replace(f'count={len(events)}','count=999')),
              (protocol,before,after.replace(f'edges={len(events)}','edges=999'))]: reject(args=args)
-print(f'PASS: synthetic WDT4 1 selected positive / 3 explicit inconclusive / {negative} refusals; NOT HW')
+# Synthetic reproduction of the guarded boot ZERO before the real magic ONE.
+noisy = [e.copy() for e in events[:9]]
+t = noisy[-1]['timestamp_us']+500000
+noisy += [dict(seq=0,timestamp_us=t,source='gpio25',level=1,edge='rising'),
+          dict(seq=0,timestamp_us=t+39203,source='gpio25',level=0,edge='falling')]
+noisy += [dict(e,timestamp_us=e['timestamp_us']+1000000) for e in events[9:]]
+for seq,e in enumerate(noisy): e['seq'] = seq
+assert validate(ev=noisy)['result'].endswith('_PASS')
+assert validate(ev=noisy[:45])['result'] == 'INCONCLUSIVE_ARMED_ONLY'
+
+request5 = [int.from_bytes(b'WQ05','little'),5,1,1,0xffffff,256,0,0x57445432^5^1^1^0xffffff^256]
+ack5 = [int.from_bytes(b'QA05','little'),5,1,2,0,0,0,0x57445432^5^1^2]
+w5 = w.copy(); w5[96] = int.from_bytes(b'WDT5','little'); w5[97] = 5; w5[176:184] = request5
+u5 = uart(w5).replace('[WQ4]','[WQ5]')
+for old,new in [(REQUEST,request5),(ACK,ack5)]:
+    u5 = u5.replace(' '.join(f'{x:08x}' for x in old),' '.join(f'{x:08x}' for x in new))
+control = trace([0xa21c,0xa618],interval=15000000)
+assert M['validate'](u5,*inputs(control),version=5)['result'] == 'RP1_WATCHDOG_POSTACK_LATE_COUNT_DISABLED_SELECTED_PASS'
+for text,ev in [(good,control),(u5,events),(u5,trace([0xa21c,0xa618],interval=14999999)),
+                (u5,trace([0xa21c,0xa618],interval=15200000)),(u5,trace([0xa618])),
+                (u5,trace([0xa21c,0xa618,0xa618],interval=15000000))]:
+    try: M['validate'](text,*inputs(ev),version=5)
+    except (AssertionError,ValueError): negative += 1
+    else: raise AssertionError('bad WDT5 control accepted')
+reject(ev=control) # WDT4 may not accept WDT5's terminal type.
+print(f'PASS: synthetic WDT4/WDT5 3 selected positives / 4 explicit inconclusive / {negative} refusals; NOT HW')
