@@ -7,6 +7,14 @@ unsafe extern "C" {
     pub fn rp1_freertos_fault_hook(reason: u32, detail: u32) -> !;
 }
 
+#[cfg(feature = "freertos-reset-entry")]
+unsafe extern "C" {
+    // Capture touches only the reserved record and known read-only REASON.
+    // It must not depend on BSS, initialized data, locks or a running kernel.
+    fn rp1_freertos_capture_reset_entry() -> u32;
+    fn rp1_freertos_reset_entry_halt() -> !;
+}
+
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Reset() {
@@ -31,6 +39,8 @@ pub unsafe extern "C" fn Reset() {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn rp1_freertos_reset() -> ! {
+    #[cfg(feature = "freertos-reset-entry")]
+    let reentered = unsafe { rp1_freertos_capture_reset_entry() };
     unsafe {
         super::zero_bss();
         super::configure_vector_table();
@@ -38,6 +48,10 @@ unsafe extern "C" fn rp1_freertos_reset() -> ! {
         let ccr = 0xe000_ed14 as *mut u32;
         ccr.write_volatile(ccr.read_volatile() | (1 << 9));
     }
+    // A reset-entry observation is not a warm runtime/PCIe reinit contract.
+    // Report and stop before either optional PCIe init or application entry.
+    #[cfg(feature = "freertos-reset-entry")]
+    if reentered == 1 { unsafe { rp1_freertos_reset_entry_halt() } }
     #[cfg(feature = "pcie-ep-init")]
     super::pcie_ep_init::init();
     // The example completes the already established PCIe boundary before start.

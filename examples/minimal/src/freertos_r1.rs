@@ -19,6 +19,15 @@ mod watchdog_quiescence;
 #[path = "watchdog_postack.rs"]
 mod watchdog_postack;
 
+#[cfg(feature = "freertos-r3-reset-entry-selftest")]
+#[path = "watchdog_reset_identity.rs"]
+mod reset_identity;
+#[cfg(feature = "freertos-r3-reset-entry-selftest")]
+#[path = "reset_entry_target.rs"]
+mod reset_entry;
+#[cfg(all(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-postack"))]
+compile_error!("Reset-entry selftest performs no long watchdog arm; select it separately");
+
 #[cfg(all(feature = "freertos-r3-proc1-worker", any(feature = "freertos-r1-critical-timing", feature = "freertos-r1-timer-irq", feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")))]
 compile_error!("Initial proc1 worker owns task8/words96..172; normal R1 only");
 #[cfg(feature = "freertos-r3-proc1-worker")]
@@ -343,9 +352,11 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         #[cfg(feature = "freertos-r1-critical-timing")]
         unsafe { critical_timing_publish(); }
         increment(14); put(27, raw_low()); put(2, 5);
+        #[cfg(feature = "freertos-r3-reset-entry-selftest")]
+        if unsafe { reset_entry::reenter_pending(&mut marker) } { continue; }
         #[cfg(feature = "freertos-r3-watchdog-postack")]
         if unsafe { watchdog_postack::emit_pending(&mut marker) } { continue; }
-        #[cfg(all(feature = "freertos-r3-watchdog-quiescence", not(feature = "freertos-r3-watchdog-postack")))]
+        #[cfg(all(feature = "freertos-r3-watchdog-quiescence", not(any(feature = "freertos-r3-watchdog-postack", feature = "freertos-r3-reset-entry-selftest"))))]
         if unsafe { watchdog_quiescence::emit_pending(&mut marker) } { continue; }
         #[cfg(not(feature = "freertos-r2-i2c-peer"))]
         marker.toggle();

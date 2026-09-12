@@ -14,7 +14,7 @@ END='[WQ3] observer-quiesced no-more-rp1-access=1'
 FRAME=0xa50101ff
 
 def validate_uart(text, *, version=3):
-    assert version in (3,4,5)
+    assert version in (3,4,5,6)
     prefix=f'[WQ{version}]'
     end=prefix+' observer-quiesced no-more-rp1-access=1'
     request=[int.from_bytes(f'WQ0{version}'.encode(),'little'),version,1,1,0xffffff,256,0,0x57445432^version^1^1^0xffffff^256]
@@ -23,6 +23,10 @@ def validate_uart(text, *, version=3):
     records=re.findall(re.escape(prefix)+r' record (\d{3}) ((?:[0-9a-f]{8} ?){4})',text)
     assert [int(n) for n,_ in records]==list(range(0,256,4)),'missing/duplicate record'
     words=[int(n,16) for _,row in records for n in row.split()]
+    if version == 6:
+        nonce=words[182]
+        assert 0<nonce<=0xffff
+        for message in (request,ack):message[6]=nonce;message[7]^=nonce
     for label,expected in [('request',request),('ack-issued',ack)]:
         lines=re.findall(re.escape(prefix)+' '+label+r' ((?:[0-9a-f]{8} ?){8})',text)
         assert len(lines)==1 and [int(n,16) for n in lines[0].split()]==expected

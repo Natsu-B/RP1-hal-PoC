@@ -1,16 +1,21 @@
 //! WDT2 bounded receipt candidate. No expiry, feed policy, reset or POWER write.
 //! Normal R1 only; words96..175 are firmware-owned,176..183 host-owned.
-pub const MAGIC: u32 = if cfg!(feature = "freertos-r3-watchdog-late-disable") {
+pub const MAGIC: u32 = if cfg!(feature = "freertos-r3-reset-entry-selftest") {
+    u32::from_le_bytes(*b"WDT6")
+} else if cfg!(feature = "freertos-r3-watchdog-late-disable") {
     u32::from_le_bytes(*b"WDT5")
 } else if cfg!(feature = "freertos-r3-watchdog-postack") {
     u32::from_le_bytes(*b"WDT4")
 } else if cfg!(feature = "freertos-r3-watchdog-quiescence") {
     u32::from_le_bytes(*b"WDT3")
 } else { u32::from_le_bytes(*b"WDT2") };
-pub const VERSION: u32 = if cfg!(feature = "freertos-r3-watchdog-late-disable") { 5 }
+pub const VERSION: u32 = if cfg!(feature = "freertos-r3-reset-entry-selftest") { 6 }
+    else if cfg!(feature = "freertos-r3-watchdog-late-disable") { 5 }
     else if cfg!(feature = "freertos-r3-watchdog-postack") { 4 }
     else if cfg!(feature = "freertos-r3-watchdog-quiescence") { 3 } else { 2 };
-pub const REQUEST: u32 = if cfg!(feature = "freertos-r3-watchdog-late-disable") {
+pub const REQUEST: u32 = if cfg!(feature = "freertos-r3-reset-entry-selftest") {
+    u32::from_le_bytes(*b"WQ06")
+} else if cfg!(feature = "freertos-r3-watchdog-late-disable") {
     u32::from_le_bytes(*b"WQ05")
 } else if cfg!(feature = "freertos-r3-watchdog-postack") {
     u32::from_le_bytes(*b"WQ04")
@@ -22,9 +27,17 @@ pub const WINDOW_US: u32 = 256;
 pub const SEED: u32 = 0x5744_5432;
 
 pub const fn request_words() -> [u32; 8] {
-    [REQUEST, VERSION, 1, 1, LOAD, WINDOW_US, 0, SEED ^ VERSION ^ 1 ^ 1 ^ LOAD ^ WINDOW_US]
+    let nonce=if cfg!(feature = "freertos-r3-reset-entry-selftest") {1} else {0};
+    [REQUEST, VERSION, 1, 1, LOAD, WINDOW_US, nonce, SEED ^ VERSION ^ 1 ^ 1 ^ LOAD ^ WINDOW_US ^ nonce]
 }
-pub fn valid_request(words: [u32; 8]) -> bool { words == request_words() }
+pub fn valid_request(words: [u32; 8]) -> bool {
+    let mut expected=request_words();
+    if cfg!(feature = "freertos-r3-reset-entry-selftest") {
+        if words[6]==0 || words[6]>0xffff { return false; }
+        expected[7]^=expected[6]^words[6];expected[6]=words[6];
+    }
+    words==expected
+}
 
 /// Pure receipt checks are reused by the target after explicit disable.
 /// Values: initial CTRL, TICKS CTRL/CYCLES, enabled samples, disabled CTRL,
@@ -110,6 +123,8 @@ mod target {
         unsafe { asm!("dmb sy", options(nostack)); }
         let words = core::array::from_fn(|i| get(176+i));
         assert!(valid_request(words) && get(176) == REQUEST);
+        #[cfg(feature = "freertos-r3-reset-entry-selftest")]
+        put(139,words[6]); // Cookie magic remains zero until final ACK and branch.
         put(100, words[2]); put(101, raw_low()); put(98, 2); // firmware accepted
         let values = unsafe { probe() };
         // Retrospective ARM/countdown receipt: never pretend host read ARMED
