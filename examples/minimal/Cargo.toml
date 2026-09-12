@@ -24,6 +24,7 @@ freertos-r3-reset-entry-selftest = ["freertos-r3-watchdog-quiescence", "rp1-rt/f
 freertos-r3-watchdog-expiry-entry = ["freertos-r3-watchdog-postack", "rp1-rt/freertos-reset-entry"]
 freertos-r3-watchdog-kernel-restart = ["freertos-r3-watchdog-expiry-entry", "rp1-rt/freertos-warm-data"]
 freertos-r3-watchdog-warm-guard = ["freertos-r3-watchdog-kernel-restart", "rp1-rt/freertos-warm-diagnostics"]
+freertos-r3-watchdog-kernel-restart-masked = ["freertos-r3-watchdog-warm-guard"]
 freertos-r1-critical-timing = ["freertos-r1", "rp1-freertos/critical-timing"]
 freertos-r1-fault = ["freertos-r1"]
 freertos-r1-panic = ["freertos-r1"]

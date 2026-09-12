@@ -27,6 +27,13 @@ pub(crate) fn diagnostic_packet(nonce: u32, code: u32) -> Option<u32> {
     identity::encode_entry(nonce, code).map(|word| word ^ 0x5000_0005)
 }
 
+// AS formal E23 identified this disabled/nonactive pending bit. This admission
+// does NOT enable IRQ53 or clear/acknowledge its still-unidentified source.
+#[cfg(any(test, feature = "freertos-r3-watchdog-kernel-restart-masked"))]
+fn masked_pending_ok(pending: u32, active: u32) -> bool {
+    matches!(pending, 0 | 0x0020_0000) && active == 0
+}
+
 #[cfg(target_arch = "arm")]
 mod target {
     use super::*;
@@ -71,6 +78,13 @@ mod target {
         for bank in 0..2 {
             for (kind, base) in [0xe000_e100, 0xe000_e200, 0xe000_e300].into_iter().enumerate() {
                 let value = unsafe { read(base + bank * 4) };
+                #[cfg(feature = "freertos-r3-watchdog-kernel-restart-masked")]
+                if bank == 1 && kind == 1
+                    && masked_pending_ok(value, unsafe { read(0xe000_e304) }) {
+                    // Bank0 enable/pending/active and bank1 enable already0.
+                    // The next iteration still independently checks bank1 active.
+                    continue;
+                }
                 if value != 0 {
                     // Observe known masked IRQ53 separately; do NOT allow it.
                     reject(if bank == 1 && kind == 1 && value == 0x0020_0000
@@ -100,6 +114,12 @@ mod target {
 
     pub unsafe fn emit_pending(marker: &mut ConfiguredPin<22, Output>) -> bool {
         if !is_warm() { return false; }
+        #[cfg(feature = "freertos-r3-watchdog-kernel-restart-masked")]
+        unsafe {
+            // Recheck on every warm monitor pass, including after the C packet.
+            assert_eq!(read(0xe000_e104) & 0x0020_0000, 0);
+            assert_eq!(read(0xe000_e304) & 0x0020_0000, 0);
+        }
         // Always own GPIO on the warm epoch, including before/after the packet.
         if unsafe { ptr::addr_of!(SENT).read() } || get(14) < 5 { return true; }
         assert!(ready([get(14),get(8),get(9),get(64),get(80),get(49),get(50),
@@ -158,5 +178,21 @@ mod tests {
         }
         for nonce in [0,0x10000,u32::MAX] { assert_eq!(diagnostic_packet(nonce,1),None); }
         for code in [256,u32::MAX] { assert_eq!(diagnostic_packet(1,code),None); }
+    }
+
+    #[test]
+    fn only_selected_inactive_pending_bit_is_admitted() {
+        assert!(masked_pending_ok(0,0));
+        assert!(masked_pending_ok(0x0020_0000,0));
+        for bit in 0..32 {
+            let mask=1<<bit;
+            assert!(!masked_pending_ok(0,mask));
+            assert!(!masked_pending_ok(0x0020_0000,mask));
+            if bit != 21 {
+                assert!(!masked_pending_ok(mask,0));
+                assert!(!masked_pending_ok(mask|0x0020_0000,0));
+            }
+        }
+        assert!(!masked_pending_ok(u32::MAX,0));
     }
 }
