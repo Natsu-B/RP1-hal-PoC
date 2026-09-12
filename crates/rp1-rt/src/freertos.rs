@@ -17,6 +17,8 @@ unsafe extern "C" {
 }
 #[cfg(feature = "freertos-warm-data")]
 unsafe extern "C" { fn rp1_freertos_warm_start() -> !; }
+#[cfg(feature = "freertos-warm-diagnostics")]
+unsafe extern "C" { fn rp1_freertos_warm_data_failed() -> !; }
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -46,6 +48,9 @@ unsafe extern "C" fn rp1_freertos_reset() -> ! {
     let reentered = unsafe { rp1_freertos_capture_reset_entry() };
     #[cfg(feature = "freertos-warm-data")]
     if !unsafe { super::warm_data::prepare(reentered == 1) } {
+        #[cfg(feature = "freertos-warm-diagnostics")]
+        unsafe { rp1_freertos_warm_data_failed() }
+        #[cfg(not(feature = "freertos-warm-diagnostics"))]
         loop { unsafe { core::arch::asm!("wfe", options(nomem, nostack)); } }
     }
     unsafe {

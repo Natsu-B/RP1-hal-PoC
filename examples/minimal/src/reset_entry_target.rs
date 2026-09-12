@@ -63,7 +63,7 @@ pub unsafe extern "C" fn rp1_freertos_capture_reset_entry() -> u32 {
     0
 }
 
-fn hold(us: u32) -> bool {
+pub(super) fn hold(us: u32) -> bool {
     let start = raw_low();
     for _ in 0..10_000_000 {
         if raw_low().wrapping_sub(start) >= us {
@@ -79,6 +79,32 @@ fn halt() -> ! {
             asm!("wfe", options(nomem, nostack));
         }
     }
+}
+
+/// Terminal WDT9 guard diagnostic, including before BSS clear. Inherited GPIO22
+/// setup only: no HAL singleton, .data/.bss, RTOS, reset or clock writer.
+#[cfg(feature = "freertos-r3-watchdog-warm-guard")]
+pub(super) unsafe fn diagnostic_halt(code: u32) -> ! {
+    unsafe { asm!("cpsid i", options(nomem, nostack)); }
+    let entry = unsafe { record() };
+    if !model::valid_entry(entry) { halt(); }
+    let Some(word) = super::kernel_restart::diagnostic_packet(entry[1], code) else { halt(); };
+    unsafe fn level(high: bool) {
+        let out = 0x400e_0000 as *mut u32; // Same known SYS_RIO_OUT RMW as HAL GPIO.
+        unsafe { out.write_volatile((out.read_volatile() & !(1<<22)) | if high {1<<22} else {0}); }
+    }
+    unsafe { level(false); }
+    if !hold(500_000) { halt(); }
+    for bit in (0..32).rev() {
+        unsafe { level(true); }
+        let ok = hold(if word & (1<<bit) != 0 {150_000} else {50_000});
+        unsafe { level(false); }
+        if !ok || !hold(50_000) { halt(); }
+    }
+    unsafe { level(true); }
+    let _ = hold(400_000);
+    unsafe { level(false); }
+    halt() // E identifies only a guard stop, never advances to a kernel.
 }
 
 #[unsafe(no_mangle)]

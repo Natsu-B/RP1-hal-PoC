@@ -19,6 +19,14 @@ fn ready(v: [u32; 10]) -> bool {
         && v[5] >= 20 && v[6] >= 10 && v[7] == 0 && v[8] == 0 && v[9] == 0
 }
 
+// E's byte is a failed guard, NOT watchdog REASON and never a success packet.
+pub(super) fn diagnostic_packet(nonce: u32, code: u32) -> Option<u32> {
+    if !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
+        return None;
+    }
+    identity::encode_entry(nonce, code).map(|word| word ^ 0x5000_0005)
+}
+
 #[cfg(target_arch = "arm")]
 mod target {
     use super::*;
@@ -34,20 +42,42 @@ mod target {
     unsafe fn read(address: usize) -> u32 { unsafe { (address as *const u32).read_volatile() } }
     fn halt() -> ! { loop { unsafe { asm!("wfe", options(nomem, nostack)); } } }
 
+    fn reject(code: u32) -> ! {
+        #[cfg(feature = "freertos-r3-watchdog-warm-guard")]
+        unsafe { reset_entry::diagnostic_halt(code) }
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-guard"))]
+        { let _ = code; halt() }
+    }
+
+    #[cfg(feature = "freertos-r3-watchdog-warm-guard")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rp1_freertos_warm_data_failed() -> ! {
+        reject(1) // Before BSS clear: reporter uses no data/BSS/kernel state.
+    }
+
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn rp1_freertos_warm_start() -> ! {
         let entry = unsafe { reset_entry::record() };
         let (ipsr, primask): (u32, u32);
         unsafe { asm!("mrs {0}, IPSR", "mrs {1}, PRIMASK", out(reg) ipsr,
             out(reg) primask, options(nomem, nostack)); }
-        if !identity::valid_entry(entry) || packet(entry[1], entry[2]).is_none()
-            || ipsr != 0 || primask != 1 { halt(); }
+        if !identity::valid_entry(entry) { halt(); } // No trustworthy nonce.
+        if packet(entry[1], entry[2]).is_none() { reject(2); }
+        if ipsr != 0 { reject(3); }
+        if primask != 1 { reject(4); }
         // Require the established 64-line, peripheral-IRQ-free proc0 state.
         // No unknown peripheral reset, NVIC probing, or attempted ISR recovery.
-        if unsafe { read(0xe000_e004) } & 0xf != 1 { halt(); }
+        if unsafe { read(0xe000_e004) } & 0xf != 1 { reject(5); }
         for bank in 0..2 {
-            for base in [0xe000_e100, 0xe000_e200, 0xe000_e300] {
-                if unsafe { read(base + bank * 4) } != 0 { halt(); }
+            for (kind, base) in [0xe000_e100, 0xe000_e200, 0xe000_e300].into_iter().enumerate() {
+                let value = unsafe { read(base + bank * 4) };
+                if value != 0 {
+                    // Observe known masked IRQ53 separately; do NOT allow it.
+                    reject(if bank == 1 && kind == 1 && value == 0x0020_0000
+                        && unsafe { read(0xe000_e304) } == 0 {
+                        0x23
+                    } else { 0x10 + bank as u32 * 0x10 + kind as u32 });
+                }
             }
         }
         unsafe {
@@ -55,9 +85,11 @@ mod target {
             (0xe000_e018 as *mut u32).write_volatile(0); // Clear CURRENT/COUNTFLAG.
             (0xe000_ed04 as *mut u32).write_volatile((1 << 27) | (1 << 25));
             asm!("dsb sy", "isb", options(nostack)); // PENDSVCLR/PENDSTCLR.
-            if read(0xe000_e010) & 3 != 0 || read(0xe000_ed04) & 0x1400_01ff != 0
-                || read(0xe000_ed28) != 0 || read(0xe000_ed2c) != 0 { halt(); }
-            if rp1_rt::warm_data::info().is_none() { halt(); }
+            if read(0xe000_e010) & 3 != 0 { reject(0x30); }
+            if read(0xe000_ed04) & 0x1400_01ff != 0 { reject(0x31); }
+            if read(0xe000_ed28) != 0 { reject(0x32); }
+            if read(0xe000_ed2c) != 0 { reject(0x33); }
+            if rp1_rt::warm_data::info().is_none() { reject(0x34); }
             ptr::addr_of_mut!(EPOCH).write(entry);
             let mut p = rp1_hal::Peripherals::steal();
             let mut marker = p.gpio.pin::<22>().into_output();
@@ -109,5 +141,22 @@ mod tests {
         } }
         for nonce in [0,0x10000,u32::MAX] { assert_eq!(packet(nonce,1),None); }
         for reason in [0,2,4,0x100,u32::MAX] { assert_eq!(packet(1,reason),None); }
+    }
+
+    #[test]
+    fn typed_diagnostics_cannot_be_kernel_packets() {
+        for nonce in [1,0x8001,0xffff] {
+            for code in 0..=255 {
+                let allowed = matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34);
+                assert_eq!(diagnostic_packet(nonce,code).is_some(), allowed);
+                if let Some(p)=diagnostic_packet(nonce,code) {
+                    assert_eq!(p>>28,0xe);
+                    assert_eq!(identity::decode_entry(p),None);
+                    assert_eq!(identity::decode_entry(p ^ 0x5000_0005),Some((nonce as u16,code as u8)));
+                }
+            }
+        }
+        for nonce in [0,0x10000,u32::MAX] { assert_eq!(diagnostic_packet(nonce,1),None); }
+        for code in [256,u32::MAX] { assert_eq!(diagnostic_packet(1,code),None); }
     }
 }
