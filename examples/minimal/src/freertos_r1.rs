@@ -31,6 +31,12 @@ mod boot_entry;
 #[cfg(feature = "freertos-r3-watchdog-kernel-restart")]
 #[path = "watchdog_kernel_restart.rs"]
 mod kernel_restart;
+#[cfg(feature = "freertos-r3-watchdog-warm-uart")]
+#[path = "warm_uart.rs"]
+mod warm_uart;
+#[cfg(feature = "freertos-r3-watchdog-warm-uart")]
+#[path = "warm_uart_prepare.rs"]
+mod warm_uart_prepare;
 #[cfg(all(feature = "freertos-r3-watchdog-expiry-entry", feature = "freertos-r3-watchdog-late-disable"))]
 compile_error!("Expiry entry and late-disable control are separate experiments");
 #[cfg(all(feature = "freertos-r3-reset-entry-selftest", feature = "freertos-r3-watchdog-postack"))]
@@ -141,6 +147,8 @@ fn calibrate_cpu_hz() -> u32 {
 
 pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
     for n in 0..256 { put(n, 0); } // Clear stale exception record as well.
+    #[cfg(feature = "freertos-r3-watchdog-warm-uart")]
+    if kernel_restart::is_warm() { warm_uart_prepare::publish(); }
     put(0, u32::from_le_bytes(*b"RT01")); put(1, 1); put(2, 1);
     put(12, u32::MAX);
     unsafe {
@@ -237,6 +245,12 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
                 let handle = Task::create(7, c"wd-receipt", watchdog::worker, ptr::null_mut(), 5, 512).unwrap();
                 ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
             }
+        }
+        #[cfg(feature = "freertos-r3-watchdog-warm-uart")]
+        if kernel_restart::is_warm() {
+            // Cold receipt and warm UART share slot7 in different fresh kernels.
+            let handle = Task::create(7, c"warm-uart", warm_uart::worker, ptr::null_mut(), 5, 512).unwrap();
+            ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
         }
         os::start(hz).unwrap();
     }
@@ -355,6 +369,12 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         unsafe { put(123, task(7).stack_high_water().unwrap()); }
         unsafe {
             for slot in 0..7 { put(32+slot, task(slot).stack_high_water().unwrap()); }
+            #[cfg(feature = "freertos-r3-watchdog-warm-uart")]
+            if kernel_restart::is_warm() {
+                let free = task(7).stack_high_water().unwrap();
+                put(160, free); // Warm UART PSP margin, separate from transfer receipts.
+                assert!(free >= 32);
+            }
             #[cfg(feature = "freertos-r2-mixed")]
             put(45, task(7).stack_high_water().unwrap());
             put(22, (0xe000_e014 as *const u32).read_volatile());

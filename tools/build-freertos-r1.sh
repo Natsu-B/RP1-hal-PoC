@@ -6,7 +6,7 @@ out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 requested_feature=$feature
 # Reuse the WDT9 test/build family, but pass the actual opt-in feature to Cargo.
-if [[ "$feature" == freertos-r3-watchdog-kernel-restart-masked ]]; then
+if [[ "$feature" == freertos-r3-watchdog-kernel-restart-masked || "$feature" == freertos-r3-watchdog-warm-uart ]]; then
     feature=freertos-r3-watchdog-warm-guard
 fi
 case "$feature" in freertos-r3-watchdog-warm-guard|freertos-r3-watchdog-kernel-restart|freertos-r3-watchdog-expiry-entry|freertos-r3-reset-entry-selftest|freertos-r3-watchdog-late-disable|freertos-r3-watchdog-postack|freertos-r3-watchdog-quiescence|freertos-r3-watchdog-arm-receipt|freertos-r3-proc1-worker|freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat|freertos-r2-mixed-i2c-pair|freertos-r2-mixed-i2c-stream) ;; *) exit 2 ;; esac
@@ -27,6 +27,17 @@ if [[ "$feature" == freertos-r2-spi-lifecycle || "$feature" == freertos-r2-spi-c
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=s
 else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
+fi
+if [[ "$requested_feature" == freertos-r3-watchdog-warm-uart ]]; then
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_PROFILE_RELEASE_LTO=fat
+    printf 'rust_lto=%s\n' "$CARGO_PROFILE_RELEASE_LTO"
+    for name in warm_uart_prepare warm_uart; do
+        cp "$repo/examples/minimal/src/$name.rs" "$out/$name.rs"
+        rustc +stable --edition=2024 --test "$out/$name.rs" -o "$out/$name-test"
+        "$out/$name-test" > "$out/$name-host-test.txt"
+    done
+    rustc +stable --edition=2024 --test --cfg 'feature="freertos-r3-watchdog-warm-uart"' "$repo/examples/minimal/src/watchdog_kernel_restart.rs" -o "$out/warm-uart-packet-test"
+    "$out/warm-uart-packet-test" > "$out/warm-uart-packet-host-test.txt"
 fi
 printf 'rust_opt_level=%s\n' "$CARGO_PROFILE_RELEASE_OPT_LEVEL"
 if [[ "$feature" == freertos-r2-mixed* || "$feature" == freertos-r2-i2c-cancel-window || "$feature" == freertos-r2-uart-overflow || "$feature" == freertos-r2-uart-lifecycle ]]; then
@@ -130,7 +141,10 @@ fi
 if [[ "$feature" == freertos-r3-watchdog-expiry-entry ]]; then
     python3 -B "$repo/tools/check-reset-entry-elf.py" --expiry-entry --self-test "$out/RP1.elf" > "$out/reset-entry-elf-validation.json"
 fi
-if [[ "$requested_feature" == freertos-r3-watchdog-kernel-restart-masked ]]; then
+if [[ "$requested_feature" == freertos-r3-watchdog-warm-uart ]]; then
+    python3 -B "$repo/tools/check-warm-uart-elf.py" --self-test "$out/RP1.elf" > "$out/warm-uart-elf-validation.json"
+    python3 -B "$repo/tools/test-warm-uart.py" > "$out/warm-uart-validator-test.txt"
+elif [[ "$requested_feature" == freertos-r3-watchdog-kernel-restart-masked ]]; then
     python3 -B "$repo/tools/check-masked-restart-elf.py" --self-test "$out/RP1.elf" > "$out/masked-restart-elf-validation.json"
     python3 -B "$repo/tools/test-warm-guard.py" > "$out/warm-guard-validator-test.txt"
 elif [[ "$feature" == freertos-r3-watchdog-warm-guard ]]; then

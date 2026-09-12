@@ -9,7 +9,11 @@ use super::reset_identity as identity;
 fn packet(nonce: u32, reason: u32) -> Option<u32> {
     if !matches!(reason, 1 | 3) { return None; }
     // Reuse the checked nonce/reason layout; B -> C also updates XOR nibble.
-    identity::encode_entry(nonce, reason).map(|word| word ^ 0x7000_0007)
+    identity::encode_entry(nonce, reason).map(|word| word ^ packet_xor())
+}
+
+const fn packet_xor() -> u32 {
+    if cfg!(feature = "freertos-r3-watchdog-warm-uart") {0x6000_0006} else {0x7000_0007}
 }
 
 // Five actual monitor passes, >=5k ticks/switches, both non-yielding spinners,
@@ -21,7 +25,9 @@ fn ready(v: [u32; 10]) -> bool {
 
 // E's byte is a failed guard, NOT watchdog REASON and never a success packet.
 pub(crate) fn diagnostic_packet(nonce: u32, code: u32) -> Option<u32> {
-    if !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
+    let uart_code = cfg!(feature = "freertos-r3-watchdog-warm-uart")
+        && (matches!(code, 0x40..=0x4f) && code != 0x45 || matches!(code, 0x50..=0x55));
+    if !uart_code && !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
         return None;
     }
     identity::encode_entry(nonce, code).map(|word| word ^ 0x5000_0005)
@@ -108,6 +114,11 @@ mod target {
             let mut p = rp1_hal::Peripherals::steal();
             let mut marker = p.gpio.pin::<22>().into_output();
             marker.set_low();
+            #[cfg(feature = "freertos-r3-watchdog-warm-uart")]
+            {
+                if let Err(code) = crate::freertos_r1::warm_uart_prepare::prepare() { reject(code); }
+                crate::freertos_r1::warm_uart::set_host(p.uart0.init_tx_rx_115200_clock_ready());
+            }
             freertos_r1::run(marker); // New queues/TCBs/PSP stacks and official SVC.
         }
     }
@@ -126,6 +137,8 @@ mod target {
             get(3)|get(4),get(70),get(86)]));
         assert_eq!((get(19),get(20),get(39)),(0x1357_9bdf,0,1));
         let entry = unsafe { ptr::addr_of!(EPOCH).read() };
+        #[cfg(feature = "freertos-r3-watchdog-warm-uart")]
+        if !crate::freertos_r1::warm_uart::ready() { reject(0x55); }
         let word = packet(entry[1],entry[2]).unwrap();
         let (len,digest) = unsafe { rp1_rt::warm_data::info().unwrap() };
         // Normal runtime telemetry remains available locally; host does not
@@ -155,9 +168,9 @@ mod tests {
         let ok=[5,5000,5000,1,1,20,10,0,0,0]; assert!(ready(ok));
         for i in 0..10 { let mut bad=ok; bad[i]=if i<7 {0} else {1}; assert!(!ready(bad)); }
         for nonce in [1,0x8001,0xffff] { for reason in [1,3] {
-            let p=packet(nonce,reason).unwrap(); assert_eq!(p>>28,0xc);
+            let p=packet(nonce,reason).unwrap(); assert_eq!(p>>28,0xb ^ (packet_xor() >> 28));
             assert_eq!(identity::decode_entry(p),None);
-            assert_eq!(identity::decode_entry(p^0x7000_0007),Some((nonce as u16,reason as u8)));
+            assert_eq!(identity::decode_entry(p^packet_xor()),Some((nonce as u16,reason as u8)));
         } }
         for nonce in [0,0x10000,u32::MAX] { assert_eq!(packet(nonce,1),None); }
         for reason in [0,2,4,0x100,u32::MAX] { assert_eq!(packet(1,reason),None); }
@@ -167,7 +180,9 @@ mod tests {
     fn typed_diagnostics_cannot_be_kernel_packets() {
         for nonce in [1,0x8001,0xffff] {
             for code in 0..=255 {
-                let allowed = matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34);
+                let allowed = matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34)
+                    || cfg!(feature = "freertos-r3-watchdog-warm-uart")
+                        && (matches!(code, 0x40..=0x4f) && code!=0x45 || matches!(code, 0x50..=0x55));
                 assert_eq!(diagnostic_packet(nonce,code).is_some(), allowed);
                 if let Some(p)=diagnostic_packet(nonce,code) {
                     assert_eq!(p>>28,0xe);
