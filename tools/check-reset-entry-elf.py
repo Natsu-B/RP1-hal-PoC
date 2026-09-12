@@ -9,7 +9,7 @@ import sys
 
 assert __debug__
 
-def check(disassembly, symbols):
+def check(disassembly, symbols, *, expiry=False):
     def body(name):
         m=re.search(r'^[0-9a-f]+ <'+re.escape(name)+r'>:\n(.*?)(?=^\n)',disassembly,re.M|re.S)
         assert m, name
@@ -28,18 +28,33 @@ def check(disassembly, symbols):
     assert re.search(r'cmp\tr0, #1',start) and re.search(r'it\teq',start)
     assert re.search(r'bleq\s+[0-9a-f]+ <rp1_freertos_reset_entry_halt>',start)
     assert not re.search(r'\bbl(?:\w|\.)*\s',capture),'capture external call'
-    assert 'push\t{r4, r5, r7, lr}' in capture
-    # Reviewed pinned compiler: r1=cookie, r2=known REASON, no BSS/data base.
-    assert '#64032' in capture and '#8192' in capture and '#16392' in capture and '#16405' in capture
-    assert re.findall(r'\bldr(?:\.w)?\s+\w+, \[(\w+), #\d+\]',capture)==['r1','r1','r1','r1','r2']
-    assert set(re.findall(r'\bstr(?:\.w)?\s+\w+, \[(\w+), #\d+\]',capture))=={'r1'}
+    if expiry:
+        # Reviewed WDT7 capture:24-byte own frame, r1=cookie, r5=CTRL/REASON.
+        # Unknown CTRL / invalid ARM / consumed ENTRY halt before runtime init.
+        assert hashlib.sha256(capture.encode()).hexdigest()=='cdd2c58e050ade9f24ef7a68648f302086776f6f5817ee99df187a12c648ef61'
+        assert 'push\t{r4, r5, r6, r7, lr}' in capture and 'str.w\tr8, [sp, #-4]!' in capture
+        assert '#64032' in capture and '#8192' in capture and '#16405' in capture
+        assert not re.search(r'\b(?:b(?:\.\w+)?|bl|blx)\s+[0-9a-f]+ <Reset>',disassembly),'software Reset branch in expiry build'
+        for selector,digest in [('reset_entry11cancel_boot','2a542b6df5e0d5b921c8ab399746667be1b1570c483b3441ff27d74a895e24a4'),
+                                ('watchdog_postack6target5error','3e27b8a183297f024cb9bf20eec4657f0f188e761998efd187681c380e8c1fec')]:
+            names=re.findall(r'^\w+ <([^\n]*'+selector+r'[^\n]*)>:',disassembly,re.M)
+            assert len(names)==1
+            b=body(names[0]);rows=re.findall(r'^\s*[0-9a-f]+:\s+((?:[0-9a-f]{4}\s+)+)\S',b,re.M)
+            assert hashlib.sha256(' '.join(' '.join(r.split()) for r in rows).encode()).hexdigest()==digest
+    else:
+        assert 'push\t{r4, r5, r7, lr}' in capture
+        # Reviewed pinned compiler: r1=cookie, r2=known REASON, no BSS/data base.
+        assert '#64032' in capture and '#8192' in capture and '#16392' in capture and '#16405' in capture
+        assert re.findall(r'\bldr(?:\.w)?\s+\w+, \[(\w+), #\d+\]',capture)==['r1','r1','r1','r1','r2']
+        assert set(re.findall(r'\bstr(?:\.w)?\s+\w+, \[(\w+), #\d+\]',capture))=={'r1'}
     halt_calls=re.findall(r'\bbl\s+[0-9a-f]+ <([^>]+)>',halt)
     assert len(halt_calls)==1 and 'Peripherals5steal' in halt_calls[0]
     steal=body(halt_calls[0]);assert not re.search(r'\bbl(?:\w|\.)*\s',steal)
     assert not re.search(r'\b(?:ldrex|strex|cpsie|svc)\b',capture+halt+steal)
     assert 'wfe' in halt and not re.search(r'\bbx\s+lr|\bpop.*pc',halt)
-    assert re.search(r'cpsid\ti\n[^\n]*\bb\.w\s+[0-9a-f]+ <Reset>',disassembly)
-    return dict(status='PASS',classification='BUILD',capture_stack_bytes=16,
+    if not expiry:assert re.search(r'cpsid\ti\n[^\n]*\bb\.w\s+[0-9a-f]+ <Reset>',disassembly)
+    return dict(status='PASS',classification='BUILD',capture_stack_bytes=24 if expiry else 16,
+        expiry_candidate=expiry,hardware_reset_proven=False,runtime_restart_proven=False,
         capture_before_bss=True,positive_halt_before_application=True,
         cookie_range='0x2000fa20..0x2000fa2f',msp_range='0x2000e000..0x2000efff',
         selected_code_sha256={n:hashlib.sha256(b.encode()).hexdigest() for n,b in
@@ -49,16 +64,22 @@ def check(disassembly, symbols):
 if __name__=='__main__':
     p=Path(sys.argv[-1]);d=subprocess.check_output(['arm-none-eabi-objdump','-d',str(p)],text=True)
     s=subprocess.check_output(['arm-none-eabi-nm','-n',str(p)],text=True)
-    result=check(d,s)
+    expiry='--expiry-entry' in sys.argv
+    result=check(d,s,expiry=expiry)
     if '--self-test' in sys.argv:
         mutations=[d.replace('msr\tMSP','msr\tPSP'),d.replace('bleq','blne'),
             d.replace('<rp1_freertos_capture_reset_entry>','<absent_capture>'),
             d.replace('#64032','#64036'),d.replace('cpsid\ti','cpsie\ti'),
             d.replace('wfe','svc')]
         for bad in mutations:
-            try:check(bad,s)
+            try:check(bad,s,expiry=expiry)
             except (AssertionError,ValueError):pass
             else:raise AssertionError('invalid startup accepted')
         result['mutation_refusals']=len(mutations)
+        if expiry:
+            bad=d+'\n2000ffff: f000 b000 b.w 20005fd4 <Reset>\n'
+            try:check(bad,s,expiry=True)
+            except AssertionError:result['mutation_refusals']+=1
+            else:raise AssertionError('software Reset branch accepted')
     result['elf_sha256']=hashlib.sha256(p.read_bytes()).hexdigest()
     print(json.dumps(result,indent=2))

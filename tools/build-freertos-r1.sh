@@ -112,4 +112,7 @@ sha256sum "$out/RP1.elf" > "$out/output.sha256"
 if [[ "$feature" == freertos-r3-reset-entry-selftest ]]; then
     python3 -B "$repo/tools/check-reset-entry-elf.py" --self-test "$out/RP1.elf" > "$out/reset-entry-elf-validation.json"
 fi
+if [[ "$feature" == freertos-r3-watchdog-expiry-entry ]]; then
+    python3 -B "$repo/tools/check-reset-entry-elf.py" --expiry-entry --self-test "$out/RP1.elf" > "$out/reset-entry-elf-validation.json"
+fi
 date --iso-8601=seconds
