@@ -20,7 +20,7 @@ fn ready(v: [u32; 10]) -> bool {
 }
 
 // E's byte is a failed guard, NOT watchdog REASON and never a success packet.
-pub(super) fn diagnostic_packet(nonce: u32, code: u32) -> Option<u32> {
+pub(crate) fn diagnostic_packet(nonce: u32, code: u32) -> Option<u32> {
     if !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
         return None;
     }
