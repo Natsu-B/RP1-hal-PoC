@@ -10523,7 +10523,7 @@ fn main(mut p: Peripherals) -> ! {
     #[cfg(feature = "rp1-clock-independence-proof")]
     clock_independence::initialize();
 
-    #[cfg(all(feature = "pll-sys-core-lock-only", not(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi"))))]
+    #[cfg(all(feature = "pll-sys-core-lock-only", not(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c"))))]
     match release_pll_sys_reset_bit29() {
         Ok(()) => pulse_width(&mut gpio22, 72),
         Err(_) => {

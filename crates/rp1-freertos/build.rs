@@ -118,6 +118,8 @@ fn main() {
                 ])
                 .args(env::var_os("CARGO_FEATURE_ASSERT_PROBE")
                     .map(|_| "-DRP1_FREERTOS_ASSERT_PROBE=1"))
+                .args(env::var_os("CARGO_FEATURE_TASK_POOL_2304")
+                    .map(|_| "-DRP1_FREERTOS_TASK_POOL_2304=1"))
                 .arg("-I")
                 .arg(Path::new(&root).join("c"))
                 .arg("-I")

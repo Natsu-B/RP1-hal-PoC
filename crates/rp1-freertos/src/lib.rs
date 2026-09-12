@@ -29,7 +29,7 @@ pub const MIN_STACK_WORDS: u32 = 128;
 pub const MAX_STACK_WORDS: u32 = 512;
 /// Fixed backing pool; requested task stacks (rounded to even words) share this
 /// budget at boot. Exhaustion returns Unavailable; idle has its separate stack.
-pub const TOTAL_TASK_STACK_WORDS: u32 = 2560;
+pub const TOTAL_TASK_STACK_WORDS: u32 = if cfg!(feature = "task-pool-2304") { 2304 } else { 2560 };
 pub const QUEUE_SLOTS: u32 = 4;
 pub const MAX_QUEUE_WORDS: u32 = 16;
 pub const SEMAPHORE_SLOTS: u32 = 4;
@@ -364,6 +364,10 @@ mod tests {
 
     #[test]
     fn boundary_contract() {
+        assert_eq!(TOTAL_TASK_STACK_WORDS,
+            if cfg!(feature = "task-pool-2304") {2304} else {2560});
+        assert_eq!([512u32,128,128,256,256,256,256,512].iter().sum::<u32>(),2304);
+        assert!(TOTAL_TASK_STACK_WORDS >= 2304);
         assert_eq!(task_parameters(0, c"worker", 1, 128), Ok(()));
         assert_eq!(task_parameters(7, c"123456789012345", 7, 512), Ok(()));
         for (slot, name, priority, words) in [

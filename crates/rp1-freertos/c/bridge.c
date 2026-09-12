@@ -7,7 +7,12 @@
 #include "static_stack.h"
 
 enum { TASKS = 8, STACK_WORDS = 512, QUEUES = 4, QUEUE_WORDS = 16, SEMAPHORES = 4 };
+#ifdef RP1_FREERTOS_TASK_POOL_2304
+/* AY: seven unchanged R1 stacks1792 + unchanged owner512; no spare task slots. */
+enum { TASK_STACK_POOL_WORDS = 2304 };
+#else
 enum { TASK_STACK_POOL_WORDS = 2560 };
+#endif
 enum { INVALID = -1, STATE = -2, OCCUPIED = -3, UNAVAILABLE = -4, CONTEXT = -5 };
 enum { BINARY = 0, MUTEX = 1 };
 

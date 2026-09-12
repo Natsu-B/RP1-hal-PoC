@@ -6,7 +6,7 @@ out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 requested_feature=$feature
 # Reuse the WDT9 test/build family, but pass the actual opt-in feature to Cargo.
-if [[ "$feature" == freertos-r3-watchdog-kernel-restart-masked || "$feature" == freertos-r3-watchdog-warm-uart || "$feature" == freertos-r3-watchdog-warm-spi ]]; then
+if [[ "$feature" == freertos-r3-watchdog-kernel-restart-masked || "$feature" == freertos-r3-watchdog-warm-uart || "$feature" == freertos-r3-watchdog-warm-spi || "$feature" == freertos-r3-watchdog-warm-i2c ]]; then
     feature=freertos-r3-watchdog-warm-guard
 fi
 case "$feature" in freertos-r3-watchdog-warm-guard|freertos-r3-watchdog-kernel-restart|freertos-r3-watchdog-expiry-entry|freertos-r3-reset-entry-selftest|freertos-r3-watchdog-late-disable|freertos-r3-watchdog-postack|freertos-r3-watchdog-quiescence|freertos-r3-watchdog-arm-receipt|freertos-r3-proc1-worker|freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat|freertos-r2-mixed-i2c-pair|freertos-r2-mixed-i2c-stream) ;; *) exit 2 ;; esac
@@ -28,12 +28,13 @@ if [[ "$feature" == freertos-r2-spi-lifecycle || "$feature" == freertos-r2-spi-c
 else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 fi
-if [[ "$requested_feature" == freertos-r3-watchdog-warm-uart || "$requested_feature" == freertos-r3-watchdog-warm-spi ]]; then
+if [[ "$requested_feature" == freertos-r3-watchdog-warm-uart || "$requested_feature" == freertos-r3-watchdog-warm-spi || "$requested_feature" == freertos-r3-watchdog-warm-i2c ]]; then
     # Preserve O3 cold-start loop code; fat LTO makes this selected image fit.
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3 CARGO_PROFILE_RELEASE_LTO=fat
     printf 'rust_lto=%s\n' "$CARGO_PROFILE_RELEASE_LTO"
     owner=warm_uart
     [[ "$requested_feature" != freertos-r3-watchdog-warm-spi ]] || owner=warm_spi
+    [[ "$requested_feature" != freertos-r3-watchdog-warm-i2c ]] || owner=warm_i2c
     for name in warm_uart_prepare "$owner"; do
         cp "$repo/examples/minimal/src/$name.rs" "$out/$name.rs"
         rustc +stable --edition=2024 --test "$out/$name.rs" -o "$out/$name-test"
@@ -125,7 +126,12 @@ fi
 if [[ "$feature" == freertos-r2-uart-overflow ]]; then
     cp "$repo/examples/minimal/src/freertos_uart_overflow.rs" "$out/freertos_uart_overflow.rs"
 fi
-cargo +stable rustc --offline --locked --release --target thumbv7m-none-eabi \
+cargo_profile=()
+if [[ "$requested_feature" == freertos-r3-watchdog-warm-i2c ]]; then
+    cargo_profile=(--config 'profile.release.package.rp1-freertos.opt-level="s"')
+    printf 'rust_rp1_freertos_opt_level=s task_stack_pool_words=2304\n'
+fi
+cargo +stable "${cargo_profile[@]}" rustc --offline --locked --release --target thumbv7m-none-eabi \
   -p rp1-example-minimal --no-default-features --features "$requested_feature" -- -C "link-arg=-Map=$out/RP1.map"
 cp "${CARGO_TARGET_DIR:-$repo/target}/thumbv7m-none-eabi/release/rp1-example-minimal" "$out/RP1.elf"
 arm-none-eabi-readelf -lSW "$out/RP1.elf" > "$out/readelf.txt"
@@ -144,7 +150,18 @@ fi
 if [[ "$feature" == freertos-r3-watchdog-expiry-entry ]]; then
     python3 -B "$repo/tools/check-reset-entry-elf.py" --expiry-entry --self-test "$out/RP1.elf" > "$out/reset-entry-elf-validation.json"
 fi
-if [[ "$requested_feature" == freertos-r3-watchdog-warm-spi ]]; then
+if [[ "$requested_feature" == freertos-r3-watchdog-warm-i2c ]]; then
+    i2c_elf_args=()
+    # No implicit first-build admission: set only after source/compiled review.
+    if [[ -n "${RP1_WARM_I2C_ELF_SHA256:-}" ]]; then
+        i2c_elf_args+=(--expected-sha256 "$RP1_WARM_I2C_ELF_SHA256")
+    fi
+    if [[ "${RP1_WARM_I2C_REVIEWED_INLINED_RESET:-0}" == 1 ]]; then
+        i2c_elf_args+=(--reviewed-inlined-reset)
+    fi
+    python3 -B "$repo/tools/check-warm-i2c-elf.py" --self-test "${i2c_elf_args[@]}" "$out/RP1.elf" > "$out/warm-i2c-elf-validation.json"
+    python3 -B "$repo/tools/test-warm-i2c.py" > "$out/warm-i2c-validator-test.txt"
+elif [[ "$requested_feature" == freertos-r3-watchdog-warm-spi ]]; then
     python3 -B "$repo/tools/check-warm-spi-elf.py" --self-test "$out/RP1.elf" > "$out/warm-spi-elf-validation.json"
     python3 -B "$repo/tools/test-warm-spi.py" > "$out/warm-spi-validator-test.txt"
 elif [[ "$requested_feature" == freertos-r3-watchdog-warm-uart ]]; then

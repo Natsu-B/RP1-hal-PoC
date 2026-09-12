@@ -8,12 +8,13 @@ use super::reset_identity as identity;
 
 fn packet(nonce: u32, reason: u32) -> Option<u32> {
     if !matches!(reason, 1 | 3) { return None; }
-    // Reuse the checked nonce/reason layout; B -> C/D/F updates XOR nibble too.
+    // Reuse the checked nonce/reason layout; B -> C/D/F/9 updates XOR nibble too.
     identity::encode_entry(nonce, reason).map(|word| word ^ packet_xor())
 }
 
 const fn packet_xor() -> u32 {
-    if cfg!(feature = "freertos-r3-watchdog-warm-spi") {0x4000_0004}
+    if cfg!(feature = "freertos-r3-watchdog-warm-i2c") {0x2000_0002}
+    else if cfg!(feature = "freertos-r3-watchdog-warm-spi") {0x4000_0004}
     else if cfg!(feature = "freertos-r3-watchdog-warm-uart") {0x6000_0006} else {0x7000_0007}
 }
 
@@ -26,6 +27,15 @@ fn spi_monitor_gate(passes: u32, owner_ready: bool, sent: bool) -> Result<bool, 
     Ok(!sent && passes >= 5 && owner_ready)
 }
 
+#[cfg(any(test, feature = "freertos-r3-watchdog-warm-i2c"))]
+fn i2c_monitor_gate(passes: u32, owner_ready: bool, sent: bool) -> Result<bool, u32> {
+    if sent && !owner_ready { return Err(0x79); }
+    // Native peer retains its original 60s first-LOW wait; allow all bounded
+    // phase waits, while the host independently enforces its 4s/5s lease.
+    if !owner_ready && passes >= 80 { return Err(0x78); }
+    Ok(owner_ready)
+}
+
 // Five actual monitor passes, >=5k ticks/switches, both non-yielding spinners,
 // queue and mutex-inheritance progress, no fault or assembly context error.
 fn ready(v: [u32; 10]) -> bool {
@@ -35,12 +45,13 @@ fn ready(v: [u32; 10]) -> bool {
 
 // E's byte is a failed guard, NOT watchdog REASON and never a success packet.
 pub(crate) fn diagnostic_packet(nonce: u32, code: u32) -> Option<u32> {
-    let uart_code = cfg!(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi"))
+    let uart_code = cfg!(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c"))
         && (matches!(code, 0x40..=0x4f) && code != 0x45 || matches!(code, 0x50..=0x54))
         || cfg!(feature = "freertos-r3-watchdog-warm-uart") && code == 0x55;
     let spi_code = cfg!(feature = "freertos-r3-watchdog-warm-spi")
         && matches!(code, 0x60..=0x6b) && code != 0x62;
-    if !uart_code && !spi_code && !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
+    let i2c_code = cfg!(feature = "freertos-r3-watchdog-warm-i2c") && matches!(code, 0x70..=0x79);
+    if !uart_code && !spi_code && !i2c_code && !matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34) {
         return None;
     }
     identity::encode_entry(nonce, code).map(|word| word ^ 0x5000_0005)
@@ -64,6 +75,27 @@ mod target {
     static mut EPOCH: [u32; 4] = [0; 4]; // Initialized only after fresh BSS clear.
     static mut SENT: bool = false;
     pub fn is_warm() -> bool { unsafe { ptr::addr_of!(EPOCH).read()[0] != 0 } }
+
+    #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+    #[inline(never)]
+    pub fn i2c_failure(code: u32) -> ! {
+        // Terminal takeover on sole proc0: stop SysTick/PendSV/worker BEFORE
+        // touching its marker. No worker/ISR can resume after this diagnostic.
+        unsafe {
+            asm!("cpsid i", "dsb sy", "isb", options(nostack));
+            let out = 0x400e_0000 as *mut u32;
+            out.write_volatile(out.read_volatile() & !(1 << 22));
+            asm!("dsb sy", options(nostack));
+            reset_entry::diagnostic_halt_with_entry(code,ptr::addr_of!(EPOCH).read())
+        }
+    }
+    #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+    #[inline(never)]
+    pub fn i2c_monitor_ready() -> bool {
+        match i2c_monitor_gate(get(14),freertos_r1::warm_i2c::ready(),unsafe { ptr::addr_of!(SENT).read() }) {
+            Ok(ready) => ready, Err(code) => i2c_failure(code),
+        }
+    }
 
     unsafe fn read(address: usize) -> u32 { unsafe { (address as *const u32).read_volatile() } }
     fn halt() -> ! { loop { unsafe { asm!("wfe", options(nomem, nostack)); } } }
@@ -134,6 +166,8 @@ mod target {
             }
             #[cfg(feature = "freertos-r3-watchdog-warm-spi")]
             if let Err(code) = crate::freertos_r1::warm_spi::prepare(p.spi0, &mut p.gpio) { reject(code); }
+            #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+            if let Err(code) = crate::freertos_r1::warm_i2c::prepare(p.i2c1, &mut p.gpio) { i2c_failure(code); }
             freertos_r1::run(marker); // New queues/TCBs/PSP stacks and official SVC.
         }
     }
@@ -148,6 +182,8 @@ mod target {
         }
         // Always own GPIO on the warm epoch, including before/after the packet.
         let sent = unsafe { ptr::addr_of!(SENT).read() };
+        #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+        if !i2c_monitor_ready() { return true; }
         #[cfg(feature = "freertos-r3-watchdog-warm-spi")]
         match spi_monitor_gate(get(14), crate::freertos_r1::warm_spi::ready(), sent) {
             Ok(false) => return true,
@@ -157,6 +193,8 @@ mod target {
             Ok(true) => {},
         }
         if sent || get(14) < 5 { return true; }
+        #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+        if !(0..7).all(|slot| get(32+slot) >= 32) || get(160) < 32 { i2c_failure(0x77); }
         assert!(ready([get(14),get(8),get(9),get(64),get(80),get(49),get(50),
             get(3)|get(4),get(70),get(86)]));
         assert_eq!((get(19),get(20),get(39)),(0x1357_9bdf,0,1));
@@ -183,6 +221,8 @@ mod target {
 }
 #[cfg(target_arch = "arm")]
 pub use target::{is_warm, emit_pending};
+#[cfg(all(target_arch = "arm", feature = "freertos-r3-watchdog-warm-i2c"))]
+pub use target::{i2c_failure, i2c_monitor_ready};
 
 #[cfg(test)]
 mod tests {
@@ -205,10 +245,11 @@ mod tests {
         for nonce in [1,0x8001,0xffff] {
             for code in 0..=255 {
                 let allowed = matches!(code, 1..=5 | 0x10..=0x12 | 0x20..=0x23 | 0x30..=0x34)
-                    || cfg!(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi"))
+                    || cfg!(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c"))
                         && (matches!(code, 0x40..=0x4f) && code!=0x45 || matches!(code, 0x50..=0x54))
                     || cfg!(feature = "freertos-r3-watchdog-warm-uart") && code == 0x55
-                    || cfg!(feature = "freertos-r3-watchdog-warm-spi") && matches!(code, 0x60..=0x6b) && code != 0x62;
+                    || cfg!(feature = "freertos-r3-watchdog-warm-spi") && matches!(code, 0x60..=0x6b) && code != 0x62
+                    || cfg!(feature = "freertos-r3-watchdog-warm-i2c") && matches!(code, 0x70..=0x79);
                 assert_eq!(diagnostic_packet(nonce,code).is_some(), allowed);
                 if let Some(p)=diagnostic_packet(nonce,code) {
                     assert_eq!(p>>28,0xe);
@@ -251,5 +292,16 @@ mod tests {
         }
         #[cfg(feature = "freertos-r3-watchdog-warm-spi")]
         assert_eq!(packet(1,1).unwrap() >> 28, 0xf);
+    }
+
+    #[test]
+    fn i2c_wait_and_revocation_are_separate_from_spi() {
+        for passes in 0..=81 {
+            assert_eq!(i2c_monitor_gate(passes,false,false),if passes<80 {Ok(false)} else {Err(0x78)});
+            assert_eq!(i2c_monitor_gate(passes,false,true),Err(0x79));
+            assert_eq!(i2c_monitor_gate(passes,true,false),Ok(true));
+        }
+        #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+        assert_eq!(packet(1,1).unwrap() >> 28,9);
     }
 }
