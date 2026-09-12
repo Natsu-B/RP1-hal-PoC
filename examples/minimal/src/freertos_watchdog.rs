@@ -155,6 +155,18 @@ pub use target::worker;
 mod tests {
     use super::*;
     #[test]
+    #[cfg(feature = "freertos-r3-reset-entry-selftest")]
+    fn nonce_is_checked_with_checksum() {
+        for nonce in [1,2,0xffff] {
+            let mut words=request_words();words[7]^=words[6]^nonce;words[6]=nonce;
+            assert!(valid_request(words));words[7]^=1;assert!(!valid_request(words));
+        }
+        for nonce in [0,0x10000,u32::MAX] {
+            let mut words=request_words();words[7]^=words[6]^nonce;words[6]=nonce;
+            assert!(!valid_request(words));
+        }
+    }
+    #[test]
     fn exact_request_and_bounded_receipt() {
         let request = request_words(); assert!(valid_request(request));
         for i in 0..8 { let mut bad=request; bad[i]^=1; assert!(!valid_request(bad)); }

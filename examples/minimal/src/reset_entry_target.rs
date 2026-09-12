@@ -70,7 +70,7 @@ fn halt() -> ! {
 pub unsafe extern "C" fn rp1_freertos_reset_entry_halt() -> ! {
     // Reset disabled IRQs, replaced MSP and cleared BSS. No pre-reset Rust
     // resource/task will execute again; take no lock or exclusive retry loop.
-    let p = unsafe { rp1_hal::Peripherals::steal() };
+    let mut p = unsafe { rp1_hal::Peripherals::steal() };
     let mut marker = p.gpio.pin::<22>().into_output();
     marker.set_low();
     let entry = unsafe { record() };

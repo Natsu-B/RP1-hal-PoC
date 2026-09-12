@@ -85,6 +85,18 @@ pub use target::{emit_pending, wait_for_quiesce};
 mod tests {
     use super::*;
     #[test]
+    #[cfg(feature = "freertos-r3-reset-entry-selftest")]
+    fn nonce_is_checked_with_checksum() {
+        for nonce in [1,2,0xffff] {
+            let mut words=ack_words();words[7]^=words[6]^nonce;words[6]=nonce;
+            assert!(valid_ack(words));words[7]^=1;assert!(!valid_ack(words));
+        }
+        for nonce in [0,0x10000,u32::MAX] {
+            let mut words=ack_words();words[7]^=words[6]^nonce;words[6]=nonce;
+            assert!(!valid_ack(words));
+        }
+    }
+    #[test]
     fn ack_and_packet_are_fixed_and_typed() {
         assert!(valid_ack(ack_words()));
         for i in 0..8 { let mut bad=ack_words();bad[i]^=1;assert!(!valid_ack(bad)); }
