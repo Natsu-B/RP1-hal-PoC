@@ -21,10 +21,12 @@ RP1_RTOS_FEATURE=freertos-r3-watchdog-warm-persistent \
   bash tools/build-freertos-r1.sh /absolute/new/build-output
 ```
 
-The helper currently ends with exit3 **after** foundation BUILD checks: new
-compiled-envelope/hardware admission is deliberately separate. It runs pure
+The helper ends with exit3 **after** foundation and exact reviewed-image BUILD
+checks: hardware admission is deliberately separate. It runs pure
 owner-state tests, exact calibration comparisons, pinned-memory QEMU tests and
-ELF/vector/layout checks. No hardware is touched by this command.
+ELF/vector/layout checks. `tools/check-warm-persistent-elf.py` pins the reviewed
+ELF and its198-byte PRIMASK interval; an unreviewed rebuild is refused.
+No hardware is touched by this command.
 
 Link12/13 candidate SHA256:
 `abb0192767f849ccbaaaecf0c60d408084d84451192ad46a9c034dbfb1fa854a`.

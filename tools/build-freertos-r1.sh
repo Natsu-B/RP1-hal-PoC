@@ -169,8 +169,9 @@ arm-none-eabi-size "$out/RP1.elf"
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" > "$out/elf-validation.json"
 if [[ "$requested_feature" == freertos-r3-watchdog-warm-persistent ]]; then
     # New linked code cannot inherit AZ's exact image/opcode admission.
+    python3 -B "$repo/tools/check-warm-persistent-elf.py" --self-test "$out/RP1.elf" > "$out/persistent-elf-validation.json"
     sha256sum "$out/RP1.elf" > "$out/output.sha256"
-    printf 'BC_foundation_build=PASS compiled_envelope_review=OPEN hardware_admission=REFUSED\n'
+    printf 'BC_foundation_build=PASS compiled_envelope_review=PASS hardware_admission=REFUSED\n'
     exit 3
 fi
 if [[ ( "$feature" == freertos-r3-watchdog-warm-guard || "$feature" == freertos-r3-watchdog-kernel-restart ) || "$feature" == freertos-r3-watchdog-expiry-entry || "$feature" == freertos-r3-reset-entry-selftest || "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
