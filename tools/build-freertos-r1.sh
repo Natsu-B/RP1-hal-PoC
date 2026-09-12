@@ -6,7 +6,7 @@ out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 requested_feature=$feature
 # Reuse the WDT9 test/build family, but pass the actual opt-in feature to Cargo.
-if [[ "$feature" == freertos-r3-watchdog-kernel-restart-masked || "$feature" == freertos-r3-watchdog-warm-uart || "$feature" == freertos-r3-watchdog-warm-spi || "$feature" == freertos-r3-watchdog-warm-i2c ]]; then
+if [[ "$feature" == freertos-r3-watchdog-kernel-restart-masked || "$feature" == freertos-r3-watchdog-warm-uart || "$feature" == freertos-r3-watchdog-warm-spi || "$feature" == freertos-r3-watchdog-warm-i2c || "$feature" == freertos-r3-watchdog-warm-combined ]]; then
     feature=freertos-r3-watchdog-warm-guard
 fi
 case "$feature" in freertos-r3-watchdog-warm-guard|freertos-r3-watchdog-kernel-restart|freertos-r3-watchdog-expiry-entry|freertos-r3-reset-entry-selftest|freertos-r3-watchdog-late-disable|freertos-r3-watchdog-postack|freertos-r3-watchdog-quiescence|freertos-r3-watchdog-arm-receipt|freertos-r3-proc1-worker|freertos-r1|freertos-r1-critical-timing|freertos-r1-fault|freertos-r1-panic|freertos-r1-assert|freertos-r1-timer-irq|freertos-r1-periodic-200us|freertos-r2-spi|freertos-r2-spi-lifecycle|freertos-r2-spi-cancel-window|freertos-r2-i2c-nack|freertos-r2-i2c-peer|freertos-r2-i2c-cancel-window|freertos-r2-uart|freertos-r2-uart-lifecycle|freertos-r2-uart-overflow|freertos-r2-mixed|freertos-r2-mixed-repeat|freertos-r2-mixed-i2c-pair|freertos-r2-mixed-i2c-stream) ;; *) exit 2 ;; esac
@@ -28,14 +28,21 @@ if [[ "$feature" == freertos-r2-spi-lifecycle || "$feature" == freertos-r2-spi-c
 else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 fi
-if [[ "$requested_feature" == freertos-r3-watchdog-warm-uart || "$requested_feature" == freertos-r3-watchdog-warm-spi || "$requested_feature" == freertos-r3-watchdog-warm-i2c ]]; then
-    # Preserve O3 cold-start loop code; fat LTO makes this selected image fit.
+if [[ "$requested_feature" == freertos-r3-watchdog-warm-uart || "$requested_feature" == freertos-r3-watchdog-warm-spi || "$requested_feature" == freertos-r3-watchdog-warm-i2c || "$requested_feature" == freertos-r3-watchdog-warm-combined ]]; then
+    # Individual selected owners retain O3. Combined uses explicit delay bodies
+    # with Oz below and requires its own compiled/hardware admission.
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3 CARGO_PROFILE_RELEASE_LTO=fat
+    if [[ "$requested_feature" == freertos-r3-watchdog-warm-combined ]]; then
+        export CARGO_PROFILE_RELEASE_OPT_LEVEL=z
+    fi
     printf 'rust_lto=%s\n' "$CARGO_PROFILE_RELEASE_LTO"
     owner=warm_uart
     [[ "$requested_feature" != freertos-r3-watchdog-warm-spi ]] || owner=warm_spi
     [[ "$requested_feature" != freertos-r3-watchdog-warm-i2c ]] || owner=warm_i2c
-    for name in warm_uart_prepare "$owner"; do
+    [[ "$requested_feature" != freertos-r3-watchdog-warm-combined ]] || owner=warm_combined
+    owner_sources=(warm_uart_prepare "$owner")
+    [[ "$requested_feature" != freertos-r3-watchdog-warm-combined ]] || owner_sources+=(warm_spi warm_i2c)
+    for name in "${owner_sources[@]}"; do
         cp "$repo/examples/minimal/src/$name.rs" "$out/$name.rs"
         rustc +stable --edition=2024 --test "$out/$name.rs" -o "$out/$name-test"
         "$out/$name-test" > "$out/$name-host-test.txt"
@@ -131,6 +138,15 @@ if [[ "$requested_feature" == freertos-r3-watchdog-warm-i2c ]]; then
     cargo_profile=(--config 'profile.release.package.rp1-freertos.opt-level="s"')
     printf 'rust_rp1_freertos_opt_level=s task_stack_pool_words=2304\n'
 fi
+if [[ "$requested_feature" == freertos-r3-watchdog-warm-combined ]]; then
+    # Static-only Oz reference; independent C kernel remains pinned -Os.
+    # The bottom-of-file refusal still prevents treating this as admission.
+    python3 -B "$repo/crates/rp1-freertos/tests/sync_pool.py" > "$out/sync-pool-host-test.txt"
+    python3 -B "$repo/crates/rp1-freertos/tests/newlib_memcpy.py" > "$out/newlib-memcpy-host-test.txt"
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=z
+    cargo_profile=(--config 'profile.release.package.rp1-freertos.opt-level="z"')
+    printf 'rust_all_opt_level=z task_stack_pool_words=2304 sync_pool=2/4/1 newlib_memcpy=pinned cold_path_compiled_review=REQUIRED\n'
+fi
 cargo +stable "${cargo_profile[@]}" rustc --offline --locked --release --target thumbv7m-none-eabi \
   -p rp1-example-minimal --no-default-features --features "$requested_feature" -- -C "link-arg=-Map=$out/RP1.map"
 cp "${CARGO_TARGET_DIR:-$repo/target}/thumbv7m-none-eabi/release/rp1-example-minimal" "$out/RP1.elf"
@@ -141,7 +157,13 @@ arm-none-eabi-size "$out/RP1.elf"
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" > "$out/elf-validation.json"
 if [[ ( "$feature" == freertos-r3-watchdog-warm-guard || "$feature" == freertos-r3-watchdog-kernel-restart ) || "$feature" == freertos-r3-watchdog-expiry-entry || "$feature" == freertos-r3-reset-entry-selftest || "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
     python3 -B "$repo/tools/test-freertos-watchdog.py" > "$out/watchdog-validator-test.txt"
-    python3 -B "$repo/tools/check-freertos-watchdog-elf.py" --self-test "$out/RP1.elf" > "$out/watchdog-elf-validation.json"
+    if [[ "$requested_feature" == freertos-r3-watchdog-warm-combined ]]; then
+        # The reviewed active envelope is inlined; do not weaken the old named
+        # probe checker or silently accept a different binary.
+        python3 -B "$repo/tools/check-warm-combined-elf.py" --self-test "$out/RP1.elf" > "$out/watchdog-elf-validation.json"
+    else
+        python3 -B "$repo/tools/check-freertos-watchdog-elf.py" --self-test "$out/RP1.elf" > "$out/watchdog-elf-validation.json"
+    fi
 fi
 sha256sum "$out/RP1.elf" > "$out/output.sha256"
 if [[ "$feature" == freertos-r3-reset-entry-selftest ]]; then
@@ -150,7 +172,13 @@ fi
 if [[ "$feature" == freertos-r3-watchdog-expiry-entry ]]; then
     python3 -B "$repo/tools/check-reset-entry-elf.py" --expiry-entry --self-test "$out/RP1.elf" > "$out/reset-entry-elf-validation.json"
 fi
-if [[ "$requested_feature" == freertos-r3-watchdog-warm-i2c ]]; then
+if [[ "$requested_feature" == freertos-r3-watchdog-warm-combined ]]; then
+    python3 -B "$repo/tools/test-warm-combined.py" > "$out/warm-combined-validator-test.txt"
+    # Link/test output is preserved, but not a deployment admission. The combined
+    # image needs its own compiled startup/fit/IRQ/stack review, not AY's pin.
+    printf 'combined_compiled_review=OPEN hardware_admission=REFUSED\n'
+    exit 3
+elif [[ "$requested_feature" == freertos-r3-watchdog-warm-i2c ]]; then
     i2c_elf_args=()
     # No implicit first-build admission: set only after source/compiled review.
     if [[ -n "${RP1_WARM_I2C_ELF_SHA256:-}" ]]; then

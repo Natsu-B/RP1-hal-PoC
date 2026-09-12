@@ -120,6 +120,9 @@ fn main() {
                     .map(|_| "-DRP1_FREERTOS_ASSERT_PROBE=1"))
                 .args(env::var_os("CARGO_FEATURE_TASK_POOL_2304")
                     .map(|_| "-DRP1_FREERTOS_TASK_POOL_2304=1"))
+                .args(env::var_os("CARGO_FEATURE_SYNC_POOL_R1")
+                    .filter(|_| source.ends_with("c/bridge.c"))
+                    .map(|_| "-DRP1_FREERTOS_SYNC_POOL_R1=1"))
                 .arg("-I")
                 .arg(Path::new(&root).join("c"))
                 .arg("-I")
@@ -132,6 +135,34 @@ fn main() {
                 .arg(&object),
         );
         objects.push(object);
+    }
+    if env::var_os("CARGO_FEATURE_NEWLIB_MEMCPY").is_some() {
+        // Reuse the installed, pinned Cortex-M3 soft-ABI libc member only.
+        // No full libc, allocator, syscalls, or home-grown memcpy implementation.
+        let archive = output(Command::new(&cc).args([
+            "-mcpu=cortex-m3", "-mthumb", "-mfloat-abi=soft", "-print-file-name=libc.a"]));
+        assert!(Path::new(&archive).is_file(), "Cortex-M3 newlib archive missing");
+        println!("cargo:rerun-if-changed={archive}");
+        let mut provenance = format!("archive={archive}\n");
+        for (name, expected, dependencies) in [
+            ("memcpy", "0fdf219488b13b471c3b667e5450cba6e4982cbb672624159453a311a92cde73", ""),
+            ("aeabi_memcpy", "c60f15b208dbfd9ba3857c0b24abf198df018813001e820607a878b2749cc3be", "U memcpy"),
+        ] {
+            let member_name = format!("libc_a-{name}.o");
+            let member = Command::new(&ar).args(["p", &archive, &member_name])
+                .output().expect("extract newlib memcpy member");
+            assert!(member.status.success(), "newlib memcpy extraction failed");
+            let object = Path::new(&out).join(format!("newlib-{name}.o"));
+            fs::write(&object, member.stdout).unwrap();
+            let hash = output(Command::new("sha256sum").arg(&object));
+            assert_eq!(hash.split_whitespace().next().unwrap(), expected,
+                "newlib memcpy change requires explicit source/ABI review");
+            assert_eq!(output(Command::new("arm-none-eabi-nm").arg("-u").arg(&object)),
+                dependencies, "memcpy members must have no other runtime dependencies");
+            provenance.push_str(&format!("member={member_name}\n{hash}\n"));
+            objects.push(object);
+        }
+        fs::write(Path::new(&out).join("newlib-memcpy.txt"), provenance).unwrap();
     }
     output(
         Command::new(ar)

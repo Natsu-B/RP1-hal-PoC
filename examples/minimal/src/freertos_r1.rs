@@ -34,17 +34,22 @@ mod kernel_restart;
 #[cfg(feature = "freertos-r3-watchdog-warm-uart")]
 #[path = "warm_uart.rs"]
 mod warm_uart;
-#[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c"))]
+#[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
 #[path = "warm_uart_prepare.rs"]
 mod warm_uart_prepare;
-#[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+#[cfg(any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
 #[path = "warm_i2c.rs"]
 mod warm_i2c;
 #[cfg(all(feature = "freertos-r3-watchdog-warm-i2c", any(feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-uart")))]
 compile_error!("Warm I2C, SPI and UART are separate slot7/marker/receipt owners");
-#[cfg(feature = "freertos-r3-watchdog-warm-spi")]
+#[cfg(any(feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-combined"))]
 #[path = "warm_spi.rs"]
 mod warm_spi;
+#[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+#[path = "warm_combined.rs"]
+mod warm_combined;
+#[cfg(all(feature = "freertos-r3-watchdog-warm-combined", any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-uart")))]
+compile_error!("Combined warm owner excludes the three standalone owners");
 #[cfg(all(feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-uart"))]
 compile_error!("Warm SPI and warm UART are separate slot7/receipt/IRQ owners");
 #[cfg(all(feature = "freertos-r3-watchdog-expiry-entry", feature = "freertos-r3-watchdog-late-disable"))]
@@ -157,8 +162,10 @@ fn calibrate_cpu_hz() -> u32 {
 
 pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
     for n in 0..256 { put(n, 0); } // Clear stale exception record as well.
-    #[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c"))]
+    #[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
     if kernel_restart::is_warm() { warm_uart_prepare::publish(); }
+    #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+    if kernel_restart::is_warm() { warm_combined::publish(); }
     #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
     if kernel_restart::is_warm() { warm_i2c::publish(); }
     #[cfg(feature = "freertos-r3-watchdog-warm-spi")]
@@ -184,10 +191,11 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
     }
     let hz = calibrate_cpu_hz(); put(5, hz); put(2, 2);
     unsafe {
+        // A valid unused slot isolates the capacity guard from slot/occupied errors.
+        assert!(U32Queue::create(0, 0).is_err());
+        assert!(U32Queue::create(0, 17).is_err());
         ptr::addr_of_mut!(QUEUE).write(Some(U32Queue::create(0, 4).unwrap()));
         ptr::addr_of_mut!(CHECK_QUEUE).write(Some(U32Queue::create(1, 1).unwrap()));
-        assert!(U32Queue::create(2, 0).is_err());
-        assert!(U32Queue::create(2, 17).is_err());
         #[cfg(feature = "freertos-r2-mixed-i2c-pair")]
         mixed::pair::prepare();
         ptr::addr_of_mut!(SEM).write(Some(BinarySemaphore::create(0).unwrap()));
@@ -277,6 +285,11 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
             let handle = Task::create(7, c"warm-i2c", warm_i2c::worker, ptr::null_mut(), 5, 512).unwrap();
             ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
         }
+        #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+        if kernel_restart::is_warm() {
+            let handle = Task::create(7, c"warm-combined", warm_combined::worker, ptr::null_mut(), 5, 512).unwrap();
+            ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
+        }
         os::start(hz).unwrap();
     }
     panic!("scheduler returned")
@@ -338,9 +351,9 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     unsafe { critical_timing_calibrate(); }
     #[cfg(feature = "freertos-r1-periodic-200us")]
     unsafe { put(170, task(0).priority().unwrap()); }
-    #[cfg(not(any(feature = "freertos-r2-i2c-peer", feature = "freertos-r3-watchdog-warm-i2c")))]
+    #[cfg(not(any(feature = "freertos-r2-i2c-peer", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined")))]
     let mut marker = unsafe { ptr::addr_of!(MARKER).read().unwrap() };
-    #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+    #[cfg(any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
     let mut marker = if kernel_restart::is_warm() { None }
         else { unsafe { ptr::addr_of_mut!(MARKER).replace(None) } };
     #[cfg(feature = "freertos-r2-i2c-peer")]
@@ -397,7 +410,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         unsafe { put(123, task(7).stack_high_water().unwrap()); }
         unsafe {
             for slot in 0..7 { put(32+slot, task(slot).stack_high_water().unwrap()); }
-            #[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c"))]
+            #[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
             if kernel_restart::is_warm() {
                 let free = task(7).stack_high_water().unwrap();
                 put(160, free); // Sole warm owner PSP margin, outside receipts.
@@ -416,7 +429,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         #[cfg(feature = "freertos-r1-critical-timing")]
         unsafe { critical_timing_publish(); }
         increment(14); put(27, raw_low()); put(2, 5);
-        #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+        #[cfg(any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
         if kernel_restart::is_warm() {
             if kernel_restart::i2c_monitor_ready() {
                 if marker.is_none() { marker = unsafe { ptr::addr_of_mut!(MARKER).replace(None) }; }
@@ -425,7 +438,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
             }
             continue; // No old R1/F/E writer while the warm worker owns GPIO22.
         }
-        #[cfg(feature = "freertos-r3-watchdog-warm-i2c")]
+        #[cfg(any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
         let mut marker = marker.as_mut().unwrap(); // Cold WDT path owns the sole handle.
         #[cfg(feature = "freertos-r3-watchdog-kernel-restart")]
         if unsafe { kernel_restart::emit_pending(&mut marker) } { continue; }

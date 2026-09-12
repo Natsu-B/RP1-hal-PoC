@@ -260,6 +260,7 @@ impl Driver {
     /// No enclosing exclusive Driver borrow or concurrent/reentrant driver call.
     /// `rx` is never ISR-owned. Prefix copies happen under IRQ25 mask; it cannot
     /// return until checked cleanup. Success also requires TX serial BUSY idle.
+    #[inline(never)]
     pub unsafe fn exchange(&self, prompt: &[u8], rx: &mut [u8], timeout_ticks: u32)
         -> Result<Receipt, Error>
     {

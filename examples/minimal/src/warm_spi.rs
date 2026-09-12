@@ -90,7 +90,11 @@ mod target {
     }
     fn priority() -> u32 { unsafe { (0xe000_e413 as *const u8).read_volatile().into() } }
     fn saved(index: usize, value: u32) {
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
         unsafe { ptr::addr_of_mut!(PREP).cast::<u32>().add(index).write_volatile(value); }
+        // AZ keeps the same before-write predicates, not AW's unused raw mirror.
+        #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+        let _ = (index,value);
     }
 
     /// Before scheduler, only after fresh BSS and global NVIC admission. SPI body
@@ -101,6 +105,7 @@ mod target {
         let ctrl = read(0x4001_4004); let done = read(0x4001_401c);
         saved(0,ctrl); saved(1,done);
         if !initial_reset(ctrl,done) { return Err(0x60); }
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
         super::super::warm_uart_prepare::prepare()?;
         crate::release_spi0_reset_bank1_bit10().map_err(|_| 0x61u32)?;
         let ctrl = read(0x4001_4004); let done = read(0x4001_401c);
@@ -122,7 +127,9 @@ mod target {
         if !quiet(masked) || !nvic_quiet() { return Err(0x6a); }
         // The same released-input / CS-high / SCLK-low prerequisite as cold R1.
         let _miso = gpio.pin::<9>().into_input_pull_up();
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
         let _sda = gpio.pin::<2>().into_input_pull_up();
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
         let _scl = gpio.pin::<3>().into_input_pull_up();
         let mut cs0 = gpio.pin::<8>().into_output(); cs0.set_high();
         let mut cs1 = gpio.pin::<7>().into_output(); cs1.set_high();
@@ -143,6 +150,15 @@ mod target {
         }
         unsafe { ptr::addr_of_mut!(HOST).write(Some(host)); ptr::addr_of_mut!(HOST_STATE).write_volatile(1); }
         Ok(())
+    }
+
+    #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+    pub fn take_host() -> Option<Spi0Host> {
+        unsafe {
+            if ptr::addr_of!(HOST_STATE).read_volatile() != 1 { return None; }
+            ptr::addr_of_mut!(HOST_STATE).write_volatile(2);
+            ptr::addr_of_mut!(HOST).replace(None)
+        }
     }
 
     pub fn publish() {
@@ -231,6 +247,7 @@ mod target {
         }
     }
 
+    #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
     #[unsafe(no_mangle)]
     unsafe extern "C" fn SPI0_IRQHandler() {
         let ipsr: u32;
@@ -242,6 +259,8 @@ mod target {
 }
 #[cfg(target_arch = "arm")]
 pub use target::{prepare,publish,ready,worker};
+#[cfg(all(target_arch = "arm", feature = "freertos-r3-watchdog-warm-combined"))]
+pub use target::take_host;
 
 #[cfg(test)]
 mod tests {

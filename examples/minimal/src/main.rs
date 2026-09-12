@@ -138,6 +138,7 @@ mod spi0_caller_deadline_abort_proof;
 #[cfg(any(
     feature = "spi0-miso-input-observation",
     feature = "freertos-r3-watchdog-warm-spi",
+    feature = "freertos-r3-watchdog-warm-combined",
     feature = "spi0-miso-configured-hold",
     feature = "spi0-miso-guarded-input-bias",
     feature = "spi0-timed-peer-zero-irq-proof",
@@ -574,10 +575,22 @@ compile_error!("timer0-inte-ints-proof cannot share another terminal proof mode"
 compile_error!("timer0-alarm0-local-irq26-candidate cannot share another terminal proof mode");
 
 #[cfg(target_arch = "arm")]
+#[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
 fn delay_blink() {
     for _ in 0..500_000 {
         core::hint::spin_loop();
     }
+}
+
+#[cfg(all(target_arch = "arm", feature = "freertos-r3-watchdog-warm-combined"))]
+#[inline(never)]
+fn delay_blink() {
+    // AY's counted body, independent of application Oz. Outlining adds overhead;
+    // this preserves the loop cadence, not an absolute timing guarantee.
+    unsafe { core::arch::asm!(
+        "2:", "yield", "subs {count}, {count}, #50",
+        ".rept 49", "yield", ".endr", "bne 2b",
+        count = inout(reg) 500_000u32 => _, options(nomem, nostack)); }
 }
 
 #[cfg(target_arch = "arm")]
@@ -592,6 +605,7 @@ fn pulse_group(pin: &mut ConfiguredPin<22, Output>, count: u8) {
 }
 
 #[cfg(target_arch = "arm")]
+#[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
 fn delay_readback_units(units: u32) {
     for _ in 0..units * 1_000 {
         // Volatile stack reads keep dynamic pulse widths proportional in release builds.
@@ -601,13 +615,35 @@ fn delay_readback_units(units: u32) {
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "freertos-r3-watchdog-warm-combined"))]
+fn delay_readback_units(units: u32) { delay_readback_batch::<4>(units); }
+
+#[cfg(all(target_arch = "arm", feature = "freertos-r3-watchdog-warm-combined"))]
+#[inline(never)]
+fn delay_readback_batch<const BATCH: u32>(units: u32) {
+    const { assert!(BATCH == 4 || BATCH == 64); }
+    if BATCH == 64 { assert!(matches!(units, 8 | 32)); }
+    let count = units * 1_000;
+    if count == 0 { return; }
+    // Only BATCH4(dynamic pulse high) and BATCH64(constant8/32) are instantiated.
+    // The latter counts are exact multiples of64; every load reads this stack word.
+    unsafe { core::arch::asm!(
+        "2:", "subs {count}, {count}, #{batch}",
+        ".rept {batch}", "ldr {scratch}, [{address}]", ".endr", "bne 2b",
+        count = inout(reg) count => _, address = in(reg) &units,
+        scratch = out(reg) _, batch = const BATCH, options(readonly, nostack)); }
+}
+
 #[cfg(target_arch = "arm")]
 #[inline(never)] // Keep every marker on the same dynamic loop; constant inlining changes unrolling/timing.
 fn pulse_width(pin: &mut ConfiguredPin<22, Output>, units: u32) {
     pin.set_high();
     delay_readback_units(units);
     pin.set_low();
+    #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
     delay_readback_units(8);
+    #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+    delay_readback_batch::<64>(8);
 }
 
 #[cfg(all(target_arch = "arm", feature = "gpio-wiring-proof"))]
@@ -690,7 +726,10 @@ fn endpoint_clock_phase(pin: &mut ConfiguredPin<22, Output>, count: u8) {
     for _ in 0..count {
         pulse_width(pin, 16);
     }
+    #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
     delay_readback_units(32);
+    #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+    delay_readback_batch::<64>(32);
 }
 
 #[cfg(all(target_arch = "arm", feature = "endpoint-clock-only"))]
@@ -10523,7 +10562,7 @@ fn main(mut p: Peripherals) -> ! {
     #[cfg(feature = "rp1-clock-independence-proof")]
     clock_independence::initialize();
 
-    #[cfg(all(feature = "pll-sys-core-lock-only", not(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c"))))]
+    #[cfg(all(feature = "pll-sys-core-lock-only", not(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))))]
     match release_pll_sys_reset_bit29() {
         Ok(()) => pulse_width(&mut gpio22, 72),
         Err(_) => {

@@ -143,6 +143,7 @@ impl Driver {
     /// Running proc0 task, same owner contract as new, notification0 reserved.
     /// No enclosing exclusive Driver borrow or concurrent/reentrant driver call.
     /// Only after masked checked cleanup is the actual prefix copied to rx.
+    #[inline(never)]
     pub unsafe fn receive(&self,address:u8,rx:&mut[u8],timeout:u32)->Result<Receipt,Error> {
         self.last.set(None);
         if address>0x7f || rx.is_empty() || rx.len()>MAX_LEN || timeout==0 || timeout>=0x8000_0000 {

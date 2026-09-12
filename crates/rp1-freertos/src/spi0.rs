@@ -67,6 +67,7 @@ impl Driver {
     /// # Safety
     /// Running proc0 task, no competing use of its notification. Same ownership
     /// contract as `new`; no ISR or other task may access `host` or `rx` directly.
+    #[inline(never)]
     pub unsafe fn receive(&mut self, tx: &[u8], rx: &mut [u8], timeout_ticks: u32)
         -> Result<Receipt, Error>
     {

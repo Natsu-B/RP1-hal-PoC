@@ -6,7 +6,13 @@
 #include <stdint.h>
 #include "static_stack.h"
 
-enum { TASKS = 8, STACK_WORDS = 512, QUEUES = 4, QUEUE_WORDS = 16, SEMAPHORES = 4 };
+enum { TASKS = 8, STACK_WORDS = 512 };
+#ifdef RP1_FREERTOS_SYNC_POOL_R1
+/* R1 uses queues 0/1 (capacity 4/1), binary 0 and mutex 0; task stacks unchanged. */
+enum { QUEUES = 2, QUEUE_WORDS = 4, SEMAPHORES = 1 };
+#else
+enum { QUEUES = 4, QUEUE_WORDS = 16, SEMAPHORES = 4 };
+#endif
 #ifdef RP1_FREERTOS_TASK_POOL_2304
 /* AY: seven unchanged R1 stacks1792 + unchanged owner512; no spare task slots. */
 enum { TASK_STACK_POOL_WORDS = 2304 };

@@ -29,6 +29,16 @@ pub unsafe extern "C" fn Reset() {
         "msr CONTROL, r0",
         "msr BASEPRI, r0",
         "msr FAULTMASK, r0",
+        // Establish the ordinary-memory copy ABI before the first Rust call:
+        // unaligned word/halfword loads allowed, exception frames 8-byte aligned.
+        // Preserve every other CCR bit. Explicit fault probes may change it later.
+        "ldr r0, =0xe000ed14",
+        "ldr r1, [r0]",
+        "bic r1, r1, #8",
+        "orr r1, r1, #0x200",
+        "str r1, [r0]",
+        "dsb sy",
+        "isb",
         "ldr r0, =0x2000e000",
         "ldr r1, =_stack_start",
         "ldr r2, =0xa5a5a5a5",
@@ -56,9 +66,7 @@ unsafe extern "C" fn rp1_freertos_reset() -> ! {
     unsafe {
         super::zero_bss();
         super::configure_vector_table();
-        // CCR.STKALIGN: enforce an 8-byte aligned hardware exception frame.
-        let ccr = 0xe000_ed14 as *mut u32;
-        ccr.write_volatile(ccr.read_volatile() | (1 << 9));
+        // Reset already established CCR before any Rust/copy operation.
     }
     // Warm kernel mode bypasses PCIe/application initialization. The separate
     // entry-only mode still reports and halts; neither is runtime PCIe reinit.

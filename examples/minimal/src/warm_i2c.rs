@@ -48,7 +48,13 @@ mod target {
     struct Buffer { before: u32, bytes: [u8; 4], after: u32 }
     fn read(a: usize) -> u32 { unsafe { (a as *const u32).read_volatile() } }
     fn barrier() { unsafe { core::arch::asm!("dsb sy", options(nostack)); } }
-    fn save(i: usize, v: u32) { unsafe { ptr::addr_of_mut!(PREP).cast::<u32>().add(i).write_volatile(v); } }
+    fn save(i: usize, v: u32) {
+        #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
+        unsafe { ptr::addr_of_mut!(PREP).cast::<u32>().add(i).write_volatile(v); }
+        // AZ has its own schema; retain all prewrite checks, not AY's raw mirror.
+        #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+        let _ = (i,v);
+    }
     fn nvic_quiet() -> bool {
         (read(0xe000_e100) | read(0xe000_e200) | read(0xe000_e300)) & (1 << 8) == 0
     }
@@ -97,6 +103,14 @@ mod target {
             ptr::addr_of_mut!(HOST).write(Some(host)); ptr::addr_of_mut!(PIN).write(Some(pin));
         }
         Ok(())
+    }
+    #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
+    pub fn take_host() -> Option<I2c1Host> {
+        unsafe {
+            // End the READYACK-era input handle lifetime before SPI MISO owns9.
+            let _pin = ptr::addr_of_mut!(PIN).replace(None)?;
+            ptr::addr_of_mut!(HOST).replace(None)
+        }
     }
     pub fn publish() {
         put(124,u32::from_le_bytes(*b"AY01")); put(125,1);
@@ -184,6 +198,7 @@ mod target {
         // Monitor alone owns both marker and post-result revocation from here.
         loop { unsafe { os::delay(1000).unwrap(); } }
     }
+    #[cfg(not(feature = "freertos-r3-watchdog-warm-combined"))]
     #[unsafe(no_mangle)]
     unsafe extern "C" fn I2C1_IRQHandler() {
         let ipsr: u32; unsafe { core::arch::asm!("mrs {}, IPSR",out(reg) ipsr,options(nomem,nostack)); }
@@ -197,6 +212,8 @@ mod target {
 }
 #[cfg(target_arch = "arm")]
 pub use target::{prepare,publish,ready,worker};
+#[cfg(all(target_arch = "arm", feature = "freertos-r3-watchdog-warm-combined"))]
+pub use target::take_host;
 
 #[cfg(test)]
 mod tests {
