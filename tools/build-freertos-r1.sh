@@ -5,6 +5,13 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 cargo_feature=$feature
+# R1 local-stack control and halt-only UDF probe are independent of WDT requests.
+local_stack=0
+case "$feature" in
+    freertos-r1-local-stack) feature=freertos-r1; local_stack=1 ;;
+    freertos-r1-local-stack-fault) feature=freertos-r1-fault; local_stack=1 ;;
+    freertos-r3-health-local-stack) local_stack=1 ;;
+esac
 # Health shadow reuses the persistent build family, not its exact ELF admission.
 if [[ "$feature" == freertos-r3-health-shadow || "$feature" == freertos-r3-health-local-stack ]]; then
     feature=freertos-r3-watchdog-warm-persistent
@@ -184,13 +191,19 @@ arm-none-eabi-nm -n "$out/RP1.elf" > "$out/symbols.txt"
 arm-none-eabi-objdump -d "$out/RP1.elf" > "$out/disassembly.txt"
 arm-none-eabi-size "$out/RP1.elf"
 elf_args=()
-if [[ "$cargo_feature" == freertos-r3-health-local-stack ]]; then
+if [[ "$local_stack" == 1 ]]; then
     elf_args+=(--local-monitor-stack)
     cc -std=c11 -Wall -Wextra -Werror "$repo/tools/test-static-stack.c" -o "$out/static-stack-test"
     "$out/static-stack-test"
     python3 -B "$repo/tools/test-local-monitor-elf.py" "$out/RP1.elf" > "$out/local-monitor-negative-test.json"
 fi
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" "${elf_args[@]}" > "$out/elf-validation.json"
+if [[ "$cargo_feature" == freertos-r1-local-stack || "$cargo_feature" == freertos-r1-local-stack-fault ]]; then
+    python3 -B "$repo/tools/check-local-r1-elf.py" --self-test "$out/RP1.elf" "$cargo_feature" > "$out/local-r1-validation.json"
+    sha256sum "$out/RP1.elf" > "$out/output.sha256"
+    printf 'R1_local_stack_build=PASS hardware_admission=REFUSED\n'
+    exit 3
+fi
 if [[ "$cargo_feature" == freertos-r3-health-shadow || "$cargo_feature" == freertos-r3-health-local-stack ]]; then
     sha256sum "$out/RP1.elf" > "$out/output.sha256"
     printf 'BE_foundation_build=PASS compiled_envelope_review=OPEN hardware_admission=REFUSED\n'
