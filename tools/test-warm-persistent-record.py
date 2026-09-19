@@ -54,6 +54,27 @@ def self_test():
         raise AssertionError('negative accepted')
     require(delta(0xfffffff0,16)==32,'wrap')
     print(f'PASS synthetic BC terminal8 two-sample parser, {len(negatives)} refusals and wrap; no hardware')
+    a,b=w.copy(),z.copy()
+    for words in [a,b]:
+        words[30]=0x10003f20
+        words[60:63]=[int.from_bytes(b'BE01','little'),1,1]
+    a[63],b[63]=30,32
+    result=validate(encode([a,b]),23,16,0x1234,health_local=True)
+    require(result['result']=='WARM_HEALTH_LOCAL_STACK_RECORD_VALID' and not result['hardware_acceptance'],'BE observation only')
+    require(result['progress_deltas']['63']==2,'terminal refusal progress')
+    try:validate(encode([a,b]),23,16,0x1234)
+    except ValueError:pass
+    else:raise AssertionError('default BC admits local PSP')
+    bad_pairs=[(w,z)]
+    for i,value in [(30,0x20008000),(30,0x100037f8),(30,0x10004000),(30,0x10003f21),
+                    (67,0x10003f20),(83,0x10003f20),(177,0x10003f20),(60,0),(61,0),(61,2),
+                    (62,0),(62,2),(63,0),(63,30),(63,29),(63,0x80000000),(18,4096),(192,0x31544652)]:
+        bad=b.copy();bad[i]=value;bad_pairs.append((a,bad))
+    for pair in bad_pairs:
+        try:validate(encode(pair),23,16,0x1234,health_local=True)
+        except ValueError:continue
+        raise AssertionError('BE negative accepted')
+    print(f'PASS synthetic BE local monitor PSP + consume/replay/terminal counters, {len(bad_pairs)+1} refusals; no hardware')
 
 
 self_test()

@@ -46,7 +46,7 @@ def digest(data):
         value=((value^byte)*0x01000193)&0xffffffff
     return value
 
-def check_words(w, nonce, warm_len, warm_digest):
+def check_words(w, nonce, warm_len, warm_digest, *, health_local=False):
     require(len(w) == 256 and all(type(v) is int and 0 <= v <= 0xffffffff for v in w), 'word shape')
     require(w[:5] == [0x31305452,1,5,0,0], 'RT01/stage/fault')
     require(w[96:101] == [0x384e524b,nonce,1,warm_len,warm_digest], 'warm epoch/reason/data identity')
@@ -60,6 +60,9 @@ def check_words(w, nonce, warm_len, warm_digest):
     require((w[8]-w[162])&0xffffffff <= 2000, 'stale monitor health')
     require(not any(w[166:169]), 'BC reserved words')
     require(w[19] == 0x13579bdf and w[20] == 0 and w[39] == 1, 'startup/sync sentinels')
+    if health_local:
+        require(w[60:63] == [int.from_bytes(b'BE01','little'),1,1] and 0 < w[63] < 0x80000000,
+                'BE shadow consume/replay/terminal refusal')
     require(not any(w[i] for i in [56,57,58,59,70,86,183]), 'fault/context error')
     # RFT1 publishes its body before magic192; reject partial fault publication too.
     require(not any(w[105:108]+w[184:256]), 'warm reserved/fault publication')
@@ -69,8 +72,9 @@ def check_words(w, nonce, warm_len, warm_digest):
     for i, capacity in zip(HWM, STACK_WORDS):
         require(32 <= w[i] <= capacity, 'task watermark')
     contexts = [w[28:32], w[65:69], w[81:85], w[175:178]]
-    for c in contexts:
-        require(c[0] == 0 and c[1] & 3 == 2 and c[2] % 8 == 0 and 0x20000000 <= c[2] < 0x2000e000, 'task IPSR/CONTROL/PSP')
+    for index, c in enumerate(contexts):
+        low, high = (0x10003800,0x10004000) if health_local and index == 0 else (0x20000000,0x2000e000)
+        require(c[0] == 0 and c[1] & 3 == 2 and c[2] % 8 == 0 and low <= c[2] < high, 'task IPSR/CONTROL/PSP')
         if len(c) == 4:
             require(c[3] % 8 == 0 and 0x2000e000 <= c[3] <= 0x2000f000, 'MSP range')
     require(len({c[2] for c in contexts}) == len(contexts), 'distinct PSPs')
@@ -95,7 +99,7 @@ def check_words(w, nonce, warm_len, warm_digest):
     require(12000 <= w[178] <= 14000 and 28000 <= w[179] <= 30000, 'owner pulse range')
     return receipts
 
-def validate(text, nonce, warm_len, warm_digest):
+def validate(text, nonce, warm_len, warm_digest, *, health_local=False):
     require(0 < nonce <= 0xffff and 0 < warm_len <= 0x10000 and 0 <= warm_digest <= 0xffffffff, 'expected identity')
     require('observer-quiesced no-more-rp1-access=1' not in text, 'old no-access claim')
     lines = []
@@ -125,7 +129,7 @@ def validate(text, nonce, warm_len, warm_digest):
         read_begin, read_end = map(int, take(rf'sample={sample} END read_begin_counter=(\d+) read_end_counter=(\d+)'))
         require(begin <= read_begin <= read_end < begin+hz, 'read interval')
         require(before == after == [words[i] for i in IDENTITY], 'identity bracket change')
-        receipts = check_words(words, nonce, warm_len, warm_digest)
+        receipts = check_words(words, nonce, warm_len, warm_digest, health_local=health_local)
         samples.append(dict(words=words, begin_counter=begin, read_begin_counter=read_begin,
             read_end_counter=read_end, receipts=receipts, msp_used_bytes=words[18],
             task_stack_free_words=[words[i] for i in HWM],
@@ -135,20 +139,26 @@ def validate(text, nonce, warm_len, warm_digest):
     a, b = samples
     require(a['read_end_counter'] < b['begin_counter'], 'overlapping reads')
     stable = IDENTITY + list(range(96,108)) + list(range(124,162)) + list(range(163,184))
+    if health_local:
+        stable += [60,61,62]
     require(all(a['words'][i] == b['words'][i] for i in stable), 'warm identity/receipt/quiet IRQ changed')
     require(all(x >= y for x,y in zip(a['task_stack_free_words'],b['task_stack_free_words'])), 'minimum-free HWM increased')
     require(b['msp_used_bytes'] >= a['msp_used_bytes'], 'MSP used decreased')
-    progress = {str(i):delta(a['words'][i],b['words'][i]) for i in PROGRESS}
+    progress = {str(i):delta(a['words'][i],b['words'][i]) for i in PROGRESS + ([63] if health_local else [])}
     # Compare old publication to the later complete copy, not simultaneity of
     # volatile live fields within one copy. Publication fields are stable above.
     for latched, live in [(101,8),(102,9),(103,49),(104,50)]:
         require((b['words'][live]-a['words'][latched]) & 0xffffffff < 0x80000000, 'latched counter ahead of later live progress')
-    return dict(result='WARM_EIGHT_GENERATION_RECORD_VALID', classification='OBSERVATION_ONLY',
+    return dict(result='WARM_HEALTH_LOCAL_STACK_RECORD_VALID' if health_local else 'WARM_EIGHT_GENERATION_RECORD_VALID', classification='OBSERVATION_ONLY',
         hardware_acceptance=False, nonce=nonce, counter_hz=hz, ack_counter=ack,
+        health_local_stack=health_local,
         sample_gap_us=(b['read_begin_counter']-a['read_begin_counter'])*1e6/hz,
         progress_deltas=progress, samples=samples, atomic_snapshot_proven=False,
         boundary='Only terminal generation8 quiet copies, not in-flight atomicity/health feeding/30-minute service. Needs same-run image/type8/peer/host-observation-order/recovery joins. Returned fixed BAR2 samples only; not uninterrupted link or full R1/R2/R3 admission.')
 
 if __name__ == '__main__':
-    require(len(sys.argv)==5,'usage: UART nonce warm-data-bytes warm-data-fnv1a')
-    print(json.dumps(validate(Path(sys.argv[1]).read_text(),*(int(v,0) for v in sys.argv[2:])),indent=2))
+    args=sys.argv[1:]
+    health_local=args[:1]==['--health-local-stack']
+    if health_local:args=args[1:]
+    require(len(args)==4,'usage: [--health-local-stack] UART nonce warm-data-bytes warm-data-fnv1a')
+    print(json.dumps(validate(Path(args[0]).read_text(),*(int(v,0) for v in args[1:]),health_local=health_local),indent=2))
