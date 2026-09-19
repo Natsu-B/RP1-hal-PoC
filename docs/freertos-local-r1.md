@@ -29,6 +29,7 @@ RP1_RTOS_FEATURE=freertos-r1-local-stack CARGO_TARGET_DIR=/dev/shm/rp1-r1-target
 RP1_RTOS_FEATURE=freertos-r1-local-stack-fault CARGO_TARGET_DIR=/dev/shm/rp1-r1-target \
   bash tools/build-freertos-r1.sh /dev/shm/rp1-r1-fault-output
 python3 -B tools/check-local-r1-record.py --self-test /dev/shm/rp1-r1-fault-output/RP1.elf
+python3 -B tools/check-local-r1-record.py --control --self-test /dev/shm/rp1-r1-control-output/RP1.elf
 ```
 
 Successful builds intentionally exit **3**, with BUILD/PASS JSON and hardware
@@ -43,6 +44,12 @@ the ELF-derived fault PC, register patterns, and a stable halt record. Its
 result is OBSERVATION_ONLY. It does **not** establish same-boot ELF identity,
 GPIO behavior, complete R1 acceptance, observer integrity, or recovery.
 Those joins must be checked independently before any hardware claim.
+
+`--control` uses the shared R1 runtime validator for context, progress, tick,
+queue/mutex and stack checks, then requires the monitor PSP in the local range
+and HWM values below the actual seven task budgets. Both modes reuse its
+fixed31-copy decoder, including rejection of mixed observer completion modes.
+Control19 and fault22 synthetic refusal cases pass; they are not hardware runs.
 
 This control/fault pair does not substitute for the combined R2 image,
 BE warm-health/local-stack cohort, watchdog recovery, or R3 completion.

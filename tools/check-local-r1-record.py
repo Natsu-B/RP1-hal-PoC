@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RFT1 local-task frame observation, not same-boot/recovery/HW admission.
+"""Local R1/control and RFT1 observations, not same-boot/recovery/HW admission.
 
 PC comes from the reviewed ELF, never from a log's claimed firmware identity.
 All31 fixed observer copies are required. No filtered subset is admitted.
@@ -7,24 +7,50 @@ All31 fixed observer copies are required. No filtered subset is admitted.
 import importlib.util
 import json
 from pathlib import Path
-import re
+import runpy
 import sys
 
 assert __debug__
 
-def decode(text):
-    rows={}
-    for m in re.finditer(r'\[RTOS\] (\d+) (\d{3}) ((?:[0-9a-f]{8} ?){4})',text):
-        number,offset=map(int,m.group(1,2));sample=rows.setdefault(number,{})
-        assert offset not in sample,'duplicate row'
-        sample[offset]=[int(w,16) for w in m[3].split()]
-    assert text.count('[RTOS] observer-complete read-only=1')==1,'observer completion'
-    assert sorted(rows)==list(range(31)),'fixed31 samples'
+runtime=runpy.run_path(str(Path(__file__).with_name('check-freertos-runtime.py')))
+decode=runtime['decode']
+
+def validate_control(text):
+    result=runtime['validate'](text)
+    for w in decode(text)[3:]:
+        assert 0x10003800<=w[30]<0x10004000,'monitor was not local'
+        assert w[4]==w[40]==w[192]==0,'not the normal control workload'
+        assert all(0<free<budget for free,budget in zip(w[32:39], [512,128,128,256,256,256,256]))
+    result.update(classification='OBSERVATION_ONLY',result='LOCAL_R1_CONTROL_RECORD_OBSERVED',
+        hardware_acceptance=False,local_monitor_stack=True,
+        boundary='Record only; needs same-run ELF/observer/GPIO/recovery joins. Not BE warm-health.')
+    return result
+
+def encode(words):
+    return ''.join(f'[RTOS] {n} {i:03} '+ ' '.join(f'{v:08x}' for v in w[i:i+4])+'\n'
+        for n,w in enumerate(words) for i in range(0,256,4))+'[RTOS] observer-complete read-only=1\n'
+
+def control_self_test():
     records=[]
-    for number in range(31):
-        assert sorted(rows[number])==list(range(0,256,4)),'incomplete record'
-        records.append([w for offset in sorted(rows[number]) for w in rows[number][offset]])
-    return records
+    for i in range(31):
+        w=[0]*256
+        for k,v in {0:0x31305452,1:1,2:5,5:50000000,6:50000000,7:50000000,
+            8:1000*(i+1),9:2000*(i+1),11:1000000*(i+1),12:999,13:1001,
+            14:i+1,15:2*(i+1),17:i+1,18:256,19:0x13579bdf,22:49999,
+            29:2,30:0x10003f20,31:0x2000f000,39:1,49:i+1,50:i+1,
+            64:i+1,66:2,67:0x20002000,80:i+1,82:2,83:0x20003000}.items():w[k]=v
+        w[32:39]=[64]*7;records.append(w)
+    good=encode(records);assert validate_control(good)['mean_tick_us']==1000
+    bad=[good+good, good+runtime['WATCHDOG_FOOTER']+'\n']
+    for k,v in [(30,0x20009000),(30,0x10004000),(30,0x10003f21),(32,513),(33,129),
+                (18,4096),(70,1),(86,1),(9,60000),(15,60),(17,30),(40,1),
+                (192,0x31544652),(31,0x10003f00),(67,0x10003e00),(11,40000000),(4,1)]:
+        changed=[w.copy() for w in records];changed[-1][k]=v;bad.append(encode(changed))
+    for text in bad:
+        try:validate_control(text)
+        except AssertionError:pass
+        else:raise AssertionError('bad local control record accepted')
+    return dict(classification='BUILD',positive=1,refusals=len(bad),hardware=False)
 
 def validate(text,pc):
     assert type(pc) is int and 0x20000000<=pc<0x2000e000 and pc%2==0
@@ -70,11 +96,8 @@ def self_test(pc):
             w[192:210]=[0x31544652,6,0x2000f000,0x10003e80,0,0xfffffffd,
                 0x10000,0,0,0,0x101,0x202,0x303,0x404,0x1212,0x20001235,pc,0x01000000]
         records.append(w)
-    def encode(words):
-        return ''.join(f'[RTOS] {n} {i:03} '+ ' '.join(f'{v:08x}' for v in w[i:i+4])+'\n'
-            for n,w in enumerate(words) for i in range(0,256,4))+'[RTOS] observer-complete read-only=1\n'
     good=encode(records);assert validate(good,pc)['halt_samples']==26
-    bad=[good+good,good.replace('[RTOS] 1 004 ','[OTHER] 1 004 ',1)]
+    bad=[good+good,good.replace('[RTOS] 1 004 ','[OTHER] 1 004 ',1),good+runtime['WATCHDOG_FOOTER']+'\n']
     for i,v in [(30,0x20009000),(30,0x10004000),(193,3),(197,0xfffffff9),
                 (198,0),(199,1),(195,0x20009000),(195,0x100037f8),(195,0x10003fe8),
                 (195,0x10003e81),(194,0x10003f00),(203,0),(207,0),(208,pc+2),
@@ -87,11 +110,17 @@ def self_test(pc):
     return dict(classification='BUILD',positive=1,refusals=len(bad),hardware=False)
 
 if __name__=='__main__':
-    assert len(sys.argv)==3,'--self-test ELF | UART ELF'
+    args=sys.argv[1:];control=args[:1]==['--control']
+    if control:args=args[1:]
+    assert len(args)==2,'[--control] --self-test ELF | UART ELF'
+    path,elf=args
     spec=importlib.util.spec_from_file_location('linked',Path(__file__).with_name('check-local-r1-elf.py'))
     linked=importlib.util.module_from_spec(spec);spec.loader.exec_module(linked)
-    review,_=linked.check(sys.argv[2],'freertos-r1-local-stack-fault')
+    review,_=linked.check(elf,'freertos-r1-local-stack'+('' if control else '-fault'))
     pc=review['probe_pc']
-    result=self_test(pc) if sys.argv[1]=='--self-test' else validate(Path(sys.argv[1]).read_text(),pc)
+    if control:
+        result=control_self_test() if path=='--self-test' else validate_control(Path(path).read_text())
+    else:
+        result=self_test(pc) if path=='--self-test' else validate(Path(path).read_text(),pc)
     result['elf_sha256']=review['elf_sha256']
     print(json.dumps(result,indent=2))
