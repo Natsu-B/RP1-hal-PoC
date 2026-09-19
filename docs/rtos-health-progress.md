@@ -93,8 +93,10 @@ Current integration is experimental and **not deployable**: first complete
 target link exceeded the fixed application SRAM by1580 bytes. An always-inlined
 decision experiment increased it to1876; shared diagnostic failure handling
 reduced that variant to1668. These failed builds are not hardware failures.
-The decision body is returned to one out-of-line copy; the next link must be
-measured. ISR/task stacks, reservations and linker guards are unchanged. Do not
+The decision body returned to one out-of-line copy; normal-05 still exceeds the
+boundary by1372 bytes. The fixed GCC14.2.1 C Os/Oz comparison produced five
+byte-identical objects (zero savings), so no new C flag is adopted.
+ISR/task stacks, reservations and linker guards are unchanged. Do not
 admit or merge this opt-in feature as a verified release until the fit and exact
 linked-code boundary is resolved without weakening its checks.
 
@@ -109,3 +111,37 @@ and restoration review, and any actual hardware proof remain with the root
 integrator. No firmware or hardware success is claimed by this source checkpoint.
 Ponytail kept the change to the existing evidence contract plus a local cursor;
 there is no watchdog abstraction, dependency, task, queue, or MMIO API.
+
+## Host loader-contract check (not a memory-layout implementation)
+
+`tools/check-rtos-staged-loader.py` compiles the pinned generic ELF parser and
+includes the selected bootloader's `rp1_image.rs` intact. Only platform error
+type/log plumbing is stubbed for host tests; no loader algorithm is copied.
+Inputs are existing checkouts at elf97da4af74e67d9007decadb3682b53a808fff8c4 and
+boot6ead136a9721148ec94e5d9cb7f838ea4162fc43. Used source/config paths are hashed
+and checked unchanged; no fetch or source edits occur. Use pinned Rust1.96.0,
+offline cached dependencies, and a new tmpfs output directory:
+
+```sh
+python3 -B tools/check-rtos-staged-loader.py \
+  --elf-checkout /path/to/pinned-hypervisor-checkout \
+  --boot-checkout /path/to/selected-bootloader-checkout \
+  --out /dev/shm/rtos-loader-check-unique
+```
+
+The runner checks host disk/tmpfs capacity; additionally check RAM and per-user
+tmpfs quota before running. Build jobs are one, debug info/incremental are off.
+Host libtest requires `panic=unwind`; this applies only to the host parser build,
+not the RP1 target or its C ABI. The target remains unchanged.
+
+The six tests cover physical staging with distinct VMA, zero-filled holes,
+PT_NULL non-load handling, overlapping BSS PT_LOAD rejection in both orders,
+local/out-of-window physical-load rejection, malformed sizes/alignment/file
+ranges, local-entry rejection, and the generic64KiB loader's lack of RTOS
+reservation policy. Test payloads are patterns and are never executed as ARM.
+
+In particular, the generic loader accepts some destinations that overlap the
+RTOS MSP/reservations. Its success is NOT permission to deploy. The current
+VMA==paddr and belowe000 ELF guards stay intact. Runtime copy/zero order, local
+code ownership, PCIe initializer compatibility, warm retention/fail-closed
+behavior and a future strict opt-in layout remain OPEN.
