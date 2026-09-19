@@ -1,5 +1,50 @@
 # Consumable warm health checkpoint (opt-in source integration)
 
+## 2026-09-19 local monitor stack candidate: BUILD only
+
+`freertos-r3-health-local-stack` adds an explicit proc0-only layout to the
+existing health shadow. Normal build06 links ELF
+`cc693d4008c275cdeb634f68a9d95a31c312d594464f863215a99e8f5b8c1f9c`.
+Shared live data ends at `0x2000ddb4` (588 bytes below `0x2000e000`);
+alignment padding makes the materialized shared payload exactly56KiB.
+This is not hardware admission, health feeding, or a completed R3 result.
+
+- Slot0/monitor keeps its512-word stack at proc0 DSRAM `10003800..10003fff`.
+  Slots1..7 keep1792 words in shared SRAM: total2304 words is unchanged.
+  The4KiB ISR/MSP stack and all task budgets are unchanged. No code relocation,
+  staged copy, shared-SRAM expansion, or new watchdog write is introduced.
+- This is NOBITS/PT_NULL, not a load destination. The pinned loader ignores
+  its payload, but still validates header alignment. File-backed data is padded
+  to8 bytes to satisfy that contract. `xTaskCreateStatic` fills every stack byte
+  withA5 before initializing the exception frame, on every kernel start.
+- Shared BSS clear excludes local DSRAM. The cold composite endpoint path
+  precedes task creation; warm startup skips endpoint reinitialization. The
+  legacy `pcie-ep-init` local initializer and proc1-worker feature are refused
+  in this first opt-in variant. No runtime PCIe reinitialization is admitted.
+- Fault capture accepts an additional32-byte frame only within this exact
+  local stack. Existing shared frame bounds remain intact. Initial monitor
+  telemetry checks its actual PSP range; actual context switching, warm refill,
+  fault capture and high-water margins remain HW OPEN.
+
+Build with `RP1_RTOS_FEATURE=freertos-r3-health-local-stack` using
+`tools/build-freertos-r1.sh /new/tmpfs/output`. Intentional exit3 preserves a
+fitting build while refusing hardware admission pending compiled-envelope review.
+`tools/check-freertos-elf.py IMAGE --local-monitor-stack` checks the exact
+NOBITS/PT_NULL region, all allocated-section ownership and both stack sizes;
+default admission refuses local-stack images. Run `tools/test-local-monitor-elf.py`
+with the same image for positive and mutation checks. `tools/test-static-stack.c`
+exercises the unchanged shared budget plus the local slot allocation policy.
+`tools/check-health-local-stack-elf.py --self-test IMAGE` pins this exact ELF
+and independently reviews its changed cold masked interval:70 reachable
+instructions, no calls, PRIMASK restored fromr10/spill28,100000-iteration bound.
+This is not timing equivalence to BC12 and does not admit an observer or hardware.
+
+The loader runner below now adds two real-LLD fixture tests (eight ordinary
+tests total). `--image IMAGE` additionally tests the actual target ELF against
+the unchanged pinned loader. These are HOST/BUILD tests, not ARM execution.
+The previous staged-code/BSS overlay failed LLD's LMA overlap check even with
+PT_NULL and `AT(0)`; no overlap check was disabled. That design is not used.
+
 `examples/minimal/src/warm_health.rs` is a pure, allocation-free proc0 shadow
 predicate. Feature `freertos-r3-health-shadow` connects it to the existing warm
 monitor and persistent owner. The pure helper writes no register and performs
@@ -132,9 +177,9 @@ python3 -B tools/check-rtos-staged-loader.py \
 The runner checks host disk/tmpfs capacity; additionally check RAM and per-user
 tmpfs quota before running. Build jobs are one, debug info/incremental are off.
 Host libtest requires `panic=unwind`; this applies only to the host parser build,
-not the RP1 target or its C ABI. The target remains unchanged.
+not the RP1 target or its C ABI. The runner does not edit target sources.
 
-The six tests cover physical staging with distinct VMA, zero-filled holes,
+The original six tests cover physical staging with distinct VMA, zero-filled holes,
 PT_NULL non-load handling, overlapping BSS PT_LOAD rejection in both orders,
 local/out-of-window physical-load rejection, malformed sizes/alignment/file
 ranges, local-entry rejection, and the generic64KiB loader's lack of RTOS
@@ -143,5 +188,6 @@ reservation policy. Test payloads are patterns and are never executed as ARM.
 In particular, the generic loader accepts some destinations that overlap the
 RTOS MSP/reservations. Its success is NOT permission to deploy. The current
 VMA==paddr and belowe000 ELF guards stay intact. Runtime copy/zero order, local
-code ownership, PCIe initializer compatibility, warm retention/fail-closed
-behavior and a future strict opt-in layout remain OPEN.
+code ownership and lifetime overlap remain OPEN for staged code. The newer
+local-stack-only variant above avoids that mechanism; it has its own strict
+BUILD opt-in and still requires hardware admission.

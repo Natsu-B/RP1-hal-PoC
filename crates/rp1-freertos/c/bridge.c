@@ -13,7 +13,13 @@ enum { QUEUES = 2, QUEUE_WORDS = 4, SEMAPHORES = 1 };
 #else
 enum { QUEUES = 4, QUEUE_WORDS = 16, SEMAPHORES = 4 };
 #endif
-#ifdef RP1_FREERTOS_TASK_POOL_2304
+#ifdef RP1_FREERTOS_LOCAL_MONITOR_STACK
+enum { TASK_STACK_POOL_WORDS = 1792 };
+/* NOLOAD/PT_NULL: xTaskCreateStatic fills all bytes before first use, on
+ * every cold/warm kernel start. Never read this as zero-initialized data. */
+static StackType_t monitor_stack[STACK_WORDS]
+    __attribute__((section(".local_monitor_stack"), aligned(8)));
+#elif defined(RP1_FREERTOS_TASK_POOL_2304)
 /* AY: seven unchanged R1 stacks1792 + unchanged owner512; no spare task slots. */
 enum { TASK_STACK_POOL_WORDS = 2304 };
 #else
@@ -148,10 +154,16 @@ int32_t rp1_freertos_task_create(uint32_t slot, const char *name, TaskFunction_t
     while (length < configMAX_TASK_NAME_LEN && name[length] != '\0') ++length;
     if (length == 0 || length == configMAX_TASK_NAME_LEN) return INVALID;
     if (tasks[slot].handle != NULL) return OCCUPIED;
+    StackType_t *stack = &task_stacks[task_stack_used];
+#ifdef RP1_FREERTOS_LOCAL_MONITOR_STACK
+    uint32_t next_stack = rp1_stack_next_local_monitor(task_stack_used, stack_words, slot);
+    if (slot == 0) stack = monitor_stack;
+#else
     uint32_t next_stack = rp1_stack_next(task_stack_used, stack_words, TASK_STACK_POOL_WORDS);
+#endif
     if (next_stack == UINT32_MAX) return UNAVAILABLE;
     TaskHandle_t handle = xTaskCreateStatic(entry, name, stack_words, argument, priority,
-                                          &task_stacks[task_stack_used], &tasks[slot].tcb);
+                                          stack, &tasks[slot].tcb);
     if (handle == NULL) return UNAVAILABLE;
     task_stack_used = next_stack;
     tasks[slot].handle = handle;

@@ -82,9 +82,8 @@ unsafe extern "C" fn rp1_freertos_reset() -> ! {
 
 // Never call Rust, allocate, lock, or trust a possibly broken task/ISR stack.
 // Diagnostic reservation: fb00..fbff; publication magic is written LAST.
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn RP1RtosFault() {
+macro_rules! capture_fault {
+    ($frame_range:literal) => {
     core::arch::naked_asm!(
         "cpsid i",
         "ldr r0, =0x2000fb00",
@@ -111,12 +110,7 @@ pub unsafe extern "C" fn RP1RtosFault() {
         "str r3, [r0, #32]",
         "ldr r3, [r2, #16]",
         "str r3, [r0, #36]",
-        "ldr r2, =0x20000000",
-        "cmp r1, r2",
-        "blo 3f",
-        "ldr r2, =0x2000efe0",
-        "cmp r1, r2",
-        "bhi 3f",
+        $frame_range,
         "tst r1, #3",
         "bne 3f",
         "movs r2, #40",
@@ -135,4 +129,35 @@ pub unsafe extern "C" fn RP1RtosFault() {
         "wfi",
         "b 4b",
     );
+    };
+}
+
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn RP1RtosFault() {
+    #[cfg(not(feature = "freertos-local-monitor-stack"))]
+    capture_fault!(r#"
+        ldr r2, =0x20000000
+        cmp r1, r2
+        blo 3f
+        ldr r2, =0x2000efe0
+        cmp r1, r2
+        bhi 3f
+    "#);
+    #[cfg(feature = "freertos-local-monitor-stack")]
+    capture_fault!(r#"
+        ldr r2, =0x10003800
+        cmp r1, r2
+        blo 3f
+        ldr r2, =0x10003fe0
+        cmp r1, r2
+        bls 6f
+        ldr r2, =0x20000000
+        cmp r1, r2
+        blo 3f
+        ldr r2, =0x2000efe0
+        cmp r1, r2
+        bhi 3f
+    6:
+    "#);
 }

@@ -23,6 +23,11 @@ fn main() {
     let mailbox_layout = env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT").is_some();
     let mailbox_layout_v1 = env::var_os("CARGO_FEATURE_DEBUG_MAILBOX_LAYOUT_V1").is_some();
     let rtos = env::var_os("CARGO_FEATURE_FREERTOS").is_some();
+    let local_monitor = env::var_os("CARGO_FEATURE_FREERTOS_LOCAL_MONITOR_STACK").is_some();
+    assert!(!local_monitor || (rtos
+        && env::var_os("CARGO_FEATURE_PCIE_EP_INIT").is_none()
+        && env::var_os("CARGO_FEATURE_FREERTOS_PROC1_WORKER").is_none()),
+        "local monitor layout is proc0-only and excludes the legacy local PCIe initializer");
 
     let app_len = if rtos { "56K" } else if stack_low { "62K" } else { "64K" };
     let stack_start = if rtos {
@@ -47,11 +52,14 @@ fn main() {
         "  RP1_DEBUG_STUB (rwx)  : ORIGIN = 0x20010000, LENGTH = 0\n"
     };
 
+    let local_region = if local_monitor {
+        "  RP1_LOCAL_MONITOR (rw) : ORIGIN = 0x10003800, LENGTH = 2K\n"
+    } else { "" };
     let memory_x = format!(
         r#"MEMORY
 {{
   RP1_APP_SRAM (rwx)    : ORIGIN = 0x20000000, LENGTH = {app_len}
-{diag_region}{stub_region}}}
+{diag_region}{stub_region}{local_region}}}
 
 _stack_start = {stack_start};
 __app_limit = ORIGIN(RP1_APP_SRAM) + LENGTH(RP1_APP_SRAM);
@@ -87,6 +95,26 @@ ASSERT(__warm_data_shadow_end <= __app_limit, "warm data overlaps reserved SRAM"
     } else { "" };
     fs::write(out_dir.join("rp1-warm-data.x"), warm_data).unwrap();
 
-    println!("cargo:rustc-link-search={}", manifest_dir);
+    let mut linker = fs::read_to_string(PathBuf::from(&manifest_dir).join("link.x")).unwrap();
+    if local_monitor {
+        // Shared code/data still load in place below e000. Proc-local stack is
+        // allocated, but never uploaded or BSS-cleared by the shared loader.
+        linker = format!("PHDRS {{ shared PT_LOAD FLAGS(7); local PT_NULL FLAGS(6); }}\n{linker}")
+            .replacen("> RP1_APP_SRAM", "> RP1_APP_SRAM :shared", 1)
+            .replace("    __data_end = .;", "    . = ALIGN(8);\n    __data_end = .;");
+        linker.push_str(r#"
+SECTIONS {
+  .local_monitor_stack 0x10003800 (NOLOAD) : ALIGN(8) {
+    __local_monitor_stack_start = .;
+    KEEP(*(.local_monitor_stack));
+    __local_monitor_stack_end = .;
+  } > RP1_LOCAL_MONITOR :local
+  ASSERT(__local_monitor_stack_start == 0x10003800, "local monitor base")
+  ASSERT(__local_monitor_stack_end == 0x10004000, "local monitor 512-word budget")
+}
+"#);
+    }
+    fs::write(out_dir.join("link.x"), linker).unwrap();
     println!("cargo:rustc-link-search={}", out_dir.display());
+    println!("cargo:rustc-link-search={}", manifest_dir);
 }

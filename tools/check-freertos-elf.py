@@ -11,16 +11,19 @@ if not __debug__:
     raise SystemExit('ELF admission requires assertions enabled; refuse -O/PYTHONOPTIMIZE')
 
 
-def check(path):
+def check(path, local_monitor=False):
     data = Path(path).read_bytes()
     assert data[:7] == b'\x7fELF\x01\x01\x01', 'ELF32 little endian required'
     header = struct.unpack_from('<16sHHIIIIIHHHHHH', data)
     assert header[2] == 40, 'ARM ELF required'
     entry, phoff, phsize, phcount = header[4], header[5], header[9], header[10]
     loads = []
+    nulls = []
     for index in range(phcount):
         kind, off, va, pa, filesz, memsz, flags, align = struct.unpack_from('<8I', data, phoff + index * phsize)
         if kind != 1:
+            if kind == 0:
+                nulls.append((off, va, pa, filesz, memsz, flags, align))
             continue
         assert va == pa, 'loader copy contract requires VMA == p_paddr'
         assert 0x20000000 <= pa <= pa + memsz <= 0x2000e000, 'load overlaps reserved SRAM'
@@ -46,6 +49,35 @@ def check(path):
     for index, name in required_vectors.items():
         assert vector[index] == symbols[name] | 1, f'vector {index} must point directly to {name}'
     assert symbols['__ebss'] <= 0x2000e000
+    assert local_monitor == ('__local_monitor_stack_start' in symbols), 'local stack requires explicit admission'
+    if local_monitor:
+        assert symbols['__local_monitor_stack_start'] == 0x10003800
+        assert symbols['__local_monitor_stack_end'] == 0x10004000
+        assert len(nulls) == 1
+        off, va, pa, filesz, memsz, flags, align = nulls[0]
+        assert (va, pa, filesz, memsz, flags, align) == (0x10003800, 0x10003800, 0, 2048, 6, 8)
+        assert off % 8 == 0 and off <= len(data), 'PT_NULL still must pass the pinned parser'
+        shoff, shsize, shcount, shstr = header[6], header[11], header[12], header[13]
+        sections = [struct.unpack_from('<10I', data, shoff+i*shsize) for i in range(shcount)]
+        strings = sections[shstr]
+        names = data[strings[4]:strings[4]+strings[5]]
+        local = []
+        for section in sections:
+            name, kind, flags, addr, _, size, _, _, align, _ = section
+            if not flags & 2 or size == 0:
+                continue
+            label = names[name:].split(b'\0', 1)[0]
+            if label == b'.local_monitor_stack':
+                assert (kind, flags, addr, size, align) == (8, 3, 0x10003800, 2048, 8)
+                local.append(section)
+            else:
+                assert any(a <= addr <= addr+size <= b for a,b,_,_ in loads), 'unowned allocated section'
+        assert len(local) == 1
+        sizes = subprocess.check_output(['arm-none-eabi-nm', '-S', str(path)], text=True)
+        for name, address, size in [('monitor_stack', 0x10003800, 2048), ('task_stacks', None, 7168)]:
+            rows = [line.split() for line in sizes.splitlines() if line.endswith(' '+name)]
+            assert len(rows) == 1 and int(rows[0][1], 16) == size, 'unchanged total task stack budget'
+            assert address is None or int(rows[0][0], 16) == address
     assert not subprocess.check_output(['arm-none-eabi-nm', '-u', str(path)]), 'undefined symbols'
     dis = subprocess.check_output(['arm-none-eabi-objdump', '-d', '-M', 'reg-names-raw', str(path)], text=True)
     assert not re.search(r'\b(?:ldrex\w*|strex\w*|clrex)\b', dis), 'unproven exclusive instruction linked'
@@ -98,8 +130,9 @@ def check(path):
             'pt_load_end':hex(max(row[1] for row in loads)), 'msp':[hex(0x2000e000),hex(vector[0])],
             'bss_bytes':symbols['__ebss']-symbols['__sbss'], 'direct_rtos_vectors':True,
             'checked_vector_indices': sorted(required_vectors),
-            'exclusive_instructions':0, 'proc1':proc1, 'hardware':'OPEN'}
+            'exclusive_instructions':0, 'proc1':proc1, 'local_monitor_stack':local_monitor, 'hardware':'OPEN'}
 
 
 if __name__ == '__main__':
-    print(json.dumps(check(sys.argv[1]), indent=2))
+    assert len(sys.argv) == 2 or (len(sys.argv) == 3 and sys.argv[2] == '--local-monitor-stack')
+    print(json.dumps(check(sys.argv[1], len(sys.argv) == 3), indent=2))

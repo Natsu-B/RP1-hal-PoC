@@ -15,6 +15,7 @@ const LOCAL: u32 = 0x1000_1000;
 const ENTRY: u32 = BASE + 0x141;
 const PAYLOAD: [u8; 16] = [0x5a; 16]; // A data pattern, never executable proof.
 type Phdr = [u32; 8];
+const LINKED: &[u8] = include_bytes!(env!("RP1_LINKER_FIXTURE"));
 
 fn headers() -> [Phdr; 3] {
     [
@@ -111,4 +112,71 @@ fn rtos_reserved_memory_is_not_protected_by_generic_loader_policy() {
     let image = selected::build_from_rp1_elf(&bytes, &mut scratch, 0).unwrap();
     assert_eq!(image.payload.len(), 0xf010);
     assert_eq!(&image.payload[0xf000..0xf010], &PAYLOAD);
+}
+
+#[test]
+fn actual_linker_elf_materializes_shared_only_and_ignores_local_stack() {
+    let info = selected::inspect_rp1_elf(LINKED).unwrap();
+    assert_eq!(info.load_count, 1);
+    assert_eq!(info.phnum, 2);
+    assert_eq!(info.vector0_sp, BASE+0xf000);
+    let shared = &info.loads()[0];
+    assert_eq!(shared.vaddr, shared.paddr);
+    assert_eq!(shared.paddr, BASE);
+    assert!(shared.memsz > shared.filesz);
+    assert!(info.loads().iter().all(|load| load.paddr >= BASE
+        && load.paddr.checked_add(load.memsz).unwrap() <= BASE+0xe000));
+    let payload = selected::elf_load_file_bytes(LINKED, shared).unwrap();
+    let mut scratch = vec![0xa5; 0x10000];
+    let image = selected::build_from_rp1_elf(LINKED, &mut scratch, 0).unwrap();
+    assert_eq!(image.entry, info.vector1_reset);
+    assert_eq!(image.entry & 1, 1);
+    assert_eq!(image.payload.len(), shared.memsz as usize);
+    assert_eq!(&image.payload[..payload.len()], payload);
+    assert!(image.payload[payload.len()..].iter().all(|b| *b == 0));
+}
+
+#[test]
+fn actual_linker_local_stack_cannot_be_reclassified_as_a_load() {
+    let mut bytes = LINKED.to_vec();
+    let phoff = u32::from_le_bytes(bytes[28..32].try_into().unwrap()) as usize;
+    let phsize = u16::from_le_bytes(bytes[42..44].try_into().unwrap()) as usize;
+    let phnum = u16::from_le_bytes(bytes[44..46].try_into().unwrap()) as usize;
+    let mut changed = 0;
+    for n in 0..phnum {
+        let at = phoff+n*phsize;
+        if u32::from_le_bytes(bytes[at..at+4].try_into().unwrap()) == 0 {
+            assert_eq!(&bytes[at+8..at+12], &0x10003800u32.to_le_bytes());
+            assert_eq!(&bytes[at+12..at+16], &0x10003800u32.to_le_bytes());
+            assert_eq!(&bytes[at+16..at+20], &0u32.to_le_bytes());
+            assert_eq!(&bytes[at+20..at+24], &2048u32.to_le_bytes());
+            bytes[at..at+4].copy_from_slice(&1u32.to_le_bytes());
+            changed += 1;
+        }
+    }
+    assert_eq!(changed, 1);
+    let mut scratch = vec![0xa5; 0x10000];
+    assert!(selected::build_from_rp1_elf(&bytes, &mut scratch, 0).is_err());
+}
+
+#[test]
+#[ignore = "requires runner --image; not a hardware test"]
+fn target_image_materializes_shared_only() {
+    let bytes = std::fs::read(std::env::var("RP1_RUNTIME_ELF").unwrap()).unwrap();
+    let info = selected::inspect_rp1_elf(&bytes).unwrap();
+    assert_eq!(info.vector0_sp, BASE+0xf000);
+    let mut scratch = vec![0xa5; 0x10000];
+    let image = selected::build_from_rp1_elf(&bytes, &mut scratch, 0).unwrap();
+    assert_eq!(image.entry, info.vector1_reset);
+    assert_eq!(image.stack, BASE+0xf000);
+    assert!(image.payload.len() <= 0xe000);
+    for load in info.loads() {
+        assert_eq!(load.vaddr, load.paddr);
+        assert!(BASE <= load.paddr && load.paddr + load.memsz <= BASE+0xe000);
+        let start = (load.paddr-BASE) as usize;
+        let payload = selected::elf_load_file_bytes(&bytes, load).unwrap();
+        assert_eq!(&image.payload[start..start+payload.len()], payload);
+        assert!(image.payload[start+payload.len()..start+load.memsz as usize].iter().all(|b| *b == 0));
+    }
+    println!("host materialized {} shared bytes; entry={:#x}; no proc-local upload", image.payload.len(), image.entry);
 }

@@ -16,6 +16,18 @@ int main(void)
         assert(compact != UINT32_MAX);
     }
     assert(compact == 2304);
+    uint32_t shared = 0;
+    for (unsigned slot=0; slot<8; ++slot) {
+        shared = rp1_stack_next_local_monitor(shared, normal[slot], slot);
+        assert(shared != UINT32_MAX);
+    }
+    assert(shared == 1792 && shared + normal[0] == 2304);
+    assert(rp1_stack_next_local_monitor(shared, 512, 0) == shared);
+    assert(rp1_stack_next_local_monitor(shared, 128, 1) == UINT32_MAX);
+    assert(rp1_stack_next_local_monitor(0, 256, 0) == UINT32_MAX);
+    assert(rp1_stack_next_local_monitor(0, 512, 8) == UINT32_MAX);
+    assert(rp1_stack_next_local_monitor(1, 512, 0) == UINT32_MAX);
+    assert(rp1_stack_next_local_monitor(1794, 512, 0) == UINT32_MAX);
     assert(rp1_stack_next(compact,1,2304) == UINT32_MAX);
     assert(rp1_stack_next(compact,128,2304) == UINT32_MAX);
     assert(rp1_stack_next(used,256,2560) == 2560);

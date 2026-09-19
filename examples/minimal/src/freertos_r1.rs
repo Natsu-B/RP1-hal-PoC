@@ -367,6 +367,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     for (i, v) in [ipsr, control, psp, msp].into_iter().enumerate() { put(28+i, v); }
     assert_eq!(ipsr, 0); assert_eq!(control & 3, 2); assert_eq!(psp & 7, 0);
     assert!((0x2000_e000..=0x2000_f000).contains(&msp));
+    #[cfg(feature = "freertos-r3-health-local-stack")]
+    assert!((0x1000_3800..0x1000_4000).contains(&psp));
     #[cfg(feature = "freertos-r1-critical-timing")]
     unsafe { critical_timing_calibrate(); }
     #[cfg(feature = "freertos-r1-periodic-200us")]

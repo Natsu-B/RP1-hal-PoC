@@ -6,7 +6,7 @@ out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 cargo_feature=$feature
 # Health shadow reuses the persistent build family, not its exact ELF admission.
-if [[ "$feature" == freertos-r3-health-shadow ]]; then
+if [[ "$feature" == freertos-r3-health-shadow || "$feature" == freertos-r3-health-local-stack ]]; then
     feature=freertos-r3-watchdog-warm-persistent
 fi
 family_feature=$feature
@@ -69,7 +69,7 @@ if [[ "$family_feature" == freertos-r3-watchdog-warm-persistent ]]; then
     "$out/warm-persistent-test" > "$out/warm-persistent-host-test.txt"
 fi
 printf 'rust_opt_level=%s\n' "$CARGO_PROFILE_RELEASE_OPT_LEVEL"
-if [[ "$cargo_feature" == freertos-r3-health-shadow ]]; then
+if [[ "$cargo_feature" == freertos-r3-health-shadow || "$cargo_feature" == freertos-r3-health-local-stack ]]; then
     cp "$repo/examples/minimal/src/warm_health.rs" "$out/warm_health.rs"
     rustc +stable --edition=2024 -C strip=debuginfo --test "$out/warm_health.rs" -o "$out/health-shadow-test"
     "$out/health-shadow-test" > "$out/health-shadow-host-test.txt"
@@ -183,8 +183,15 @@ arm-none-eabi-readelf -lSW "$out/RP1.elf" > "$out/readelf.txt"
 arm-none-eabi-nm -n "$out/RP1.elf" > "$out/symbols.txt"
 arm-none-eabi-objdump -d "$out/RP1.elf" > "$out/disassembly.txt"
 arm-none-eabi-size "$out/RP1.elf"
-python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" > "$out/elf-validation.json"
-if [[ "$cargo_feature" == freertos-r3-health-shadow ]]; then
+elf_args=()
+if [[ "$cargo_feature" == freertos-r3-health-local-stack ]]; then
+    elf_args+=(--local-monitor-stack)
+    cc -std=c11 -Wall -Wextra -Werror "$repo/tools/test-static-stack.c" -o "$out/static-stack-test"
+    "$out/static-stack-test"
+    python3 -B "$repo/tools/test-local-monitor-elf.py" "$out/RP1.elf" > "$out/local-monitor-negative-test.json"
+fi
+python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" "${elf_args[@]}" > "$out/elf-validation.json"
+if [[ "$cargo_feature" == freertos-r3-health-shadow || "$cargo_feature" == freertos-r3-health-local-stack ]]; then
     sha256sum "$out/RP1.elf" > "$out/output.sha256"
     printf 'BE_foundation_build=PASS compiled_envelope_review=OPEN hardware_admission=REFUSED\n'
     exit 3
