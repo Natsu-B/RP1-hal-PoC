@@ -1,0 +1,111 @@
+# Consumable warm health checkpoint (opt-in source integration)
+
+`examples/minimal/src/warm_health.rs` is a pure, allocation-free proc0 shadow
+predicate. Feature `freertos-r3-health-shadow` connects it to the existing warm
+monitor and persistent owner. The pure helper writes no register and performs
+no MMIO. Integration adds existing read-only source/IRQ observations and telemetry,
+not watchdog writes. Target fit and hardware acceptance are separate gates.
+
+This follows the BC `next-health-contract.md` at
+`/opt/rpi-cm5-hack/artifacts/20260913-064225-rp1-warm-persistent-owner/reports/`.
+Reuse the current `warm_combined::finish` receipt/cleanup/buffer checks and the
+fresh `freertos_r1::monitor` pass; do not make new drivers or weaken either path.
+
+## Integration contract
+
+- Initialize one `Cursor::new(nonzero_warm_epoch, r1_baseline)` only after the
+  admitted warm epoch is established. Keep it exclusively in the proc0 consumer
+  for that epoch. A generation reset or refused sample must not recreate it.
+  Epoch identity is caller-owned; this module neither invents nor persists one.
+- `Sample` is a fresh local observation, never an externally writable mailbox
+  or a reconstruction from stored eligibility word161. Validate proc0/thread
+  context and the warm epoch before constructing it.
+- Bracket the owner fields with the existing barriers and word150 sequence.
+  Supply words151..155 as generation, operation, deadline, checked count and
+  last-checked tick, and receipt generations at126/134/142 in SPI/UART/I2C order.
+  Read the final sequence after all evidence; odd/changed sequences refuse.
+- `receipts_ok` means existing full receipt/payload/canary/error checks and the
+  matching rolling receipt checks passed. `cleanup_complete`,
+  `buffers_returned`, and `late_buffers_unchanged` must come from that owner's
+  post-cleanup checked publication, after cancellation refusal and late-buffer
+  observations. `active_generation == 0` alone proves none of these facts.
+  Retain the existing source-specific cleanup and owner buffer lifetime rules.
+- `quiet` requires all three real sources and owned NVIC enabled/pending/active
+  bits quiet at both ends, not `healthy`'s allowance for a selected active bus.
+  Sample real IRQ totals169..171 at both ends and checked totals156..158 inside
+  the coherent owner observation. Both real samples must equal checked totals.
+  ISR totals are not seqlock-protected: the explicit double sample is required.
+- `r1_ok` is the result of the **current complete R1 pass**, including unchanged
+  context, error, seven task HWM, owner HWM and MSP minimum checks. Supply its
+  check tick and counters64/80/49/50. Every counter must differ from the baseline
+  or last consumed R1 counters; a tick, idle count or copied true cannot replace
+  spinner/queue/mutex progress. Do not obtain this flag from word161.
+- Consume immediately at the same stable, completed safe point. Initial runtime
+  integration uses the existing bounded g2/op7 handoff while the owner is
+  blocked awaiting word159. Do not hand back to the owner and then act on an old
+  sample. No waiting, unbounded retry, interrupt-masked MMIO loop, or delayed
+  stored permission is introduced here. A missed checkpoint is refusal.
+
+## Exact decision
+
+Only quiet op0 or g2/op7 is eligible. All three checked receipts must have the
+same new generation1..8 and checked count `3 * generation`. Each is therefore
+newer than its generation at the previous consumption. Op6 UART ACK, op8 final
+park, incomplete receipts/cleanup, active IRQ/transfer, incoherence, wrong core,
+wrong/zero epoch and replay refuse without moving the cursor.
+
+Deadline distance is strictly positive and at most the existing operation
+budget:1000 ticks for op0,20000 for g2/op7. Last checked progress is at most35000
+ticks old. R1 evidence is at most1000 ticks old (current monitor period), and its
+counters must all progress again for a second consumption. Wrapping subtraction
+handles a tick wrap; future timestamps, expired deadlines and half-range
+distances refuse. These bounds assume the existing bounded warm commissioning
+epoch, not gaps of a whole32-bit tick period. Changing cadence/bounds requires a
+new reviewed candidate; they are not a service watchdog timeout.
+
+`consume` returns one shadow event and immediately advances its private cursor.
+It does not return a reusable hardware authorization. In particular, terminal
+g8/op8 refuses even when observation word161 remains healthy. Neither acceptance
+nor refusal authorizes reload, re-arm, expiry or reset during a live transfer.
+
+## Actual integration and telemetry
+
+The feature inherits the persistent workload and its exclusions: proc1, mixed
+owners (including MD01), faults and standalone peripheral modes cannot be
+combined. Monitor initializes one cursor from validated retained `EPOCH[1]` and
+live R1 counters before the loop. Fresh thread-mode/MSP/PSP, recorded startup
+sentinels and fault checks supplement each complete existing R1 pass. The hook
+runs before readiness/packet serialization, not inside the twice-called readiness
+helper. g2/op7 additionally requires actual READY, no handback, and no prior
+acceptance. No caller consumes a transient op0.
+
+One bounded observation brackets the checked publications and real IRQ totals
+with source/NVIC quiet checks and the owner sequence. Post-cleanup/buffer facts
+derive from the existing `finish` invariant, not reading dead stack buffers.
+The monitor-owned words60..63 are BE01 magic, accepted count, immediate same-
+snapshot replay-refusal count and coherent terminal-op8 refusal count. These
+historical counters are never a reusable feed grant. Existing BC01 words and
+type8 handoff remain unchanged; no new task, stack budget or live reset is added.
+
+## Verification and remaining work
+
+Current integration is experimental and **not deployable**: first complete
+target link exceeded the fixed application SRAM by1580 bytes. An always-inlined
+decision experiment increased it to1876; shared diagnostic failure handling
+reduced that variant to1668. These failed builds are not hardware failures.
+The decision body is returned to one out-of-line copy; the next link must be
+measured. ISR/task stacks, reservations and linker guards are unchanged. Do not
+admit or merge this opt-in feature as a verified release until the fit and exact
+linked-code boundary is resolved without weakening its checks.
+
+The module has standalone `rustc --test` checks against the actual helper for
+replay, one stale bus, tick-only progress, owner/IRQ races, cleanup/ownership,
+R1 reuse, epochs, terminal operations, tick wrap and exact deadline/age bounds.
+The compiler output and command are recorded under the BE artifact `build/`.
+Tests use synthetic observations only and do not substitute for runtime evidence.
+
+Target build/fit, exact linked-code review, independent deadline
+and restoration review, and any actual hardware proof remain with the root
+integrator. No firmware or hardware success is claimed by this source checkpoint.
+Ponytail kept the change to the existing evidence contract plus a local cursor;
+there is no watchdog abstraction, dependency, task, queue, or MMIO API.

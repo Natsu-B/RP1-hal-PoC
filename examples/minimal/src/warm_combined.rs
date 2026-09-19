@@ -281,6 +281,46 @@ mod target {
     pub fn ready()->bool {unsafe {ptr::addr_of!(READY).read_volatile()==1}}
     #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
     pub fn handback() {put(159,1);barrier();}
+    #[cfg(feature = "freertos-r3-health-shadow")]
+    #[inline(never)]
+    pub fn shadow_check(cursor: &mut crate::freertos_r1::warm_health::Cursor,
+        epoch: u32, r1_tick: u32, progress: [u32; 4]) {
+        use crate::freertos_r1::warm_health::Sample;
+        // Only the existing blocked handoff is an acceptance opportunity.
+        // Terminal op8 is sampled to prove refusal, never fed. No retry/wait.
+        let op = get(152);
+        if !(op == 7 && get(151) == 2 && get(159) == 0 && get(61) == 0 && ready() || op == 8) { return; }
+        let seq = get(150); barrier();
+        let before = core::array::from_fn(|k| get(169+k));
+        let quiet = clean();
+        let g = get(151);
+        let checked_generation = core::array::from_fn(|k| get(126+k*8));
+        let count = get(154);
+        // finish publishes these only AFTER full receipt/payload/canary,
+        // checked cleanup/cancel refusal and two late-buffer observations.
+        let published = checked_generation == [g; 3] && count == 3*g;
+        let receipts_ok = get(183) == 0 && (0..3).all(|k|
+            stored_ok(k, g, core::array::from_fn(|i| get(127+k*8+i))) && get(172+k) == IPSRS[k]);
+        let mut s = Sample {
+            core: 0, warm_epoch: epoch, now: 0, sequence_before: seq, sequence_after: 0,
+            generation: g, operation: get(152), deadline: get(153), checked_count: count,
+            last_checked_tick: get(155), checked_generation, receipts_ok,
+            cleanup_complete: published, buffers_returned: published, late_buffers_unchanged: published,
+            active_generation: unsafe { [os::spi0::active_generation(), os::uart0::active_generation(), os::i2c1::active_generation()] },
+            quiet: quiet && clean(), checked_irqs: core::array::from_fn(|k| get(156+k)),
+            irqs_before: before, irqs_after: core::array::from_fn(|k| get(169+k)),
+            r1_ok: true, r1_checked_tick: r1_tick, r1_progress: progress,
+        };
+        s.now = unsafe { os::tick().unwrap() }; barrier(); s.sequence_after = get(150);
+        if cursor.consume(&s) {
+            check(s.operation == 7 && s.generation == 2);
+            put(61, get(61).checked_add(1).unwrap());
+            check(!cursor.consume(&s)); // The exact actual snapshot cannot renew progress.
+            put(62, get(62).checked_add(1).unwrap());
+        } else if s.operation == 8 && coherent(seq, s.sequence_after) {
+            put(63, get(63).checked_add(1).unwrap());
+        }
+    }
     #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
     #[inline(never)]
     pub fn healthy()->bool {
@@ -382,6 +422,8 @@ mod target {
 pub use target::{set_hosts,publish,ready,worker};
 #[cfg(all(target_arch="arm",feature="freertos-r3-watchdog-warm-persistent"))]
 pub use target::{healthy,handback};
+#[cfg(all(target_arch="arm",feature="freertos-r3-health-shadow"))]
+pub use target::shadow_check;
 
 #[cfg(all(test,not(feature="freertos-r3-watchdog-warm-persistent")))]
 mod tests {

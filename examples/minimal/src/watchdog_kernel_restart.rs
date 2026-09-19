@@ -76,6 +76,8 @@ mod target {
     static mut EPOCH: [u32; 4] = [0; 4]; // Initialized only after fresh BSS clear.
     static mut SENT: bool = false;
     pub fn is_warm() -> bool { unsafe { ptr::addr_of!(EPOCH).read()[0] != 0 } }
+    #[cfg(feature = "freertos-r3-health-shadow")]
+    pub fn health_epoch() -> u32 { unsafe { ptr::addr_of!(EPOCH).read()[1] } }
 
     #[cfg(any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
     #[inline(never)]
@@ -254,6 +256,8 @@ mod target {
 }
 #[cfg(target_arch = "arm")]
 pub use target::{is_warm, emit_pending};
+#[cfg(all(target_arch = "arm", feature = "freertos-r3-health-shadow"))]
+pub use target::health_epoch;
 #[cfg(all(target_arch = "arm", any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined")))]
 pub use target::{i2c_failure, i2c_monitor_ready};
 

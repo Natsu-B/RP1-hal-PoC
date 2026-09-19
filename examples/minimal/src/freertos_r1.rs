@@ -48,6 +48,9 @@ mod warm_spi;
 #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
 #[path = "warm_combined.rs"]
 mod warm_combined;
+#[cfg(feature = "freertos-r3-health-shadow")]
+#[path = "warm_health.rs"]
+mod warm_health;
 #[cfg(all(feature = "freertos-r3-watchdog-warm-combined", any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-uart")))]
 compile_error!("Combined warm owner excludes the three standalone owners");
 #[cfg(all(feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-uart"))]
@@ -385,6 +388,11 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     }
     put(39, 1); put(2, 4);
     let mut previous = [0; 4];
+    #[cfg(feature = "freertos-r3-health-shadow")]
+    let mut health = warm_health::Cursor::new(kernel_restart::health_epoch(),
+        [get(64), get(80), get(49), get(50)]);
+    #[cfg(feature = "freertos-r3-health-shadow")]
+    if kernel_restart::is_warm() { put(60, u32::from_le_bytes(*b"BE01")); }
     #[cfg(feature = "freertos-r2-mixed-repeat")]
     let mut wake = unsafe { os::tick().unwrap() };
     #[cfg(feature = "freertos-r2-mixed-repeat")]
@@ -454,6 +462,23 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         increment(14); put(27, raw_low()); put(2, 5);
         #[cfg(any(feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
         if kernel_restart::is_warm() {
+            #[cfg(feature = "freertos-r3-health-shadow")]
+            {
+                // This pass, not startup or a stored healthy flag. The cursor
+                // is monitor-owned for the whole warm epoch, before handback.
+                let (ipsr, control, psp, msp): (u32, u32, u32, u32);
+                unsafe { core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL",
+                    "mrs {2}, PSP", "mrs {3}, MSP", out(reg)ipsr, out(reg)control,
+                    out(reg)psp, out(reg)msp, options(nomem, nostack)); }
+                if ipsr != 0 || control & 3 != 2 || psp & 7 != 0
+                    || !(0x2000_e000..=0x2000_f000).contains(&msp)
+                    || get(3) | get(4) != 0
+                    || (get(19), get(20), get(39)) != (0x1357_9bdf, 0, 1) {
+                    kernel_restart::i2c_failure(0x79);
+                }
+                warm_combined::shadow_check(&mut health, kernel_restart::health_epoch(),
+                    unsafe { os::tick().unwrap() }, current);
+            }
             if kernel_restart::i2c_monitor_ready() {
                 if marker.is_none() { marker = unsafe { ptr::addr_of_mut!(MARKER).replace(None) }; }
                 if let Some(pin) = marker.as_mut() { unsafe { kernel_restart::emit_pending(pin); } }
