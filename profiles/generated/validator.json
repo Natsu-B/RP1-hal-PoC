@@ -1,0 +1,83 @@
+{
+  "clock": [
+    {
+      "binding": "RP1_CLK_UART",
+      "boot_required": true,
+      "mode": "fixed",
+      "name": "uart",
+      "rate_hz": 50000000,
+      "rp1_id": 15,
+      "rp1_required": true
+    },
+    {
+      "binding": "RP1_CLK_MIPI0_CFG",
+      "boot_required": true,
+      "mode": "fixed",
+      "name": "mipi0_cfg",
+      "rate_hz": 25000000,
+      "rp1_id": 22,
+      "rp1_required": false
+    },
+    {
+      "binding": "RP1_CLK_MIPI1_CFG",
+      "boot_required": true,
+      "mode": "fixed",
+      "name": "mipi1_cfg",
+      "rate_hz": 25000000,
+      "rp1_id": 23,
+      "rp1_required": false
+    },
+    {
+      "allowed_rates": [
+        100000000
+      ],
+      "binding": "RP1_PLL_SYS_PRI_PH",
+      "boot_required": true,
+      "mode": "scmi",
+      "name": "uart_apb",
+      "rate_hz": 100000000,
+      "rp1_id": 6,
+      "rp1_required": true,
+      "scmi_id": 0
+    }
+  ],
+  "firmware_nodes": [
+    "serial@30000",
+    "spi@50000",
+    "i2c@74000"
+  ],
+  "firmware_pins": [
+    2,
+    3,
+    8,
+    9,
+    10,
+    11,
+    14,
+    15
+  ],
+  "linux": {
+    "cfe_clocks": [
+      "mipi0_cfg",
+      "mipi1_cfg"
+    ],
+    "cfe_labels": [
+      "rp1_csi0",
+      "rp1_csi1"
+    ],
+    "disable_labels": [
+      "rp1_clocks",
+      "rp1_uart0",
+      "rp1_spi0",
+      "rp1_i2c1",
+      "rp1_firmware"
+    ],
+    "uart1_clock": "uart",
+    "uart1_label": "rp1_uart1",
+    "uart1_pins_label": "rp1_uart1_0_1"
+  },
+  "mailbox_channel": 1,
+  "name": "proc0-linux-standard-v1",
+  "schema": 1,
+  "sha256": "48b58f49fb47dace18a22d24a40a6b1f9853df023f2233e7e23355741a7c67d4"
+}

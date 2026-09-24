@@ -1,0 +1,30 @@
+/* Generated initial ownership; other enabled consumers MUST be migrated separately. */
+&rp1_clocks { status = "disabled"; };
+&rp1_uart0 { status = "disabled"; };
+&rp1_spi0 { status = "disabled"; };
+&rp1_i2c1 { status = "disabled"; };
+&rp1_firmware { status = "disabled"; };
+&rp1_uart1 {
+    status = "okay";
+    clocks = <&rp1_fixed_uart>;
+    clock-names = "uartclk";
+    pinctrl-0 = <&rp1_uart1_0_1>;
+    pinctrl-names = "default";
+    /delete-property/ uart-has-rtscts;
+    /delete-property/ skip-init;
+    /delete-property/ assigned-clocks;
+    /delete-property/ assigned-clock-parents;
+    /delete-property/ assigned-clock-rates;
+};
+&rp1_csi0 {
+    clocks = <&rp1_fixed_mipi0_cfg>;
+    /delete-property/ assigned-clocks;
+    /delete-property/ assigned-clock-parents;
+    /delete-property/ assigned-clock-rates;
+};
+&rp1_csi1 {
+    clocks = <&rp1_fixed_mipi1_cfg>;
+    /delete-property/ assigned-clocks;
+    /delete-property/ assigned-clock-parents;
+    /delete-property/ assigned-clock-rates;
+};
