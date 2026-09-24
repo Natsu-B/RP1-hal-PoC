@@ -11,6 +11,19 @@ permissions:
   contents: read
 
 jobs:
+  clock-profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install DT test dependencies
+        run: sudo apt-get update && sudo apt-get install -y device-tree-compiler python3-yaml
+      - name: Check single-source outputs and candidate-DTB rejection tests
+        run: |
+          python3 tools/clock_profile.py --check
+          python3 tools/test_clock_profile.py
+      - name: Test SCMI protocol and publication without MMIO
+        run: python3 tools/test_scmi_clock.py
+
   build:
     runs-on: ubuntu-latest
 

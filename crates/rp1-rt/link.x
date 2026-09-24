@@ -33,6 +33,7 @@ SECTIONS
   } > RP1_APP_SRAM
 
   INCLUDE rp1-warm-data.x
+  INCLUDE rp1-scmi.x
 
   .inbound_dummy_page (NOLOAD) : ALIGN(4096)
   {

@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 default = []
+scmi-clock = ["rp1-rt/scmi-shmem"]
 pcie-ep-init = ["rp1-rt/pcie-ep-init"]
 debug-stack-low = ["rp1-rt/debug-stack-low"]
 debug-snapshot = ["debug-stack-low", "rp1-rt/debug-snapshot"]

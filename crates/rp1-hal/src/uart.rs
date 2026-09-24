@@ -183,6 +183,18 @@ impl Uart0 {
         self.init_115200_inner(false, true)
     }
 
+    /// Adopt the existing 50 MHz functional clock without changing CLOCKS/PLL.
+    /// Caller owns UART0/pins, has established its APB/reset prerequisites and
+    /// must keep that clock contract stable across initialization and use.
+    /// On mismatch no UART, pinmux, reset or clock write is performed.
+    /// This retains the existing quiescent-UART initialization contract.
+    pub fn init_uart_with_existing_clock(
+        self, hz: u32, enable_rx: bool,
+    ) -> Result<Uart0Tx, crate::clock_adopt::UartClockSnapshot> {
+        crate::clock_adopt::adopt_uart_clock(hz)?;
+        Ok(self.init_115200_inner(false, enable_rx))
+    }
+
     fn init_115200_inner(self, configure_clock: bool, enable_rx: bool) -> Uart0Tx {
         if configure_clock {
             configure_uart0_clock_bootmain_50mhz();

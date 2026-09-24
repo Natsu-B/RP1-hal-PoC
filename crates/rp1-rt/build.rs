@@ -7,6 +7,7 @@ fn main() {
     println!("cargo:rerun-if-changed=proc1.x");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FREERTOS_PROC1_WORKER");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FREERTOS");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SCMI_SHMEM");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FREERTOS_WARM_DATA");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PCIE_EP_INIT");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEBUG_STACK_LOW");
@@ -94,6 +95,23 @@ ASSERT(__warm_data_shadow_end <= __app_limit, "warm data overlaps reserved SRAM"
 "#
     } else { "" };
     fs::write(out_dir.join("rp1-warm-data.x"), warm_data).unwrap();
+
+    // Never reuse fb00: that is the RTOS fault-record ABI. This reservation
+    // participates in __image_end/__app_limit and is initialized by SCMI startup.
+    let scmi = if env::var_os("CARGO_FEATURE_SCMI_SHMEM").is_some() {
+        r#".scmi_shmem (NOLOAD) : ALIGN(64)
+{
+  __scmi_shmem_start = .;
+  KEEP(*(.scmi_shmem));
+  __scmi_shmem_end = .;
+} > RP1_APP_SRAM
+ASSERT(__scmi_shmem_end - __scmi_shmem_start == 256, "SCMI reservation must be exactly 256 bytes")
+ASSERT((__scmi_shmem_start & 63) == 0, "SCMI alignment")
+ASSERT(__scmi_shmem_start >= __ebss, "SCMI overlaps BSS")
+ASSERT(__scmi_shmem_end <= __app_limit, "SCMI exceeds application SRAM")
+"#
+    } else { "" };
+    fs::write(out_dir.join("rp1-scmi.x"), scmi).unwrap();
 
     let mut linker = fs::read_to_string(PathBuf::from(&manifest_dir).join("link.x")).unwrap();
     if local_monitor {
