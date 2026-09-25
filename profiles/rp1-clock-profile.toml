@@ -7,12 +7,36 @@ firmware_pins = [2, 3, 8, 9, 10, 11, 14, 15]
 firmware_nodes = ["serial@30000", "spi@50000", "i2c@74000"]
 
 [linux]
-disable_labels = ["rp1_clocks", "rp1_uart0", "rp1_spi0", "rp1_i2c1", "rp1_firmware"]
+disable_labels = ["rp1_clocks", "rp1_uart0", "rp1_spi0", "rp1_i2c1", "rp1_firmware", "rp1_fw_shmem"]
 uart1_label = "rp1_uart1"
 uart1_pins_label = "rp1_uart1_0_1"
 uart1_clock = "uart"
 cfe_labels = ["rp1_csi0", "rp1_csi1"]
 cfe_clocks = ["mipi0_cfg", "mipi1_cfg"]
+clear_assigned_labels = ["rp1_clocks"]
+
+# Preserve these enabled Linux devices; names/order match the reviewed drivers.
+# Rates are candidate physical-hold requirements, not writes or HW certification.
+[[linux.fixed_consumer]]
+label = "rp1_adc"
+node = "adc@c8000"
+compatible = ["raspberrypi,rp1-adc"]
+clocks = ["adc"]
+clock_names = ["adcclk"]
+
+[[linux.fixed_consumer]]
+label = "rp1_eth"
+node = "ethernet@100000"
+compatible = ["raspberrypi,rp1-gem", "cdns,macb"]
+clocks = ["sys", "sys", "eth_tsu", "eth"]
+clock_names = ["pclk", "hclk", "tsu_clk", "tx_clk"]
+
+[[linux.fixed_consumer]]
+label = "rp1_dma"
+node = "dma@188000"
+compatible = ["snps,axi-dma-1.01a"]
+clocks = ["dma", "sys"]
+clock_names = ["core-clk", "cfgr-clk"]
 
 [[clock]]
 name = "uart"
@@ -53,6 +77,52 @@ rate_hz = 100000000
 allowed_rates = [100000000]
 boot_required = true
 rp1_required = true
+
+[[clock]]
+name = "sys"
+rp1_id = 12
+binding = "RP1_CLK_SYS"
+mode = "fixed"
+rate_hz = 200000000
+boot_required = true
+rp1_required = true
+
+[[clock]]
+name = "dma"
+rp1_id = 14
+binding = "RP1_CLK_DMA"
+mode = "fixed"
+# Fresh Linux CCF reports 100MHz; physical readback/hold remains mandatory.
+rate_hz = 100000000
+boot_required = true
+rp1_required = false
+
+[[clock]]
+name = "eth"
+rp1_id = 16
+binding = "RP1_CLK_ETH"
+mode = "fixed"
+rate_hz = 125000000
+boot_required = true
+rp1_required = false
+
+[[clock]]
+name = "eth_tsu"
+rp1_id = 29
+binding = "RP1_CLK_ETH_TSU"
+mode = "fixed"
+rate_hz = 50000000
+boot_required = true
+rp1_required = false
+
+[[clock]]
+name = "adc"
+rp1_id = 30
+binding = "RP1_CLK_ADC"
+mode = "fixed"
+rate_hz = 50000000
+boot_required = true
+rp1_required = false
 
 # Other binding IDs remain UNCLASSIFIED, not silently FIRMWARE_PRIVATE.
 # The validator refuses any enabled consumer still referencing clk-rp1.

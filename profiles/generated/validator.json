@@ -39,6 +39,51 @@
       "rp1_id": 6,
       "rp1_required": true,
       "scmi_id": 0
+    },
+    {
+      "binding": "RP1_CLK_SYS",
+      "boot_required": true,
+      "mode": "fixed",
+      "name": "sys",
+      "rate_hz": 200000000,
+      "rp1_id": 12,
+      "rp1_required": true
+    },
+    {
+      "binding": "RP1_CLK_DMA",
+      "boot_required": true,
+      "mode": "fixed",
+      "name": "dma",
+      "rate_hz": 100000000,
+      "rp1_id": 14,
+      "rp1_required": false
+    },
+    {
+      "binding": "RP1_CLK_ETH",
+      "boot_required": true,
+      "mode": "fixed",
+      "name": "eth",
+      "rate_hz": 125000000,
+      "rp1_id": 16,
+      "rp1_required": false
+    },
+    {
+      "binding": "RP1_CLK_ETH_TSU",
+      "boot_required": true,
+      "mode": "fixed",
+      "name": "eth_tsu",
+      "rate_hz": 50000000,
+      "rp1_id": 29,
+      "rp1_required": false
+    },
+    {
+      "binding": "RP1_CLK_ADC",
+      "boot_required": true,
+      "mode": "fixed",
+      "name": "adc",
+      "rate_hz": 50000000,
+      "rp1_id": 30,
+      "rp1_required": false
     }
   ],
   "firmware_nodes": [
@@ -65,12 +110,66 @@
       "rp1_csi0",
       "rp1_csi1"
     ],
+    "clear_assigned_labels": [
+      "rp1_clocks"
+    ],
     "disable_labels": [
       "rp1_clocks",
       "rp1_uart0",
       "rp1_spi0",
       "rp1_i2c1",
-      "rp1_firmware"
+      "rp1_firmware",
+      "rp1_fw_shmem"
+    ],
+    "fixed_consumer": [
+      {
+        "clock_names": [
+          "adcclk"
+        ],
+        "clocks": [
+          "adc"
+        ],
+        "compatible": [
+          "raspberrypi,rp1-adc"
+        ],
+        "label": "rp1_adc",
+        "node": "adc@c8000"
+      },
+      {
+        "clock_names": [
+          "pclk",
+          "hclk",
+          "tsu_clk",
+          "tx_clk"
+        ],
+        "clocks": [
+          "sys",
+          "sys",
+          "eth_tsu",
+          "eth"
+        ],
+        "compatible": [
+          "raspberrypi,rp1-gem",
+          "cdns,macb"
+        ],
+        "label": "rp1_eth",
+        "node": "ethernet@100000"
+      },
+      {
+        "clock_names": [
+          "core-clk",
+          "cfgr-clk"
+        ],
+        "clocks": [
+          "dma",
+          "sys"
+        ],
+        "compatible": [
+          "snps,axi-dma-1.01a"
+        ],
+        "label": "rp1_dma",
+        "node": "dma@188000"
+      }
     ],
     "uart1_clock": "uart",
     "uart1_label": "rp1_uart1",
@@ -79,5 +178,5 @@
   "mailbox_channel": 1,
   "name": "proc0-linux-standard-v1",
   "schema": 1,
-  "sha256": "48b58f49fb47dace18a22d24a40a6b1f9853df023f2233e7e23355741a7c67d4"
+  "sha256": "083b92cf455528961952ff0aee24a0d292601fd5471a4b04ab40c66b9003517f"
 }

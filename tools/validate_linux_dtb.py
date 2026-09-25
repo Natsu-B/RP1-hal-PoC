@@ -422,6 +422,22 @@ def validate(root, profile, require_camera=False, firmware_layout=None):
             fail(str(exc))
     if require_camera and not camera_paths:
         fail("camera required but no enabled RP1 CFE")
+    for consumer in profile['linux'].get('fixed_consumer', []):
+        paths = [p for p in t.nodes if t.rp1(p) and p.rsplit('/',1)[-1] == consumer['node'] and t.enabled[p]]
+        if len(paths) != 1:
+            fail('exactly one enabled required Linux consumer: ' + consumer['node'])
+            continue
+        path = paths[0]; node = t.nodes[path]
+        if strings(node.get('compatible')) != consumer['compatible']:
+            fail(path + ': required Linux consumer compatible mismatch')
+        if strings(node.get('clock-names')) != consumer['clock_names']:
+            fail(path + ': required Linux consumer clock-names mismatch')
+        try:
+            expected = [(fixed_paths.get(name), []) for name in consumer['clocks']]
+            if t.refs(path, 'clocks', '#clock-cells') != expected:
+                fail(path + ': required Linux consumer fixed-clock order mismatch')
+        except ValueError as exc:
+            fail(str(exc))
     for path in camera_paths:
         leaf = path.rsplit("/", 1)[-1]
         cfg = {"csi@110000": "mipi0_cfg", "csi@128000": "mipi1_cfg"}.get(leaf)

@@ -4,9 +4,10 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from clock_profile import load, outputs
+from clock_profile import DEFAULT, load, outputs
 from validate_linux_dtb import Tree, decode, validate
 from scmi_elf_layout import read_layout, transport_dtsi
+from build_linux_dtb import resolve_labels
 
 
 class CandidateTests(unittest.TestCase):
@@ -35,7 +36,17 @@ class CandidateTests(unittest.TestCase):
    #address-cells = <1>; #size-cells = <1>; ranges = <0 0 0x20000000 0x10000>;
    scmi_mem: scmi@d000 { compatible = "arm,scmi-shmem"; reg = <0xd000 0x100>; };
   };
-  rp1_clocks: clocks@18000 { compatible = "raspberrypi,rp1-clocks"; #clock-cells = <1>; status = "disabled"; };
+ rp1_clocks: clocks@18000 { compatible = "raspberrypi,rp1-clocks"; #clock-cells = <1>; status = "disabled"; };
+  rp1_adc: adc@c8000 { compatible = "raspberrypi,rp1-adc";
+   clocks = <&rp1_fixed_adc>; clock-names = "adcclk";
+  };
+  rp1_eth: ethernet@100000 { compatible = "raspberrypi,rp1-gem", "cdns,macb";
+   clocks = <&rp1_fixed_sys>, <&rp1_fixed_sys>, <&rp1_fixed_eth_tsu>, <&rp1_fixed_eth>;
+   clock-names = "pclk", "hclk", "tsu_clk", "tx_clk";
+  };
+  rp1_dma: dma@188000 { compatible = "snps,axi-dma-1.01a";
+   clocks = <&rp1_fixed_dma>, <&rp1_fixed_sys>; clock-names = "core-clk", "cfgr-clk";
+  };
   rp1_gpio: gpio@d0000 { compatible = "raspberrypi,rp1-gpio"; gpio-controller; #gpio-cells = <2>;
    uart_pins: uart1 { pins = "gpio0", "gpio1"; function = "uart1"; };
    cam1_pins: cam1 { pins = "gpio0", "gpio1"; function = "i2c0"; };
@@ -221,6 +232,50 @@ SECTIONS {
     def test_generated_outputs(self):
         for p, text in outputs(self.profile).items():
             self.assertEqual(p.read_text(), text, str(p))
+
+    def test_required_consumer_not_disabled_to_pass(self):
+        self.bad('&rp1_dma { status = "disabled"; };', 'required Linux consumer: dma@188000')
+
+    def test_consumer_clock_order(self):
+        self.bad('&rp1_dma { clocks = <&rp1_fixed_sys>, <&rp1_fixed_dma>; };', 'fixed-clock order mismatch')
+
+    def test_consumer_clock_names(self):
+        self.bad('&rp1_adc { clock-names = "wrong"; };', 'clock-names mismatch')
+
+    def test_consumer_driver_identity(self):
+        self.bad('&rp1_eth { compatible = "cdns,macb"; };', 'compatible mismatch')
+
+    def test_invalid_consumer_profile(self):
+        raw = DEFAULT.read_text()
+        mutations = [
+            ('clocks = ["dma", "sys"]', 'clocks = ["uart_apb", "sys"]'),
+            ('clock_names = ["core-clk", "cfgr-clk"]', 'clock_names = ["core-clk", "core-clk"]'),
+            ('node = "dma@188000"', 'node = "adc@c8000"'),
+            ('label = "rp1_dma"', 'label = "rp1_uart0"'),
+        ]
+        for before, after in mutations:
+            path = self.path/'bad-profile.toml'
+            path.write_text(raw.replace(before, after))
+            with self.assertRaises(ValueError): load(path)
+
+    def test_base_symbol_resolution_and_deletion(self):
+        src=self.path/'base.dts'; dtb=self.path/'base.dtb'
+        src.write_text('/dts-v1/; / { rp1_clocks: clocks { assigned-clock-rates = <123>; }; };')
+        subprocess.run(['dtc','-@','-I','dts','-O','dtb','-o',str(dtb),str(src)],check=True,capture_output=True)
+        root=decode(dtb); tree=Tree(root); symbols=root['__symbols__']
+        generated='&rp1_clocks { /delete-property/ assigned-clock-rates; status = "disabled"; };'
+        fragment=resolve_labels(generated,tree,symbols)
+        self.assertIn('&{/clocks}',fragment)
+        base=subprocess.run(['dtc','-I','dtb','-O','dts',str(dtb)],capture_output=True,check=True).stdout
+        src.write_bytes(base+fragment.encode())
+        subprocess.run(['dtc','-I','dts','-O','dtb','-o',str(dtb),str(src)],check=True,capture_output=True)
+        actual=Tree(decode(dtb))
+        self.assertNotIn('assigned-clock-rates',actual.nodes['/clocks'])
+        self.assertFalse(actual.enabled['/clocks'])
+        with self.assertRaisesRegex(ValueError,'missing/invalid'):
+            resolve_labels('&not_present { status = "disabled"; };',tree,symbols)
+        with self.assertRaisesRegex(ValueError,'collides'):
+            resolve_labels('/ { rp1_clocks: other {}; }; &rp1_clocks {};',tree,symbols)
 
     def test_linked_layout_match(self):
         layout = self.elf()

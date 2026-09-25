@@ -1,9 +1,10 @@
-/* Generated initial ownership; other enabled consumers MUST be migrated separately. */
+/* Generated ownership; compile with the base DTS, not as deletion-only overlays. */
 &rp1_clocks { status = "disabled"; };
 &rp1_uart0 { status = "disabled"; };
 &rp1_spi0 { status = "disabled"; };
 &rp1_i2c1 { status = "disabled"; };
 &rp1_firmware { status = "disabled"; };
+&rp1_fw_shmem { status = "disabled"; };
 &rp1_uart1 {
     status = "okay";
     clocks = <&rp1_fixed_uart>;
@@ -24,6 +25,32 @@
 };
 &rp1_csi1 {
     clocks = <&rp1_fixed_mipi1_cfg>;
+    /delete-property/ assigned-clocks;
+    /delete-property/ assigned-clock-parents;
+    /delete-property/ assigned-clock-rates;
+};
+&rp1_clocks {
+    /delete-property/ assigned-clocks;
+    /delete-property/ assigned-clock-parents;
+    /delete-property/ assigned-clock-rates;
+};
+&rp1_adc {
+    clocks = <&rp1_fixed_adc>;
+    clock-names = "adcclk";
+    /delete-property/ assigned-clocks;
+    /delete-property/ assigned-clock-parents;
+    /delete-property/ assigned-clock-rates;
+};
+&rp1_eth {
+    clocks = <&rp1_fixed_sys>, <&rp1_fixed_sys>, <&rp1_fixed_eth_tsu>, <&rp1_fixed_eth>;
+    clock-names = "pclk", "hclk", "tsu_clk", "tx_clk";
+    /delete-property/ assigned-clocks;
+    /delete-property/ assigned-clock-parents;
+    /delete-property/ assigned-clock-rates;
+};
+&rp1_dma {
+    clocks = <&rp1_fixed_dma>, <&rp1_fixed_sys>;
+    clock-names = "core-clk", "cfgr-clk";
     /delete-property/ assigned-clocks;
     /delete-property/ assigned-clock-parents;
     /delete-property/ assigned-clock-rates;

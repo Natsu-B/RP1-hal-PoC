@@ -32,8 +32,37 @@ transport node. `ownership.dtsi` targets Raspberry Pi `rp1.dtsi` labels. It
 disables the direct clock provider, UART0/SPI0/I2C1 and the unprovided channel0
 firmware service; UART1 uses fixed 50 MHz and GPIO0/1 without CTS/RTS. CFE clock
 references change but CFE **is not enabled** and no sensor/wiring is invented.
-Other enabled consumers must be migrated: this fragment alone is NOT bootable
-on the historical complete board DT. The validator intentionally rejects it.
+ADC, RP1 GEM and DMA now use profile-defined fixed-clock mappings with the reviewed
+driver-compatible strings and clock-name order. Their enabled status is preserved;
+the validator rejects disabling them to make the clock-reference check pass. Other
+binding IDs remain UNCLASSIFIED. USB has no explicit clock references in this base
+DT; its inherited physical dependencies are not thereby proved or removed.
+
+The profile now declares nine of the current binding's47IDs: eight FIXED and one
+locked SCMI discovery clock. SYS200/DMA100/ADC50/ETH125/TSU50MHz are required physical
+holds, not a newly implemented clock programmer. The current Linux CCF census reports
+DMA100MHz but MIPI CFG50MHz; desired MIPI25MHz MUST fail physical admission until an
+exact safe setup/readback is implemented. CCF rate reports are not waveform proofs.
+
+Compile the actual supplied base and generated fragments together:
+
+```sh
+python3 tools/build_linux_dtb.py --base board-base.dtb \
+  --firmware-elf RP1.elf --out /path/to/new-dtb-build
+```
+
+This uses a single DTS translation unit, not a flattened overlay: `/delete-property/`
+in a flattened overlay cannot remove an existing base property. Existing labels are
+resolved through the base `__symbols__` table to absolute paths; generated local
+SCMI/fixed labels remain local. Unknown/colliding references fail. The base must have
+the reviewed symbols, and the actual firmware fingerprint must match the profile.
+
+Provider assignments are removed, UART0/SPI0/I2C1 and the unavailable channel0 service
+are disabled, UART1 is enabled, old `rp1_fw_shmem` is disabled together with its only
+consumer. No unrelated base-node availability change is accepted. Final validation
+uses the compiled DTB and actual linked ELF, including exact256B SRAM placement.
+Output contains the original private live-DT data; retain it privately unless reviewed.
+Structural PASS is still not boot/deployment admission or proof of physical holds.
 
 ## Kernel
 
@@ -134,8 +163,9 @@ check. Static reserved regions still undergo exact overlap checks.
 
 ## Remaining gates
 
-1. Observable known-good boot/current kernel/config/DT and physical camera pins.
-2. Migrate every enabled clock consumer; validate final DT and SRAM vs ELF.
+1. Current kernel/config/DT census and held-R1 recovery observed separately; camera absent.
+2. Generated actual final DT and SRAM vs ELF checked; prove physical holds, inherited
+   USB dependencies and standard-kernel availability before deployment.
 3. Standard SCMI Base/rate_get -> actual M3 IRQ -> response -> host IRQ, 2/2.
 4. Fixed-clock UART0/UART1 hardware coexistence, then camera, votes and timesync.
 5. Exact M3 outbound DDR contract before bounded DDR writes or DDR OpenAMP.

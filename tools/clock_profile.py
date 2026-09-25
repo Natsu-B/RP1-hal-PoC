@@ -45,7 +45,9 @@ def load(path=DEFAULT):
     if not all(isinstance(x, int) and 0 <= x < 54 for x in p["firmware_pins"]):
         raise ValueError("invalid RP1 pin")
     linux = p["linux"]
-    labels = linux["disable_labels"] + [linux["uart1_label"], linux["uart1_pins_label"]] + linux["cfe_labels"]
+    consumers = linux.get("fixed_consumer", [])
+    labels = (linux["disable_labels"] + [linux["uart1_label"], linux["uart1_pins_label"]] +
+              linux["cfe_labels"] + linux.get("clear_assigned_labels", []) + [c["label"] for c in consumers])
     if not all(re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", label) for label in labels):
         raise ValueError("invalid DTS label")
     if len(linux["cfe_labels"]) != len(linux["cfe_clocks"]):
@@ -53,6 +55,20 @@ def load(path=DEFAULT):
     for name in [linux["uart1_clock"]] + linux["cfe_clocks"]:
         if not any(c["name"] == name and c["mode"] == "fixed" for c in p["clock"]):
             raise ValueError("initial UART/CFE consumer must use a declared fixed clock")
+    seen_nodes, seen_labels = set(), set()
+    fixed = {c["name"] for c in p["clock"] if c["mode"] == "fixed"}
+    for c in consumers:
+        if not re.fullmatch(r"[a-z][a-z0-9-]*@[0-9a-f]+", c["node"]):
+            raise ValueError("invalid consumer node")
+        if c["node"] in seen_nodes or c["label"] in seen_labels or c["label"] in linux["disable_labels"]:
+            raise ValueError("duplicate/disabled required consumer")
+        seen_nodes.add(c["node"]); seen_labels.add(c["label"])
+        if (not c["clocks"] or len(c["clocks"]) != len(c["clock_names"]) or
+                not set(c["clocks"]) <= fixed or len(set(c["clock_names"])) != len(c["clock_names"])):
+            raise ValueError("fixed consumer clocks/names mismatch")
+        if (not c["compatible"] or any(not isinstance(v,str) or not re.fullmatch(r"[a-zA-Z0-9_,.+-]+",v)
+                for v in c["clock_names"] + c["compatible"])):
+            raise ValueError("invalid consumer names/compatible")
     p["sha256"] = hashlib.sha256(raw).hexdigest()
     return p
 
@@ -100,7 +116,7 @@ def outputs(p):
     dts += ["};", "&rp1_scmi {", '    rp1_scmi_clocks: protocol@14 {',
             '        reg = <0x14>;', '        #clock-cells = <1>;', '    };', '};']
     linux = p["linux"]
-    ownership = ["/* Generated initial ownership; other enabled consumers MUST be migrated separately. */"]
+    ownership = ["/* Generated ownership; compile with the base DTS, not as deletion-only overlays. */"]
     ownership += [f'&{label} {{ status = "disabled"; }};' for label in linux["disable_labels"]]
     ownership += [f'&{linux["uart1_label"]} {{', '    status = "okay";',
                   f'    clocks = <&rp1_fixed_{linux["uart1_clock"]}>;', '    clock-names = "uartclk";',
@@ -112,6 +128,16 @@ def outputs(p):
         ownership += [f'&{label} {{', f'    clocks = <&rp1_fixed_{clock}>;',
                       '    /delete-property/ assigned-clocks;', '    /delete-property/ assigned-clock-parents;',
                       '    /delete-property/ assigned-clock-rates;', '};']
+    for label in linux.get("clear_assigned_labels", []):
+        ownership += [f'&{label} {{', '    /delete-property/ assigned-clocks;',
+                      '    /delete-property/ assigned-clock-parents;',
+                      '    /delete-property/ assigned-clock-rates;', '};']
+    for c in linux.get("fixed_consumer", []):
+        ownership += [f'&{c["label"]} {{',
+            '    clocks = ' + ', '.join(f'<&rp1_fixed_{name}>' for name in c['clocks']) + ';',
+            '    clock-names = ' + ', '.join(f'"{name}"' for name in c['clock_names']) + ';',
+            '    /delete-property/ assigned-clocks;', '    /delete-property/ assigned-clock-parents;',
+            '    /delete-property/ assigned-clock-rates;', '};']
     return {
         ROOT / "crates/rp1-hal/src/clock_profile_generated.rs": "\n".join(rust) + "\n",
         ROOT / "profiles/generated/clocks.dtsi": "\n".join(dts) + "\n",
