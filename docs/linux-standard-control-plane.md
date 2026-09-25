@@ -15,6 +15,8 @@ python3 tools/clock_profile.py --check
 python3 tools/test_clock_profile.py
 python3 tools/test_scmi_clock.py
 python3 tools/validate_linux_dtb.py candidate-final.dtb --output validation.json
+# Match the candidate to the ACTUAL linked firmware, not a supplied JSON claim:
+python3 tools/validate_linux_dtb.py candidate-final.dtb --firmware-elf RP1.elf --output linked-validation.json
 # Add --require-camera for the camera/integration admission stage.
 ```
 
@@ -91,6 +93,9 @@ only while Linux is quiesced. Warm restart/SCMI reconnection is NOT yet admitted
 cargo build -p rp1-example-minimal --release --target thumbv7m-none-eabi \
   --locked --features freertos-r1,rp1-hal/scmi-clock
 python3 tools/scmi_elf_layout.py path/to/rp1-example-minimal --output layout.json
+# Optional: derive the SCMI transport fragment from the board's base DTB:
+python3 tools/scmi_elf_layout.py path/to/rp1-example-minimal --output layout.json \
+  --dtb board-base.dtb --dtsi scmi-transport.dtsi
 ```
 
 This selected build verifies the reservation fits with R1; it does **not** wire
@@ -98,6 +103,34 @@ or run the server IRQ, prove full mixed/warm image capacity, or enable a Linux
 deployment. Derive DT placement from the final linked ELF, never from the
 address of a previous build. `layout.json` separates M3-local and BAR2-offset;
 CPU-physical/DT-bus translation must be checked against the final board DT.
+
+The optional transport generator walks the supplied DT `ranges` and identifies
+the 64KiB RP1 SRAM at system address `0xc040400000`. It keeps M3 local
+`0x20000000`, BAR2 offset and Linux CPU physical address separate. It emits a
+source include using absolute DT node paths, not a guessed host physical address.
+Combine this with generated clocks/ownership and reviewed remaining consumer
+changes, then compile the **final** DTB and validate it with `--firmware-elf`.
+This does not modify the input DT or create a complete board configuration.
+
+The firmware now retains its profile SHA in `.rp1_clock_profile`; the linker
+requires exactly 64 bytes. ELF validation reads those bytes and checks the SCMI
+section's exact address/size/type and absence of allocated-section overlap.
+DT validation compares the actual ELF SHA, linked profile SHA, translated
+SCMI address and 256B reservation. Old images without a fingerprint are rejected
+for this new paired-image check; their old hardware proof is not invalidated.
+
+Initially all SRAM except the one SCMI slot is firmware-owned. An enabled Linux
+SRAM reservation in that remainder is rejected, including the historical
+channel0 `shmem@ff00`. Disable/remove that Linux reservation only together with
+its unprovided `rp1_firmware` service; adding another shared service requires an
+explicit allocator update. Runtime BAR assignment, clock readback and IRQ
+delivery still require hardware evidence even after this structural check passes.
+
+DT compiler metadata is not a hardware node, and a child named `clocks` is not
+a clock-reference property. Dynamic reserved pools (for example Linux CMA)
+are recorded as requested sizes/allocation envelopes, not invented fixed
+addresses. Their actual kernel-selected allocations remain a live admission
+check. Static reserved regions still undergo exact overlap checks.
 
 ## Remaining gates
 

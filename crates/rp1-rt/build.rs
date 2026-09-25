@@ -99,7 +99,12 @@ ASSERT(__warm_data_shadow_end <= __app_limit, "warm data overlaps reserved SRAM"
     // Never reuse fb00: that is the RTOS fault-record ABI. This reservation
     // participates in __image_end/__app_limit and is initialized by SCMI startup.
     let scmi = if env::var_os("CARGO_FEATURE_SCMI_SHMEM").is_some() {
-        r#".scmi_shmem (NOLOAD) : ALIGN(64)
+        r#".rp1_clock_profile : ALIGN(4)
+{
+  KEEP(*(.rp1_clock_profile));
+} > RP1_APP_SRAM
+ASSERT(SIZEOF(.rp1_clock_profile) == 64, "SCMI requires one linked profile fingerprint")
+.scmi_shmem (NOLOAD) : ALIGN(64)
 {
   __scmi_shmem_start = .;
   KEEP(*(.scmi_shmem));

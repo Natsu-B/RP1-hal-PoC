@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install DT test dependencies
-        run: sudo apt-get update && sudo apt-get install -y device-tree-compiler python3-yaml
+        run: sudo apt-get update && sudo apt-get install -y device-tree-compiler python3-yaml binutils-arm-none-eabi
       - name: Check single-source outputs and candidate-DTB rejection tests
         run: |
           python3 tools/clock_profile.py --check

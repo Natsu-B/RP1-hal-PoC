@@ -13,6 +13,7 @@ import re
 import subprocess
 import yaml
 from clock_profile import DEFAULT, load
+from scmi_elf_layout import LOCAL_BASE, SRAM_SIZE, read_layout, sram_mapping
 
 
 class DtcLoader(yaml.SafeLoader):
@@ -67,6 +68,11 @@ def number(seq):
     return result
 
 
+def properties(node):
+    # dtc YAML stores child nodes and properties in the same dictionary.
+    return {k: v for k, v in node.items() if not isinstance(v, dict)}
+
+
 class Tree:
     def __init__(self, root):
         self.nodes, self.parents, self.enabled, self.phandles = {}, {}, {}, {}
@@ -83,6 +89,8 @@ class Tree:
                     self.phandles[ph] = path
             for key, value in n.items():
                 if isinstance(value, dict):
+                    if path == "/" and key in ("__symbols__", "__fixups__", "__local_fixups__", "__overrides__"):
+                        continue  # compiler/overlay metadata, not hardware devices
                     visit(value, path.rstrip("/") + "/" + key, path, on)
         visit(root, "/", None, True)
 
@@ -96,7 +104,7 @@ class Tree:
         return False
 
     def refs(self, path, prop, count_prop, zero=False):
-        seq, i, out = cells(self.nodes[path].get(prop)), 0, []
+        seq, i, out = cells(properties(self.nodes[path]).get(prop)), 0, []
         while i < len(seq):
             ph = seq[i]
             i += 1
@@ -154,10 +162,46 @@ class Tree:
         return address
 
 
-def validate(root, profile, require_camera=False):
+def dynamic_reservation(t, path):
+    n = properties(t.nodes[path])
+    parent = t.parents[path]
+    bus = t.nodes[parent]
+    ac, sc = scalar(bus, '#address-cells', 2), scalar(bus, '#size-cells', 1)
+    if not 1 <= ac <= 2 or not 1 <= sc <= 2:
+        raise ValueError(path + ': unsupported dynamic reservation cell widths')
+    size = cells(n.get('size'))
+    if len(size) != sc or not number(size):
+        raise ValueError(path + ': invalid dynamic reservation size')
+    size = number(size)
+    align = cells(n.get('alignment'))
+    if 'alignment' in n and (len(align) != sc or not number(align) or number(align) & (number(align) - 1)):
+        raise ValueError(path + ': invalid dynamic reservation alignment')
+    if 'reusable' in n and 'no-map' in n:
+        raise ValueError(path + ': dynamic reservation cannot be reusable and no-map')
+    ranges = cells(n.get('alloc-ranges'))
+    if 'alloc-ranges' in n and (not ranges or len(ranges) % (ac + sc)):
+        raise ValueError(path + ': invalid dynamic allocation ranges')
+    bounds = []
+    for i in range(0, len(ranges), ac + sc):
+        base, length = number(ranges[i:i + ac]), number(ranges[i + ac:i + ac + sc])
+        if not length:
+            raise ValueError(path + ': zero dynamic allocation range')
+        cpu = t.physical(parent, base, length)
+        if cpu + length > 2**64:
+            raise ValueError(path + ': dynamic allocation range overflow')
+        bounds.append({'cpu_start': cpu, 'size': length})
+    if bounds and not any(r['size'] >= size for r in bounds):
+        raise ValueError(path + ': dynamic reservation larger than every allocation range')
+    return {'node': path, 'requested_size': size, 'alignment': number(align) if align else None,
+            'allocation_ranges': bounds, 'physical_start': None,
+            'scope': 'kernel-selected RAM allocation; ranges are NOT allocated regions'}
+
+
+def validate(root, profile, require_camera=False, firmware_layout=None):
     t = Tree(root)
     failures = list(t.errors)
     refs, disabled, pin_users, regions = [], [], {}, []
+    dynamic_regions = []
     pin_functions = {}
     scmi_ids = {c["scmi_id"] for c in profile["clock"] if c["mode"] == "scmi"}
     fixed = {"rp1-profile-" + c["name"]: c for c in profile["clock"] if c["mode"] == "fixed"}
@@ -165,11 +209,13 @@ def validate(root, profile, require_camera=False):
     protocol_paths = []
     mailbox_users = {}
     uart_paths, camera_paths = [], []
+    shared = None
 
     def fail(text):
         failures.append(text)
 
-    for path, n in t.nodes.items():
+    for path, raw_node in t.nodes.items():
+        n = properties(raw_node)
         on = t.enabled[path]
         compat = strings(n.get("compatible"))
         leaf = path.rsplit("/", 1)[-1]
@@ -307,6 +353,9 @@ def validate(root, profile, require_camera=False):
                      (parent and "mmio-sram" in strings(t.nodes[parent].get("compatible"))))
         if on and is_region:
             try:
+                if parent == '/reserved-memory' and 'reg' not in n and 'size' in n:
+                    dynamic_regions.append(dynamic_reservation(t, path))
+                    continue
                 for start, size in t.regs(path):
                     if not size:
                         raise ValueError(path + ": zero-sized shared/reserved region")
@@ -385,13 +434,47 @@ def validate(root, profile, require_camera=False):
         if not any(p.startswith(path + "/") and t.enabled[p] and "remote-endpoint" in n
                    for p, n in t.nodes.items()):
             fail(path + ": enabled CFE has no sensor graph")
+    firmware_match = None
+    if firmware_layout is not None:
+        try:
+            mapping = sram_mapping(t)
+            marker = strings(t.nodes.get('/rp1_firmware_layout', {}).get('elf-sha256'))
+            if marker != [firmware_layout['elf_sha256']]:
+                fail('DT firmware ELF SHA mismatch/missing')
+            if firmware_layout['profile_sha256'] != profile['sha256']:
+                fail('linked ELF profile SHA mismatch')
+            expected = mapping['cpu_start'] + firmware_layout['bar2_offset']
+            allocs = [r for r in regions if r['node'] == shared]
+            if (len(allocs) != 1 or allocs[0]['cpu_start'] != expected or
+                    allocs[0]['size'] != firmware_layout['size'] or
+                    t.parents.get(shared) != mapping['node']):
+                fail('SCMI DT placement does not match final ELF BAR2 reservation')
+            # Initial layout delegates ONLY the SCMI slot to Linux. Conservatively
+            # reserve all other SRAM for app, stacks, old ABIs and future growth.
+            # New shared services need an explicitly reviewed allocator contract.
+            for r in regions:
+                if r['node'] == shared:
+                    continue
+                if (r['cpu_start'] < mapping['cpu_start'] + SRAM_SIZE and
+                        mapping['cpu_start'] < r['cpu_start'] + r['size']):
+                    fail(r['node'] + ': Linux region overlaps firmware-owned SRAM')
+            firmware_match = {**firmware_layout, 'sram': mapping,
+                              'scmi_cpu_start': expected, 'scmi_node': shared,
+                              'm3_local_base': LOCAL_BASE,
+                              'scope': 'static DT translation, not observed live BAR placement'}
+        except (ValueError, KeyError) as exc:
+            fail(str(exc))
     return {"classification": "STATIC", "result": "FAIL" if failures else "PASS",
             "scope": "candidate DTB structure only; not deployment admission or HW proof",
             "profile_sha256": profile["sha256"], "failures": sorted(set(failures)),
             "enabled_nodes": [p for p in t.nodes if t.enabled[p]], "disabled_nodes": disabled,
             "references": refs, "pin_owners": pin_users, "regions": regions,
+            "dynamic_reserved_memory": dynamic_regions,
             "camera_nodes": camera_paths,
-            "remaining_admission": ["live kernel/config identity", "firmware ELF SRAM placement/guards",
+            "firmware_match": firmware_match,
+            "remaining_admission": (["firmware ELF SRAM placement/guards"] if firmware_layout is None else []) +
+                                   (["live dynamic reserved-memory allocations"] if dynamic_regions else []) +
+                                   ["live kernel/config identity", "live BAR/CPU translation",
                                     "physical clock readback", "camera wiring", "full mailbox IRQ roundtrip"]}
 
 
@@ -400,10 +483,12 @@ def main():
     ap.add_argument("dtb", type=Path)
     ap.add_argument("--profile", type=Path, default=DEFAULT)
     ap.add_argument("--require-camera", action="store_true")
+    ap.add_argument("--firmware-elf", type=Path, help="check actual linked profile and SCMI placement")
     ap.add_argument("--output", type=Path)
     a = ap.parse_args()
     try:
-        result = validate(decode(a.dtb), load(a.profile), a.require_camera)
+        result = validate(decode(a.dtb), load(a.profile), a.require_camera,
+                          read_layout(a.firmware_elf) if a.firmware_elf else None)
     except (ValueError, KeyError, TypeError, subprocess.CalledProcessError, yaml.YAMLError) as exc:
         result = {"classification": "STATIC", "result": "FAIL", "failures": [str(exc)]}
     result["dtb_sha256"] = hashlib.sha256(a.dtb.read_bytes()).hexdigest()
