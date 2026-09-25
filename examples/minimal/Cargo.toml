@@ -15,7 +15,7 @@ rp1-build = { path = "../../crates/rp1-build" }
 [features]
 default = []
 freertos-r1 = ["state5-composite-boundary", "rp1-rt/freertos", "dep:rp1-freertos"]
-freertos-scmi-readonly = ["freertos-r1", "rp1-hal/scmi-clock", "rp1-rt/scmi-irq57-candidate"]
+freertos-scmi-readonly = ["freertos-r1", "rp1-hal/scmi-clock", "rp1-rt/scmi-irq57-candidate", "uart0-functional-clock-before-reset-done"]
 freertos-scmi-readonly-mixed = ["freertos-scmi-readonly", "freertos-r2-mixed"]
 freertos-r1-local-stack = ["freertos-r1", "rp1-rt/freertos-local-monitor-stack", "rp1-freertos/local-monitor-stack"]
 freertos-r1-local-stack-fault = ["freertos-r1-local-stack", "freertos-r1-fault"]

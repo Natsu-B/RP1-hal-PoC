@@ -127,7 +127,24 @@ REFUSED until separate review/commissioning. The helper preserves RTOS config,
 family optimization/LTO, official kernel, stack budget and ELF validators. Raw
 `cargo build` default flags are not interchangeable with this pinned build.
 
-Preparation requires cold proc0/PRIMASK1, correct vector, inactive/unowned IRQ57,
+Plain R1 (no R2 SPI/I2C/UART/mixed sibling) first performs a separate cold clock
+prerequisite as the first main action, before GPIO/reset/endpoint/PCIe writes
+and CPU calibration. Two equal
+snapshots must show the PLL reset defaults `1/3f/0/0/77000/80010000`, UART clock
+`0/1/1`, and asserted/not-DONE PLL_SYS and UART0 resets. Any mismatch, including
+running `77010` or already-correct `51010`, rejects before any clock/reset write.
+Existing reset-release/core-lock and UART clock-before-reset-DONE helpers are
+reused. Only the prior active-DMAC proof's selected `PRIM=51000`, DSB/readback,
+`PRIM=51010`, DSB/readback sequence is added; no DMA operation is called. Final
+PLL `80000001/4/20/0/51010/80010000` and UART `10000840/1/1` are read back.
+Failures halt; there is no runtime retune/retry or new recovery contract. This
+is BUILD/HOST coverage, not new hardware proof or external frequency accuracy.
+R2/mixed keeps its existing `77010` initialization and cannot satisfy the exact
+100MHz SCMI admission; this change does not qualify that separate cohort.
+The host check covers the actual startup body and Cargo feature/call integration,
+not only protocol backends seeded at the desired tuple.
+
+SCMI protocol preparation requires cold proc0/PRIMASK1, correct vector, inactive/unowned IRQ57,
 zero PROC_EVENTS and exact enabled SCMI APB tuple. Only this IRQ pending/priority/
 enable is changed (priority0xc0); no global unmask, VTOR/AIRCR/BASEPRI/clock write.
 Scheduler owns the PRIMASK transition. No extra task, heap or shared exclusive

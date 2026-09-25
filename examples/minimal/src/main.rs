@@ -11,6 +11,9 @@ use rp1_rt as _;
 #[cfg(all(target_arch = "arm", feature = "freertos-r1"))]
 mod freertos_r1;
 
+#[cfg(all(target_arch = "arm", feature = "freertos-scmi-readonly", not(any(feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed"))))]
+mod scmi_cold_clock;
+
 #[cfg(any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof", feature = "i2c1-read1-irq-proof"))]
 mod i2c1_wrapper_readonly_proof;
 
@@ -10549,6 +10552,11 @@ fn emit_readback_frames(pin: &mut ConfiguredPin<22, Output>, uart0: &Uart0Tx) {
 #[cfg(target_arch = "arm")]
 #[rp1_hal::main]
 fn main(mut p: Peripherals) -> ! {
+    // Sole cold R1 prerequisite, before even GPIO's PROC_MISC reset release.
+    // R2 retains its existing 0x77010 contract, not an implicit APB rate change.
+    #[cfg(all(feature = "freertos-scmi-readonly", not(any(feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed"))))]
+    scmi_cold_clock::prepare().expect("SCMI cold clock prerequisite failed");
+
     #[cfg(any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof", feature = "i2c1-read1-irq-proof"))]
     i2c1_wrapper_readonly_proof::invalidate();
 
@@ -10563,6 +10571,7 @@ fn main(mut p: Peripherals) -> ! {
     clock_independence::initialize();
 
     #[cfg(all(feature = "pll-sys-core-lock-only", not(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))))]
+    #[cfg(not(all(feature = "freertos-scmi-readonly", not(any(feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")))))]
     match release_pll_sys_reset_bit29() {
         Ok(()) => pulse_width(&mut gpio22, 72),
         Err(_) => {
