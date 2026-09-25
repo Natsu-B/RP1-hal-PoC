@@ -202,6 +202,24 @@ are recorded as requested sizes/allocation envelopes, not invented fixed
 addresses. Their actual kernel-selected allocations remain a live admission
 check. Static reserved regions still undergo exact overlap checks.
 
+## Bounded standard Linux Image build
+
+`tools/build_linux_image.py` keeps the source tree unchanged and uses an explicit
+out-of-tree directory. Supply the retained standard config, official source,
+output and record directories with `--config`, `--source`, `--out`, `--record`.
+First invocation only configures. Inspect `config.diff`, then repeat with
+`--image REVIEWED_CONFIG_SHA256`. The20-symbol fragment must still match.
+Cross-GCC14 is explicit; compiler-driven config changes are not silently accepted.
+The driver limits jobs to1/2 and checks MemAvailable2GiB, output filesystem1GiB,
+record filesystem1.5GB every5seconds. Failure/time/resource limits terminate the
+dedicated build process group and retain output for diagnosis. No cleanup, source
+patches, `modules_install`, deployment or boot is performed. Run the small host
+guard checks with `python3 tools/test_linux_image.py`.
+
+Image success does not prove module closure, standard RPMsg attach, physical
+clock ownership or a successful boot. Retain config/tool identities and selected
+products before releasing scratch space; never publish private keys/raw DT data.
+
 ## Remaining gates
 
 1. Current kernel/config/DT census and held-R1 recovery observed separately; camera absent.
