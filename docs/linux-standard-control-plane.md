@@ -110,6 +110,47 @@ used. Its MMIO adapter touches only the channel1 event bits and its assigned
 SRAM. It does not set up NVIC, mask interrupts or claim IRQ57 is proven.
 Host fake-I/O tests check publication order, not PCIe ordering/IRQ delivery.
 
+### Cold read-only runtime (candidate IRQ57)
+
+The optional `freertos-scmi-readonly` feature connects the existing dispatcher
+to vector73 of the normal RTOS vector table. It does not relocate VTOR or reset
+sibling peripheral vectors. `freertos-scmi-readonly-mixed` also includes the
+existing R2 SPI/I2C/UART workload. Use the normal pinned build helper:
+
+```sh
+RP1_RTOS_FEATURE=freertos-scmi-readonly tools/build-freertos-r1.sh /new/r1-scmi
+RP1_RTOS_FEATURE=freertos-scmi-readonly-mixed tools/build-freertos-r1.sh /new/mixed-scmi
+```
+
+Successful selected builds deliberately exit3: BUILD PASS, hardware admission
+REFUSED until separate review/commissioning. The helper preserves RTOS config,
+family optimization/LTO, official kernel, stack budget and ELF validators. Raw
+`cargo build` default flags are not interchangeable with this pinned build.
+
+Preparation requires cold proc0/PRIMASK1, correct vector, inactive/unowned IRQ57,
+zero PROC_EVENTS and exact enabled SCMI APB tuple. Only this IRQ pending/priority/
+enable is changed (priority0xc0); no global unmask, VTOR/AIRCR/BASEPRI/clock write.
+Scheduler owns the PRIMASK transition. No extra task, heap or shared exclusive
+primitive is introduced. The ISR services one bounded request and records actual
+IPSR, event/active/pending bits, responses/notifications, error and raw timer times.
+Unknown/unhandled source masks IRQ57 without clearing another channel. Warm
+restart combinations are refused pending Linux quiescence/epoch coordination.
+
+`RP1_SCMI_TELEMETRY` is a separate108-byte private BSS record; its ELF symbol is
+the authority, not a fixed address. Cold preparation and each ISR publish odd/
+even sequence with compiler/bus barriers. Read sequence,108bytes,sequence; accept
+only equal even sequence, magicSCI1/version1. `ready=1` means this transport's
+readonly service prepared, NOT all fixed-clock holds or Linux handoff admitted.
+An error clears ready and requires recovery, not blind rearm. Handler duration
+uses1us raw timer and excludes entry/prologue/tail cost; not complete IRQ latency.
+
+IRQ57 remains a candidate from prior firmware analysis, not a hardware-proven
+current route. Earlier Linux request visibility without PROC_EVENTS/IRQ delivery
+and endpoint BAR/reset mismatch remains a negative boundary. No endpoint replay
+or unknown route writer is added. The standard rp1-mailbox Linux driver uses
+mailbox-framework TX-done polling; this must be distinguished from the required
+SCMI response IRQ completion (no firmware request polling in this runtime).
+
 ## SRAM and build admission
 
 Old fb00..fbff SCMI storage collides with the current RTOS fault ABI and must

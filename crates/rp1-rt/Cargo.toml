@@ -8,6 +8,7 @@ build = "build.rs"
 default = []
 freertos = []
 scmi-shmem = ["freertos"]
+scmi-irq57-candidate = ["freertos", "scmi-shmem"]
 freertos-local-monitor-stack = ["freertos"]
 freertos-reset-entry = ["freertos"]
 freertos-warm-data = ["freertos-reset-entry"]

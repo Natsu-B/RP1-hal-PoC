@@ -1,5 +1,12 @@
 #![no_std]
 
+/// Selected SYSCFG route from the earlier firmware analysis; delivery still
+/// requires source -> pending -> handler hardware evidence, not only this table.
+pub const SCMI_CANDIDATE_IRQ: usize = 57;
+pub const SCMI_CANDIDATE_VECTOR: usize = 16 + SCMI_CANDIDATE_IRQ;
+#[cfg(all(target_arch = "arm", feature = "scmi-irq57-candidate"))]
+unsafe extern "C" { fn RP1_SCMI_IRQHandler(); }
+
 #[cfg(all(feature = "freertos", any(feature = "expected-fault-recovery", feature = "debug-stub", feature = "debug-mailbox-init")))]
 compile_error!("FreeRTOS owns exception handling; do not combine with legacy fault/debug runtime");
 #[cfg(all(feature = "freertos", target_arch = "arm"))]
@@ -210,6 +217,10 @@ const fn local_irq_vector_table() -> [unsafe extern "C" fn(); 80] {
         vectors[4] = ExpectedFaultHandler;
         vectors[5] = ExpectedFaultHandler;
         vectors[6] = ExpectedFaultHandler;
+    }
+    #[cfg(feature = "scmi-irq57-candidate")]
+    {
+        vectors[SCMI_CANDIDATE_VECTOR] = RP1_SCMI_IRQHandler;
     }
     #[cfg(feature = "pwm0-local-irq")]
     {

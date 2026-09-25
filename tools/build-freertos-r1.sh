@@ -5,6 +5,11 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 cargo_feature=$feature
+scmi=0
+case "$feature" in
+    freertos-scmi-readonly) feature=freertos-r1; scmi=1 ;;
+    freertos-scmi-readonly-mixed) feature=freertos-r2-mixed; scmi=1 ;;
+esac
 # R1 local-stack control and halt-only UDF probe are independent of WDT requests.
 local_stack=0
 case "$feature" in
@@ -191,6 +196,7 @@ arm-none-eabi-nm -n "$out/RP1.elf" > "$out/symbols.txt"
 arm-none-eabi-objdump -d "$out/RP1.elf" > "$out/disassembly.txt"
 arm-none-eabi-size "$out/RP1.elf"
 elf_args=()
+if [[ "$scmi" == 1 ]]; then elf_args+=(--require-scmi); fi
 if [[ "$local_stack" == 1 ]]; then
     elf_args+=(--local-monitor-stack)
     cc -std=c11 -Wall -Wextra -Werror "$repo/tools/test-static-stack.c" -o "$out/static-stack-test"
@@ -198,6 +204,14 @@ if [[ "$local_stack" == 1 ]]; then
     python3 -B "$repo/tools/test-local-monitor-elf.py" "$out/RP1.elf" > "$out/local-monitor-negative-test.json"
 fi
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" "${elf_args[@]}" > "$out/elf-validation.json"
+if [[ "$scmi" == 1 ]]; then
+    python3 -B "$repo/tools/test_scmi_clock.py" > "$out/scmi-host-test.txt"
+    python3 -B "$repo/tools/test-freertos-elf.py" "$out/RP1.elf" > "$out/vector-negative-test.txt"
+    python3 -B "$repo/tools/scmi_elf_layout.py" "$out/RP1.elf" --output "$out/scmi-layout.json"
+    sha256sum "$out/RP1.elf" > "$out/output.sha256"
+    printf 'SCMI_readonly_build=PASS candidate_IRQ57=UNPROVEN physical_holds=OPEN hardware_admission=REFUSED\n'
+    exit 3
+fi
 if [[ "$cargo_feature" == freertos-r1-local-stack || "$cargo_feature" == freertos-r1-local-stack-fault ]]; then
     python3 -B "$repo/tools/check-local-r1-elf.py" --self-test "$out/RP1.elf" "$cargo_feature" > "$out/local-r1-validation.json"
     sha256sum "$out/RP1.elf" > "$out/output.sha256"

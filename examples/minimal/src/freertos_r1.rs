@@ -100,6 +100,12 @@ compile_error!("UART timeout/cancel and overflow workloads have separate receipt
 #[path = "freertos_uart.rs"]
 pub mod uart;
 
+#[cfg(feature = "freertos-scmi-readonly")]
+#[path = "freertos_scmi.rs"]
+mod scmi;
+#[cfg(all(feature = "freertos-scmi-readonly", feature = "freertos-r3-watchdog-kernel-restart"))]
+compile_error!("SCMI cold-only commissioning requires a separate Linux-quiesced restart contract");
+
 const TELEMETRY: *mut u32 = 0x2000_f800 as *mut u32;
 static mut DATA_SENTINEL: u32 = 0x1357_9bdf;
 static mut BSS_SENTINEL: u32 = 0;
@@ -208,6 +214,8 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
         }
     }
     let hz = calibrate_cpu_hz(); put(5, hz); put(2, 2);
+    #[cfg(feature = "freertos-scmi-readonly")]
+    unsafe { scmi::prepare().expect("SCMI readonly cold admission failed"); }
     unsafe {
         // A valid unused slot isolates the capacity guard from slot/occupied errors.
         assert!(U32Queue::create(0, 0).is_err());

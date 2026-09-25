@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Reject an unsafe R1 memory/vector/link result. No third-party Python modules."""
+import argparse
 import json
 from pathlib import Path
 import re
@@ -11,7 +12,7 @@ if not __debug__:
     raise SystemExit('ELF admission requires assertions enabled; refuse -O/PYTHONOPTIMIZE')
 
 
-def check(path, local_monitor=False):
+def check(path, local_monitor=False, require_scmi=False):
     data = Path(path).read_bytes()
     assert data[:7] == b'\x7fELF\x01\x01\x01', 'ELF32 little endian required'
     header = struct.unpack_from('<16sHHIIIIIHHHHHH', data)
@@ -44,7 +45,8 @@ def check(path, local_monitor=False):
     required_vectors = {1:'Reset', **{n:'RP1RtosFault' for n in range(2, 7)},
                         11:'vPortSVCHandler', 14:'xPortPendSVHandler', 15:'xPortSysTickHandler'}
     for index, name in {42:'TIMER0_ALARM0_IRQ26_CANDIDATE_IRQHandler',
-                        35:'SPI0_IRQHandler', 24:'I2C1_IRQHandler', 41:'UART0_IRQHandler'}.items():
+                        35:'SPI0_IRQHandler', 24:'I2C1_IRQHandler', 41:'UART0_IRQHandler',
+                        73:'RP1_SCMI_IRQHandler'}.items():
         if name in symbols: required_vectors[index] = name
     for index, name in required_vectors.items():
         assert vector[index] == symbols[name] | 1, f'vector {index} must point directly to {name}'
@@ -82,6 +84,20 @@ def check(path, local_monitor=False):
     dis = subprocess.check_output(['arm-none-eabi-objdump', '-d', '-M', 'reg-names-raw', str(path)], text=True)
     assert not re.search(r'\b(?:ldrex\w*|strex\w*|clrex)\b', dis), 'unproven exclusive instruction linked'
     assert not any(name in symbols for name in ['pvPortMalloc', 'vPortFree', 'malloc', '_Unwind_Resume'])
+    scmi = None
+    assert not require_scmi or 'RP1_SCMI_IRQHandler' in symbols, 'SCMI handler missing'
+    if 'RP1_SCMI_IRQHandler' in symbols:
+        from scmi_elf_layout import read_layout
+        layout = read_layout(path)
+        sizes = subprocess.check_output(['arm-none-eabi-nm', '-S', str(path)], text=True)
+        rows = [line.split() for line in sizes.splitlines() if line.endswith(' RP1_SCMI_TELEMETRY')]
+        assert len(rows) == 1 and int(rows[0][1], 16) == 27*4, 'SCMI telemetry ABI size'
+        address = int(rows[0][0], 16)
+        assert symbols['__sbss'] <= address < address+108 <= symbols['__ebss'], 'SCMI telemetry must be private .bss'
+        assert address+108 <= layout['local_start'], 'telemetry overlaps SCMI shared channel'
+        scmi = dict(candidate_irq=57, vector=73, telemetry=address, telemetry_bytes=108,
+            shmem=layout['local_start'], profile_sha256=layout['profile_sha256'],
+            scope='cold readonly IRQ commissioning; HW route and Linux handoff OPEN')
     # The separate assembly loops must retain literal R4-R11 comparisons and no calls.
     spin = [block for block in re.split(r'\n(?=[0-9a-f]+ <)', dis) if 'freertos_r1' in block.splitlines()[0] and '4spin' in block.splitlines()[0]]
     assert len(spin) == 1 and not re.search(r'\bblx?\s', spin[0]), 'non-yielding spin task missing/contains call'
@@ -130,9 +146,14 @@ def check(path, local_monitor=False):
             'pt_load_end':hex(max(row[1] for row in loads)), 'msp':[hex(0x2000e000),hex(vector[0])],
             'bss_bytes':symbols['__ebss']-symbols['__sbss'], 'direct_rtos_vectors':True,
             'checked_vector_indices': sorted(required_vectors),
-            'exclusive_instructions':0, 'proc1':proc1, 'local_monitor_stack':local_monitor, 'hardware':'OPEN'}
+            'exclusive_instructions':0, 'proc1':proc1, 'scmi':scmi,
+            'local_monitor_stack':local_monitor, 'hardware':'OPEN'}
 
 
 if __name__ == '__main__':
-    assert len(sys.argv) == 2 or (len(sys.argv) == 3 and sys.argv[2] == '--local-monitor-stack')
-    print(json.dumps(check(sys.argv[1], len(sys.argv) == 3), indent=2))
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('elf')
+    ap.add_argument('--local-monitor-stack', action='store_true')
+    ap.add_argument('--require-scmi', action='store_true')
+    args = ap.parse_args()
+    print(json.dumps(check(args.elf, args.local_monitor_stack, args.require_scmi), indent=2))
