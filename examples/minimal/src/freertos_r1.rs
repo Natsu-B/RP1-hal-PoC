@@ -399,6 +399,9 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     let (mut endpoint_uart, mut endpoint, endpoint_start) = (
         unsafe { ptr::addr_of_mut!(ENDPOINT_UART).replace(None).unwrap() },
         crate::linux_clk_uart_ownership::DbiMonitor::new(), raw_low());
+    #[cfg(feature = "freertos-endpoint-uart")]
+    let (mut endpoint_fast, endpoint_epoch, mut endpoint_last_sample) =
+        (true, unsafe { os::tick().unwrap() }, endpoint_start);
     let (ipsr, control, psp, msp): (u32, u32, u32, u32);
     unsafe {
         core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL", "mrs {2}, PSP", "mrs {3}, MSP",
@@ -442,11 +445,19 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     loop {
         #[cfg(feature = "freertos-endpoint-uart")]
         {
-            // One sample per existing monitor pass (~1s), max32 changes+CAP.
-            // This can miss intermediate transitions; no endpoint repair writes.
-            if let Some(line) = endpoint.sample_line(u64::from(raw_low().wrapping_sub(endpoint_start))) {
-                increment(if endpoint_line(&mut endpoint_uart, &line) { 60 } else { 61 });
-            }
+            // For a finite60s budget, block one tick between plain-read samples.
+            // Keep normal monitor work ~1s; no extra task/IRQ/mask or repair.
+            // UART output/preemption can still hide short level transitions.
+            crate::linux_clk_uart_ownership::endpoint_wait_period(
+                &mut endpoint_fast, endpoint_epoch,
+                || unsafe { os::tick().unwrap() }, |ticks| unsafe { os::delay(ticks).unwrap() }, || {
+                let now = raw_low();
+                put(62, get(62).max(now.wrapping_sub(endpoint_last_sample)));
+                endpoint_last_sample = now;
+                if let Some(line) = endpoint.sample_line(u64::from(now.wrapping_sub(endpoint_start))) {
+                    increment(if endpoint_line(&mut endpoint_uart, &line) { 60 } else { 61 });
+                }
+            });
             put(63, u32::from_le_bytes(*b"EP01")); // plain-R1-only diagnostic words
         }
         #[cfg(feature = "freertos-r2-mixed-repeat")]
@@ -461,7 +472,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
             put(62, get(62).max(late));
             raw_low()
         };
-        #[cfg(not(any(feature = "freertos-r2-mixed-repeat", feature = "freertos-r2-spi-lifecycle", feature = "freertos-r2-i2c-cancel-window", feature = "freertos-r2-uart-lifecycle")))]
+        #[cfg(not(any(feature = "freertos-endpoint-uart", feature = "freertos-r2-mixed-repeat", feature = "freertos-r2-spi-lifecycle", feature = "freertos-r2-i2c-cancel-window", feature = "freertos-r2-uart-lifecycle")))]
         unsafe { os::delay(1000).unwrap(); }
         #[cfg(feature = "freertos-r2-spi-lifecycle")]
         unsafe { spi::lifecycle::monitor_wait(1000); }

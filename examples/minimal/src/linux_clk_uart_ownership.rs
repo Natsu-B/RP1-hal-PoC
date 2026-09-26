@@ -121,7 +121,13 @@ impl DbiMonitor {
     }
 
     fn observe(&mut self, sample: DbiSample) -> Option<DbiEvent> {
-        if self.last == Some(sample) {
+        // Traffic/debug signals are still reported, but must not exhaust the
+        // bounded record budget before a reset-level transition is observed.
+        if self.last == Some(sample) || (cfg!(feature = "freertos-endpoint-uart")
+            && self.last.is_some_and(|last| last.valid == sample.valid
+            && last.sel0 == sample.sel0 && last.sel1 == sample.sel1
+            && last.dwords == sample.dwords && last.apbs[1..] == sample.apbs[1..]
+            && (last.apbs[0] ^ sample.apbs[0]) & 0x001f_0000 == 0)) {
             return None;
         }
 
@@ -158,6 +164,29 @@ impl DbiMonitor {
             self.ended = true;
             Some(DbiEvent::End)
         }
+    }
+}
+
+/// One monitor period, using wrap-safe RTOS tick subtraction (period << 2^31).
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
+pub(crate) fn endpoint_wait_remaining(start: u32, now: u32) -> u32 {
+    1000u32.saturating_sub(now.wrapping_sub(start))
+}
+
+/// Actual monitor scheduling body, host-testable without pretending to run an RTOS.
+#[cfg(feature = "freertos-endpoint-uart")]
+pub(crate) fn endpoint_wait_period(fast: &mut bool, epoch: u32,
+    mut tick: impl FnMut() -> u32, mut sleep: impl FnMut(u32), mut sample: impl FnMut()) {
+    let start = tick();
+    sample();
+    for _ in 0..1000 {
+        let now = tick();
+        let remaining = endpoint_wait_remaining(start, now);
+        if remaining == 0 { break; }
+        *fast &= now.wrapping_sub(epoch) < 60_000; // one-way expiry, includes bookkeeping
+        sleep(if *fast { 1 } else { remaining });
+        if endpoint_wait_remaining(start, tick()) == 0 { break; }
+        sample();
     }
 }
 
@@ -427,6 +456,20 @@ mod tests {
         assert_eq!(monitor.observe(sample), Some(DbiEvent::Change));
         assert_eq!(monitor.observe(sample), None);
 
+        #[cfg(feature = "freertos-endpoint-uart")]
+        { sample.apbs[0] = 0x00e0_ffff; } // debug/traffic only
+        assert_eq!(monitor.observe(sample), None);
+        for bit in 16..=20 {
+            sample.apbs[0] ^= 1 << bit;
+            assert_eq!(monitor.observe(sample), Some(DbiEvent::Change));
+        }
+        assert_eq!(endpoint_wait_remaining(7, 7), 1000);
+        assert_eq!(endpoint_wait_remaining(7, 1006), 1);
+        assert_eq!(endpoint_wait_remaining(7, 1007), 0);
+        assert_eq!(endpoint_wait_remaining(u32::MAX - 9, 990), 0);
+        assert_eq!(endpoint_wait_remaining(u32::MAX - 9, 0), 990);
+        assert_eq!(endpoint_wait_remaining(7, 1057), 0); // bounded TX overshoot
+
         let mut encoded = DbiSample::invalid(0x1111_2222, 0x3333_4444);
         encoded.dwords = [
             0xdead_beef,
@@ -443,5 +486,38 @@ mod tests {
             dbi_line(DbiEvent::Cap, 0x0123_4567_89ab_cdef, encoded),
             *b"RP1DBI event=CAP  elapsed_us=0x0123456789abcdef valid=0 sel0=0x11112222 sel1=0x33334444 id=0xdeadbeef cmdstat=0x00010002 classrev=0x02000000 bhlc=0x00010000 bar0=0x00800000 bar1=0x00000000 bar2=0x00400000 mon2=0x00130000 intr=0x00000002 inte=0x00000003 ints=0x00000002\r\n"
         );
+    }
+
+    #[cfg(feature = "freertos-endpoint-uart")]
+    #[test]
+    fn endpoint_schedule_wrap_expiry_and_slow_periods() {
+        use core::cell::Cell;
+        let epoch = u32::MAX - 20;
+        let tick = Cell::new(epoch);
+        let mut fast = true;
+        let mut samples = Vec::new();
+        endpoint_wait_period(&mut fast, epoch, || tick.get(),
+            |n| tick.set(tick.get().wrapping_add(n)), || samples.push(tick.get()));
+        assert_eq!(samples.len(), 1000);
+        assert!(samples.windows(2).all(|s| s[1].wrapping_sub(s[0]) == 1));
+        assert_eq!(tick.get().wrapping_sub(epoch), 1000);
+        tick.set(epoch.wrapping_add(59_999)); // includes time outside sampling windows
+        samples.clear();
+        endpoint_wait_period(&mut fast, epoch, || tick.get(),
+            |n| tick.set(tick.get().wrapping_add(n)), || samples.push(tick.get()));
+        assert!(!fast);
+        assert_eq!(samples, [epoch.wrapping_add(59_999), epoch.wrapping_add(60_000)]);
+        for _ in 0..2 {
+            let start = tick.get(); samples.clear();
+            endpoint_wait_period(&mut fast, epoch, || tick.get(),
+                |n| tick.set(tick.get().wrapping_add(n)), || samples.push(tick.get()));
+            assert_eq!(samples, [start]);
+            assert_eq!(tick.get().wrapping_sub(start), 1000);
+        }
+        tick.set(epoch); // even a whole counter wrap must not rearm the expired mode
+        samples.clear();
+        endpoint_wait_period(&mut fast, epoch, || tick.get(),
+            |n| tick.set(tick.get().wrapping_add(n)), || samples.push(tick.get()));
+        assert!(!fast); assert_eq!(samples.len(), 1);
     }
 }

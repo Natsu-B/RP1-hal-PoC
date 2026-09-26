@@ -34,7 +34,7 @@ def decode(raw):
         'apbs_records': sum(all(k in r for k in APBS) for r in rows),
         'class_loss_elapsed_us': loss['elapsed_us'] if lost else None,
         'reset_cause': 'OPEN', 'BAR_size': 'NOT_MEASURED', 'SCMI_completion': 'OPEN',
-        'sampling': 'sequential plain reads once per monitor pass (~1s); missed transitions and selector ABA possible',
+            'sampling': 'sequential plain reads; cadence is image-dependent (legacy ~1s or bounded one-tick loop); missed transitions and selector ABA possible',
         'apbs_boundary': 'No acknowledgement or mask write; latched events and current levels do not establish event order or official state',
     }
 

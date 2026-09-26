@@ -239,10 +239,18 @@ products before releasing scratch space; never publish private keys/raw DT data.
 
 ## Endpoint transition observer (not recovery)
 
+The diagnostic monitor samples after a one-tick block during a finite60s tick
+budget, then returns to one-second observations. R1 bookkeeping/marker stays at
+roughly one-second cadence. UART output and scheduling introduce larger gaps;
+telemetry word62 records the largest observed intersample gap in microseconds,
+not a future latency guarantee. MONITOR2 debug/traffic-only changes do not trigger
+records; all five reset/link levels, raw/enable/masked events and DBI changes do.
+Full MONITOR2 values remain in emitted records, with the existing32+CAP bound.
+
 `RP1_RTOS_FEATURE=freertos-endpoint-uart tools/build-freertos-r1.sh /new/output`
 builds the existing plain-R1 UART0 diagnostic, with no new task or PCIe writer.
-The existing monitor samples once per roughly one second and caps output at32
-changes plus CAP. Sequential selector checks cannot detect ABA. The270-byte
+Output is capped at32 changes plus CAP. Sequential selector checks cannot detect
+ABA. The270-byte
 record adds selector-independent MONITOR2/INTR/INTE/INTS plain reads at
 `0x401081a4/1a8/1ac/1b4` to the DBI snapshot. INTR is never acknowledged or
 masked; the destructive-read LTSSM FIFO at`0x40108124` is excluded.
