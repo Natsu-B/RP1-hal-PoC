@@ -8,11 +8,11 @@ const PERIOD_US: u64 = 100_000;
 const GPIO_PERIOD_TICKS: u32 = 100;
 #[cfg(target_arch = "arm")]
 const GPIO_PULSE_US: u64 = 1_000;
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const DBI_MONITOR_WINDOW_US: u64 = 30_000_000;
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const DBI_POLL_US: u64 = 1_000;
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const DBI_RECORD_LIMIT: u8 = 32;
 
 #[cfg(target_arch = "arm")]
@@ -27,9 +27,9 @@ const RESET_DONE1: usize = 0x4001_401c;
 const PLL_SYS_CS: usize = 0x4002_0000;
 #[cfg(target_arch = "arm")]
 const PLL_SYS_PRIM: usize = 0x4002_0010;
-#[cfg(all(target_arch = "arm", feature = "rp1-linux-pcie-dbi-transition-monitor"))]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const PCIE_VIEWPORT_SELECTOR: usize = 0x4010_8000;
-#[cfg(all(target_arch = "arm", feature = "rp1-linux-pcie-dbi-transition-monitor"))]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const PCIE_DBI_WINDOW: usize = 0x4010_9000;
 
 #[cfg(target_arch = "arm")]
@@ -47,12 +47,12 @@ const PLL_SYS_PRI_PH_ENABLED: u32 = 1 << 4;
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 const HEARTBEAT_TEMPLATE: [u8; 54] = *b"RP1CLK seq=0x00000000 ctrl=0x00000000 off=0x00000000\r\n";
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const DBI_LINE_TEMPLATE: [u8; 206] = *b"RP1DBI event=INIT elapsed_us=0x0000000000000000 valid=0 sel0=0x00000000 sel1=0x00000000 id=0x00000000 cmdstat=0x00000000 classrev=0x00000000 bhlc=0x00000000 bar0=0x00000000 bar1=0x00000000 bar2=0x00000000\r\n";
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const DBI_DWORD_OFFSETS: [usize; 7] = [93, 112, 132, 148, 164, 180, 196];
 
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DbiSample {
     valid: bool,
@@ -61,7 +61,7 @@ struct DbiSample {
     dwords: [u32; 7],
 }
 
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 impl DbiSample {
     const fn invalid(sel0: u32, sel1: u32) -> Self {
         Self {
@@ -73,7 +73,7 @@ impl DbiSample {
     }
 }
 
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DbiEvent {
     Initial,
@@ -82,7 +82,7 @@ enum DbiEvent {
     End,
 }
 
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 impl DbiEvent {
     const fn token(self) -> [u8; 4] {
         match self {
@@ -94,17 +94,17 @@ impl DbiEvent {
     }
 }
 
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
-struct DbiMonitor {
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
+pub(crate) struct DbiMonitor {
     last: Option<DbiSample>,
     records: u8,
     capped: bool,
     ended: bool,
 }
 
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 impl DbiMonitor {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             last: None,
             records: 0,
@@ -136,6 +136,14 @@ impl DbiMonitor {
         }
     }
 
+    /// Reuse the fixed read-only sample/encoder from a task, not the terminal
+    /// standalone proof loop. Caller chooses cadence and owns bounded TX.
+    #[cfg(all(target_arch = "arm", feature = "freertos-endpoint-uart"))]
+    pub(crate) fn sample_line(&mut self, elapsed_us: u64) -> Option<[u8; 206]> {
+        let sample = read_dbi_sample(read32);
+        self.observe(sample).map(|event| dbi_line(event, elapsed_us, sample))
+    }
+
     fn finish(&mut self) -> Option<DbiEvent> {
         if self.ended {
             None
@@ -153,7 +161,7 @@ fn encode_hex_u32(out: &mut [u8], offset: usize, value: u32) {
     }
 }
 
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 fn encode_hex_u64(out: &mut [u8], offset: usize, value: u64) {
     for index in 0..16 {
         let shift = 60 - index * 4;
@@ -169,7 +177,7 @@ fn heartbeat_line(sequence: u32, ctrl: u32, off_periods: u32) -> [u8; HEARTBEAT_
     line
 }
 
-#[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 fn dbi_line(event: DbiEvent, elapsed_us: u64, sample: DbiSample) -> [u8; DBI_LINE_TEMPLATE.len()] {
     let mut line = DBI_LINE_TEMPLATE;
     line[13..17].copy_from_slice(&event.token());
@@ -201,8 +209,8 @@ fn read32(address: usize) -> u32 {
     unsafe { core::ptr::read_volatile(address as *const u32) }
 }
 
-#[cfg(all(target_arch = "arm", feature = "rp1-linux-pcie-dbi-transition-monitor"))]
-fn read_dbi_sample() -> DbiSample {
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
+fn read_dbi_sample(mut read32: impl FnMut(usize) -> u32) -> DbiSample {
     let sel0 = read32(PCIE_VIEWPORT_SELECTOR);
     if sel0 != 0 {
         // A non-zero selector makes the DBI window ambiguous; do not touch it.
@@ -251,9 +259,9 @@ pub fn run(gpio22: &mut ConfiguredPin<22, Output>, timer: &RawTimer, uart0: Uart
     let start = timer.now();
     let mut next_us = 0;
     let mut off_periods = 0u32;
-    #[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+    #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
     let mut dbi_monitor = DbiMonitor::new();
-    #[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+    #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
     let mut dbi_next_us = 0;
     // 1 ms is a best-effort target; synchronous UART records/heartbeats create gaps.
 
@@ -265,7 +273,7 @@ pub fn run(gpio22: &mut ConfiguredPin<22, Output>, timer: &RawTimer, uart0: Uart
             gpio22.set_low();
             stop();
         }
-        #[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+        #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
         {
             if elapsed_us >= DBI_MONITOR_WINDOW_US {
                 if let Some(event) = dbi_monitor.finish() {
@@ -278,7 +286,7 @@ pub fn run(gpio22: &mut ConfiguredPin<22, Output>, timer: &RawTimer, uart0: Uart
                     }
                 }
             } else if elapsed_us >= dbi_next_us {
-                let sample = read_dbi_sample();
+                let sample = read_dbi_sample(read32);
                 if let Some(event) = dbi_monitor.observe(sample) {
                     let line = dbi_line(event, elapsed_us, sample);
                     if uart.write_bytes(&line) != line.len() {
@@ -320,6 +328,30 @@ fn stop() -> ! {
 mod tests {
     use super::*;
 
+    #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
+    #[test]
+    fn dbi_reads_only_allowlist_and_rejects_selector_drift() {
+        let mut addresses = Vec::new();
+        let sample = read_dbi_sample(|address| {
+            addresses.push(address);
+            if address == PCIE_VIEWPORT_SELECTOR { 0 } else { address as u32 }
+        });
+        assert!(sample.valid);
+        let mut expected = vec![PCIE_VIEWPORT_SELECTOR];
+        expected.extend((0..7).map(|n| PCIE_DBI_WINDOW + n*4));
+        expected.push(PCIE_VIEWPORT_SELECTOR);
+        assert_eq!(addresses, expected);
+        addresses.clear();
+        let sample = read_dbi_sample(|address| { addresses.push(address); 1 });
+        assert!(!sample.valid);
+        assert_eq!(addresses, [PCIE_VIEWPORT_SELECTOR; 2]);
+        let mut selectors = 0;
+        let sample = read_dbi_sample(|address| {
+            if address == PCIE_VIEWPORT_SELECTOR { selectors += 1; selectors - 1 } else { 0 }
+        });
+        assert!(!sample.valid); // A selector ABA still cannot be detected by two reads.
+    }
+
     #[test]
     fn heartbeat_encoding_and_schedule_are_fixed() {
         assert_eq!(
@@ -335,7 +367,7 @@ mod tests {
         assert!(!tick_due(WINDOW_US, WINDOW_US));
     }
 
-    #[cfg(feature = "rp1-linux-pcie-dbi-transition-monitor")]
+    #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
     #[test]
     fn dbi_transition_monitor_is_change_only_bounded_and_fixed() {
         let mut monitor = DbiMonitor::new();

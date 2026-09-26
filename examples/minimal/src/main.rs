@@ -89,7 +89,7 @@ mod inbound_monitor;
 #[cfg(feature = "rp1-clock-independence-proof")]
 mod clock_independence;
 
-#[cfg(feature = "rp1-linux-clk-uart-ownership-conflict")]
+#[cfg(any(feature = "rp1-linux-clk-uart-ownership-conflict", feature = "freertos-endpoint-uart"))]
 mod linux_clk_uart_ownership;
 
 #[cfg(all(target_arch = "arm", feature = "watchdog-expiry-reason-proof"))]
@@ -10680,6 +10680,10 @@ fn main(mut p: Peripherals) -> ! {
                     let uart = p.uart0.init_tx_rx_115200_clock_ready();
                     freertos_r1::mixed::set_hosts(spi, i2c, uart);
                 }
+                #[cfg(feature = "freertos-endpoint-uart")]
+                freertos_r1::set_endpoint_uart(p.uart0
+                    .init_uart_with_existing_clock(50_000_000, false)
+                    .expect("endpoint observer UART clock mismatch"));
                 freertos_r1::run(gpio22);
             }
             #[cfg(all(

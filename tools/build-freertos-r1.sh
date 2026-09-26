@@ -7,7 +7,7 @@ feature=${RP1_RTOS_FEATURE:-freertos-r1}
 cargo_feature=$feature
 scmi=0
 case "$feature" in
-    freertos-scmi-readonly) feature=freertos-r1; scmi=1 ;;
+    freertos-scmi-readonly|freertos-endpoint-uart) feature=freertos-r1; scmi=1 ;;
     freertos-scmi-readonly-mixed) feature=freertos-r2-mixed; scmi=1 ;;
 esac
 # R1 local-stack control and halt-only UDF probe are independent of WDT requests.
@@ -34,6 +34,12 @@ case "$feature" in freertos-r3-watchdog-warm-guard|freertos-r3-watchdog-kernel-r
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
+if [[ "$cargo_feature" == freertos-endpoint-uart ]]; then
+    rustc +stable --edition=2024 -C strip=debuginfo --test \
+        --cfg 'feature="freertos-endpoint-uart"' \
+        examples/minimal/src/linux_clk_uart_ownership.rs -o "$out/endpoint-test"
+    "$out/endpoint-test" > "$out/endpoint-host-test.txt"
+fi
 date --iso-8601=seconds
 printf 'selected_feature=%s\n' "$cargo_feature"
 git branch --show-current
@@ -48,6 +54,10 @@ if [[ "$feature" == freertos-r2-spi-lifecycle || "$feature" == freertos-r2-spi-c
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=s
 else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
+fi
+if [[ "$cargo_feature" == freertos-endpoint-uart ]]; then
+    # The optional UART formatter must fit the unchanged SRAM/MSP reservation.
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=s
 fi
 if [[ "$family_feature" == freertos-r3-watchdog-warm-uart || "$family_feature" == freertos-r3-watchdog-warm-spi || "$family_feature" == freertos-r3-watchdog-warm-i2c || "$family_feature" == freertos-r3-watchdog-warm-combined || "$family_feature" == freertos-r3-watchdog-warm-persistent ]]; then
     # Individual selected owners retain O3. Combined uses explicit delay bodies

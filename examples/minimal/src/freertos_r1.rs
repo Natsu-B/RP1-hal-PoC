@@ -118,6 +118,34 @@ static mut SEM: Option<BinarySemaphore> = None;
 static mut MUTEX: Option<Mutex> = None;
 static mut MARKER: Option<ConfiguredPin<22, Output>> = None;
 
+#[cfg(feature = "freertos-endpoint-uart")]
+const _: () = assert!(TASK_COUNT == 7 && !cfg!(any(
+    feature = "freertos-r1-critical-timing", feature = "freertos-r1-local-stack",
+    feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert",
+    feature = "uart0-rx-irq", feature = "rp1-linux-clk-uart-ownership-conflict")),
+    "endpoint UART observer requires plain R1+SCMI; separate IO/fault/timing owners");
+#[cfg(feature = "freertos-endpoint-uart")]
+static mut ENDPOINT_UART: Option<rp1_hal::uart::Uart0Tx> = None;
+
+/// Called once before scheduler start; the monitor takes sole UART0 ownership.
+#[cfg(feature = "freertos-endpoint-uart")]
+pub fn set_endpoint_uart(uart: rp1_hal::uart::Uart0Tx) {
+    unsafe { assert!(ptr::addr_of_mut!(ENDPOINT_UART).replace(Some(uart)).is_none()); }
+}
+
+#[cfg(feature = "freertos-endpoint-uart")]
+fn endpoint_line(uart: &mut rp1_hal::uart::Uart0Tx, line: &[u8]) -> bool {
+    let mut sent = 0;
+    // At most 50 blocked ticks and line.len FIFO writes; no busy wait or IRQ mask.
+    // Accepted bytes are not a serial-idle guarantee. Partial lines count as drops.
+    for _ in 0..50 {
+        while sent < line.len() && uart.try_write_byte(line[sent]) { sent += 1; }
+        if sent == line.len() { return true; }
+        unsafe { os::delay(1).unwrap(); }
+    }
+    false
+}
+
 fn put(index: usize, value: u32) { unsafe { TELEMETRY.add(index).write_volatile(value); } }
 fn get(index: usize) -> u32 { unsafe { TELEMETRY.add(index).read_volatile() } }
 fn increment(index: usize) { put(index, get(index).wrapping_add(1)); }
@@ -367,6 +395,10 @@ extern "C" fn rp1_freertos_fault_hook(reason: u32, detail: u32) -> ! {
 }
 
 unsafe extern "C" fn monitor(_: *mut c_void) {
+    #[cfg(feature = "freertos-endpoint-uart")]
+    let (mut endpoint_uart, mut endpoint, endpoint_start) = (
+        unsafe { ptr::addr_of_mut!(ENDPOINT_UART).replace(None).unwrap() },
+        crate::linux_clk_uart_ownership::DbiMonitor::new(), raw_low());
     let (ipsr, control, psp, msp): (u32, u32, u32, u32);
     unsafe {
         core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL", "mrs {2}, PSP", "mrs {3}, MSP",
@@ -408,6 +440,15 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     #[cfg(feature = "freertos-r2-mixed-repeat")]
     put(63, u32::from_le_bytes(*b"MD01")); // words60..63: monitor-only, not IO/fault.
     loop {
+        #[cfg(feature = "freertos-endpoint-uart")]
+        {
+            // One sample per existing monitor pass (~1s), max32 changes+CAP.
+            // This can miss intermediate transitions; no endpoint repair writes.
+            if let Some(line) = endpoint.sample_line(u64::from(raw_low().wrapping_sub(endpoint_start))) {
+                increment(if endpoint_line(&mut endpoint_uart, &line) { 60 } else { 61 });
+            }
+            put(63, u32::from_le_bytes(*b"EP01")); // plain-R1-only diagnostic words
+        }
         #[cfg(feature = "freertos-r2-mixed-repeat")]
         let body_start = unsafe {
             if !os::delay_until(&mut wake, 1000).unwrap() {
