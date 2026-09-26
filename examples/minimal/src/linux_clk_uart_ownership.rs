@@ -31,6 +31,11 @@ const PLL_SYS_PRIM: usize = 0x4002_0010;
 const PCIE_VIEWPORT_SELECTOR: usize = 0x4010_8000;
 #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const PCIE_DBI_WINDOW: usize = 0x4010_9000;
+// Plain reads in rp1-regdb pcie-apbs.toml: MONITOR2/INTR/INTE/INTS.
+// INTR acknowledgement is a separate W1C write; this observer never performs it.
+// Do not add the LTSSM FIFO at +0x124: reading it consumes entries.
+#[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
+const PCIE_APBS_READS: [usize; 4] = [0x4010_81a4, 0x4010_81a8, 0x4010_81ac, 0x4010_81b4];
 
 #[cfg(target_arch = "arm")]
 const CLK_UART_ENABLE: u32 = 1 << 11;
@@ -48,7 +53,7 @@ const PLL_SYS_PRI_PH_ENABLED: u32 = 1 << 4;
 const HEX: &[u8; 16] = b"0123456789abcdef";
 const HEARTBEAT_TEMPLATE: [u8; 54] = *b"RP1CLK seq=0x00000000 ctrl=0x00000000 off=0x00000000\r\n";
 #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
-const DBI_LINE_TEMPLATE: [u8; 206] = *b"RP1DBI event=INIT elapsed_us=0x0000000000000000 valid=0 sel0=0x00000000 sel1=0x00000000 id=0x00000000 cmdstat=0x00000000 classrev=0x00000000 bhlc=0x00000000 bar0=0x00000000 bar1=0x00000000 bar2=0x00000000\r\n";
+const DBI_LINE_TEMPLATE: [u8; 270] = *b"RP1DBI event=INIT elapsed_us=0x0000000000000000 valid=0 sel0=0x00000000 sel1=0x00000000 id=0x00000000 cmdstat=0x00000000 classrev=0x00000000 bhlc=0x00000000 bar0=0x00000000 bar1=0x00000000 bar2=0x00000000 mon2=0x00000000 intr=0x00000000 inte=0x00000000 ints=0x00000000\r\n";
 #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const DBI_DWORD_OFFSETS: [usize; 7] = [93, 112, 132, 148, 164, 180, 196];
 
@@ -59,6 +64,7 @@ struct DbiSample {
     sel0: u32,
     sel1: u32,
     dwords: [u32; 7],
+    apbs: [u32; 4],
 }
 
 #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
@@ -69,6 +75,7 @@ impl DbiSample {
             sel0,
             sel1,
             dwords: [0; 7],
+            apbs: [0; 4],
         }
     }
 }
@@ -139,7 +146,7 @@ impl DbiMonitor {
     /// Reuse the fixed read-only sample/encoder from a task, not the terminal
     /// standalone proof loop. Caller chooses cadence and owns bounded TX.
     #[cfg(all(target_arch = "arm", feature = "freertos-endpoint-uart"))]
-    pub(crate) fn sample_line(&mut self, elapsed_us: u64) -> Option<[u8; 206]> {
+    pub(crate) fn sample_line(&mut self, elapsed_us: u64) -> Option<[u8; DBI_LINE_TEMPLATE.len()]> {
         let sample = read_dbi_sample(read32);
         self.observe(sample).map(|event| dbi_line(event, elapsed_us, sample))
     }
@@ -188,6 +195,9 @@ fn dbi_line(event: DbiEvent, elapsed_us: u64, sample: DbiSample) -> [u8; DBI_LIN
     for (offset, value) in DBI_DWORD_OFFSETS.into_iter().zip(sample.dwords) {
         encode_hex_u32(&mut line, offset, value);
     }
+    for (offset, value) in [212, 228, 244, 260].into_iter().zip(sample.apbs) {
+        encode_hex_u32(&mut line, offset, value);
+    }
     line
 }
 
@@ -211,11 +221,14 @@ fn read32(address: usize) -> u32 {
 
 #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 fn read_dbi_sample(mut read32: impl FnMut(usize) -> u32) -> DbiSample {
+    // Selector-independent observations remain useful when the DBI bank is
+    // ambiguous. Sequential reads are not an atomic event/level snapshot.
+    let apbs = PCIE_APBS_READS.map(&mut read32);
     let sel0 = read32(PCIE_VIEWPORT_SELECTOR);
     if sel0 != 0 {
         // A non-zero selector makes the DBI window ambiguous; do not touch it.
         let sel1 = read32(PCIE_VIEWPORT_SELECTOR);
-        return DbiSample::invalid(sel0, sel1);
+        return DbiSample { apbs, ..DbiSample::invalid(sel0, sel1) };
     }
 
     let dwords = [
@@ -233,6 +246,7 @@ fn read_dbi_sample(mut read32: impl FnMut(usize) -> u32) -> DbiSample {
         sel0,
         sel1,
         dwords,
+        apbs,
     }
 }
 
@@ -337,14 +351,19 @@ mod tests {
             if address == PCIE_VIEWPORT_SELECTOR { 0 } else { address as u32 }
         });
         assert!(sample.valid);
-        let mut expected = vec![PCIE_VIEWPORT_SELECTOR];
+        assert_eq!(sample.apbs, PCIE_APBS_READS.map(|address| address as u32));
+        let mut expected = PCIE_APBS_READS.to_vec();
+        expected.push(PCIE_VIEWPORT_SELECTOR);
         expected.extend((0..7).map(|n| PCIE_DBI_WINDOW + n*4));
         expected.push(PCIE_VIEWPORT_SELECTOR);
         assert_eq!(addresses, expected);
         addresses.clear();
         let sample = read_dbi_sample(|address| { addresses.push(address); 1 });
         assert!(!sample.valid);
-        assert_eq!(addresses, [PCIE_VIEWPORT_SELECTOR; 2]);
+        let mut expected = PCIE_APBS_READS.to_vec();
+        expected.extend([PCIE_VIEWPORT_SELECTOR; 2]);
+        assert_eq!(addresses, expected);
+        assert_eq!(sample.apbs, [1; 4]);
         let mut selectors = 0;
         let sample = read_dbi_sample(|address| {
             if address == PCIE_VIEWPORT_SELECTOR { selectors += 1; selectors - 1 } else { 0 }
@@ -376,6 +395,7 @@ mod tests {
             sel0: 0,
             sel1: 0,
             dwords: [0x2000_1927, 0, 0x0200_0000, 0, 0x0080_0000, 0, 0x0040_0000],
+            apbs: [0; 4],
         };
 
         assert_eq!(monitor.observe(sample), Some(DbiEvent::Initial));
@@ -401,6 +421,12 @@ mod tests {
         assert_eq!(monitor.finish(), Some(DbiEvent::End));
         assert_eq!(monitor.finish(), None);
 
+        let mut monitor = DbiMonitor::new();
+        assert_eq!(monitor.observe(sample), Some(DbiEvent::Initial));
+        sample.apbs[1] = 2;
+        assert_eq!(monitor.observe(sample), Some(DbiEvent::Change));
+        assert_eq!(monitor.observe(sample), None);
+
         let mut encoded = DbiSample::invalid(0x1111_2222, 0x3333_4444);
         encoded.dwords = [
             0xdead_beef,
@@ -412,9 +438,10 @@ mod tests {
             0x0040_0000,
         ];
         assert!(!encoded.valid);
+        encoded.apbs = [0x0013_0000, 2, 3, 2];
         assert_eq!(
             dbi_line(DbiEvent::Cap, 0x0123_4567_89ab_cdef, encoded),
-            *b"RP1DBI event=CAP  elapsed_us=0x0123456789abcdef valid=0 sel0=0x11112222 sel1=0x33334444 id=0xdeadbeef cmdstat=0x00010002 classrev=0x02000000 bhlc=0x00010000 bar0=0x00800000 bar1=0x00000000 bar2=0x00400000\r\n"
+            *b"RP1DBI event=CAP  elapsed_us=0x0123456789abcdef valid=0 sel0=0x11112222 sel1=0x33334444 id=0xdeadbeef cmdstat=0x00010002 classrev=0x02000000 bhlc=0x00010000 bar0=0x00800000 bar1=0x00000000 bar2=0x00400000 mon2=0x00130000 intr=0x00000002 inte=0x00000003 ints=0x00000002\r\n"
         );
     }
 }

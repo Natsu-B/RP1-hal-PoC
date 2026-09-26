@@ -237,6 +237,29 @@ Image success does not prove module closure, standard RPMsg attach, physical
 clock ownership or a successful boot. Retain config/tool identities and selected
 products before releasing scratch space; never publish private keys/raw DT data.
 
+## Endpoint transition observer (not recovery)
+
+`RP1_RTOS_FEATURE=freertos-endpoint-uart tools/build-freertos-r1.sh /new/output`
+builds the existing plain-R1 UART0 diagnostic, with no new task or PCIe writer.
+The existing monitor samples once per roughly one second and caps output at32
+changes plus CAP. Sequential selector checks cannot detect ABA. The270-byte
+record adds selector-independent MONITOR2/INTR/INTE/INTS plain reads at
+`0x401081a4/1a8/1ac/1b4` to the DBI snapshot. INTR is never acknowledged or
+masked; the destructive-read LTSSM FIFO at`0x40108124` is excluded.
+
+`python3 tools/check-endpoint-uart.py --self-test` checks the decoder.
+Use `tools/check-endpoint-uart.py capture.raw --report observation.json` on a
+captured UART stream. It also accepts the earlier206-byte records without
+inventing APBS fields. Latched events plus current levels cannot establish their
+order, the electrical reset cause, or the official firmware's current state.
+New event-only changes are observable even if the DBI selector is ambiguous.
+
+This optional build intentionally exits3 after successful ELF/test validation:
+it is not hardware admission. Rebind the final DT, SRAM reader and bootloader to
+the new ELF, and review the compiled observer/memory budget before deployment.
+The current R1 cold state5 path does not maintain the official PCIe event loop;
+replaying that reset sequence from a running RTOS is not yet admitted.
+
 ## Remaining gates
 
 1. Current kernel/config/DT census and held-R1 recovery observed separately; camera absent.

@@ -39,6 +39,7 @@ if [[ "$cargo_feature" == freertos-endpoint-uart ]]; then
         --cfg 'feature="freertos-endpoint-uart"' \
         examples/minimal/src/linux_clk_uart_ownership.rs -o "$out/endpoint-test"
     "$out/endpoint-test" > "$out/endpoint-host-test.txt"
+    python3 -B tools/check-endpoint-uart.py --self-test > "$out/endpoint-parser-test.txt"
 fi
 date --iso-8601=seconds
 printf 'selected_feature=%s\n' "$cargo_feature"
