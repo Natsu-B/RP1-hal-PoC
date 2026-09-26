@@ -11769,3 +11769,6 @@ fn main(mut p: Peripherals) -> ! {
 
 #[cfg(not(target_arch = "arm"))]
 fn main() {}
+
+#[cfg(feature = "endpoint-config-foundation")]
+mod endpoint_config;
