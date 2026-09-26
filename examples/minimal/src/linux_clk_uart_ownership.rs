@@ -36,6 +36,8 @@ const PCIE_DBI_WINDOW: usize = 0x4010_9000;
 // Do not add the LTSSM FIFO at +0x124: reading it consumes entries.
 #[cfg(any(feature = "rp1-linux-pcie-dbi-transition-monitor", feature = "freertos-endpoint-uart"))]
 const PCIE_APBS_READS: [usize; 4] = [0x4010_81a4, 0x4010_81a8, 0x4010_81ac, 0x4010_81b4];
+#[cfg(feature = "freertos-endpoint-uart")]
+const DBI_READY: u32 = (1 << 16) | (1 << 17); // CORE_ALIVE and PERSTN
 
 #[cfg(target_arch = "arm")]
 const CLK_UART_ENABLE: u32 = 1 << 11;
@@ -187,8 +189,10 @@ pub(crate) mod endpoint_gate {
         // This conservatively also covers the final MONITOR2 read if both are low.
         let before = clock();
         let dbi = read_dbi_sample(&mut read);
-        let mut reads = if dbi.sel0 == 0 { 0x1fff } else { 0x101f };
-        let ro = if dbi.valid && dbi.apbs[0] & (PERSTN | CORE_ALIVE) == PERSTN | CORE_ALIVE {
+        let mut reads = if dbi.sel0 == 0 && dbi.apbs[0] & DBI_READY == DBI_READY {
+            0x1fff
+        } else { 0x101f };
+        let ro = if dbi.valid {
             reads |= 1 << 13; read(RO_WR)
         } else { 0 };
         let selector = read(PCIE_VIEWPORT_SELECTOR);
@@ -223,7 +227,7 @@ pub(crate) mod endpoint_gate {
                 return None; // Initial configured/high boot is not the reset of interest.
             } else if self.high.is_some() && s.dbi.apbs[0] & s.levels & PERSTN == 0 {
                 Result::Reset
-            } else if !s.dbi.valid || s.selector != 0 {
+            } else if s.dbi.sel0 != 0 || s.dbi.sel1 != 0 || s.selector != 0 {
                 Result::Selector
             } else if (s.dbi.apbs[0] ^ s.levels) & LEVELS != 0 {
                 Result::Levels
@@ -239,6 +243,8 @@ pub(crate) mod endpoint_gate {
                     Result::Deadline
                 } else if s.levels & CORE_ALIVE == 0 {
                     return None; // Keep the SAME low origin while awaiting CORE_ALIVE.
+                } else if !s.dbi.valid {
+                    Result::Selector
                 } else if s.dbi.dwords[0] != 0x0001_1de4 || s.dbi.dwords[1] & 6 != 0
                     || s.dbi.dwords[2] != 2 || s.dbi.dwords[4..] != [0, 0, 0] {
                     Result::Tuple
@@ -256,11 +262,11 @@ pub(crate) mod endpoint_gate {
     const LINE: &[u8] = b"RP1GATE code=0x00000000 before=0x00000000 after=0x00000000 low=0x00000000 high=0x00000000 gap=0x00000000 reads=0x00000000 ro=0x00000000 sel=0x00000000 mon0=0x00000000 mon1=0x00000000 budget=0x00001388 maxgap=0x000009c4\r\n";
 
     /// Actual endpoint path: classify the measured sample BEFORE any UART callback.
-    /// Legacy RP1DBI sample/format/trigger semantics remain independent of the gate.
+    /// RP1DBI format/trigger semantics remain independent of the gate.
     pub(crate) fn sample(monitor: &mut DbiMonitor, gate: &mut Gate, elapsed_us: u64,
         read32: impl FnMut(usize) -> u32, clock: impl FnMut() -> u32, mut emit: impl FnMut(&[u8])) {
         if gate.done {
-            let s = read_dbi_sample(read32); // No extra gate reads after its one-shot terminal result.
+            let s = read_dbi_sample(read32); // Reset-aware even after the one-shot gate terminates.
             if let Some(event) = monitor.observe(s) { emit(&dbi_line(event, elapsed_us, s)); }
             return;
         }
@@ -288,9 +294,11 @@ pub(crate) mod endpoint_gate {
         use super::*;
 
         fn sample_at(before: u32, after: u32, levels: u32) -> Sample {
-            Sample { dbi: DbiSample { valid: true, sel0: 0, sel1: 0,
-                dwords: [0x0001_1de4, 0, 2, 0, 0, 0, 0], apbs: [levels, 0, 0, 0] },
-                before, after, selector: 0, levels, ro: 0, reads: 0xffff }
+            let ready = levels & DBI_READY == DBI_READY;
+            Sample { dbi: DbiSample { valid: ready, sel0: 0, sel1: 0,
+                dwords: if ready { [0x0001_1de4, 0, 2, 0, 0, 0, 0] } else { [0; 7] },
+                apbs: [levels, 0, 0, 0] }, before, after, selector: 0, levels,
+                ro: 0, reads: if ready { 0xffff } else { 0xd01f } }
         }
 
         #[test]
@@ -301,6 +309,8 @@ pub(crate) mod endpoint_gate {
             let mut g = Gate::new(0);
             assert_eq!(g.observe(high), None); // Configured initial high doesn't consume it.
             assert_eq!(g.observe(low), None);
+            assert_eq!(g.observe(sample_at(300, 400, CORE_ALIVE)), None);
+            assert_eq!(g.low, Some(300)); // Last stable low BEFORE, despite skipped DBI.
             assert_eq!(g.observe(high), Some(Result::Candidate)); // Early link-up is allowed.
             assert_eq!(g.observe(low), None); // No second reset, or timer wrap, can rearm.
             assert_eq!(g.observe(high), None);
@@ -336,11 +346,25 @@ pub(crate) mod endpoint_gate {
             assert_eq!(fresh().observe(wrong), Some(Result::Selector));
             wrong = high; wrong.levels ^= 1 << 20;
             assert_eq!(fresh().observe(wrong), Some(Result::Levels));
+            wrong = low; wrong.levels = PERSTN | CORE_ALIVE;
+            let mut g = fresh();
+            assert_eq!(g.observe(wrong), Some(Result::Levels));
+            assert_eq!(g.low, Some(100)); // Mixed levels never refresh the origin.
+            for slot in 0..3 {
+                wrong = low;
+                match slot { 0 => wrong.dbi.sel0 = 1, 1 => wrong.dbi.sel1 = 1,
+                    _ => wrong.selector = 1 }
+                assert_eq!(fresh().observe(wrong), Some(Result::Selector));
+            }
             for (index, value) in [(0, 0), (1, 2), (1, 4), (2, 0x0200_0002), (4, 1), (5, 1), (6, 1)] {
                 wrong = high; wrong.dbi.dwords[index] = value;
                 assert_eq!(fresh().observe(wrong), Some(Result::Tuple));
             }
             wrong = high; wrong.ro = 1;
+            assert_eq!(fresh().observe(wrong), Some(Result::RoEnabled));
+            wrong = high; wrong.reads &= !(1 << 13);
+            assert_eq!(fresh().observe(wrong), Some(Result::RoEnabled));
+            wrong = high; wrong.reads &= !(1 << 5);
             assert_eq!(fresh().observe(wrong), Some(Result::RoEnabled));
         }
 
@@ -360,14 +384,27 @@ pub(crate) mod endpoint_gate {
             assert_eq!((s.before, s.after, s.reads), (100, 200, 0xffff));
             assert_eq!(&addresses.borrow()[12..], &[PCIE_VIEWPORT_SELECTOR, RO_WR,
                 PCIE_VIEWPORT_SELECTOR, PCIE_APBS_READS[0]]);
-            let s = read(|addr| if addr == PCIE_VIEWPORT_SELECTOR { 1 } else { 0 }, || 0);
+            let s = read(|addr| {
+                assert!(!(PCIE_DBI_WINDOW..PCIE_DBI_WINDOW + 0x1000).contains(&addr));
+                if addr == PCIE_VIEWPORT_SELECTOR { 1 } else { DBI_READY }
+            }, || 0);
             assert_eq!(s.reads, 0xd01f); // No DBI/RO reads while selector is nonzero.
             for levels in [0, PERSTN, CORE_ALIVE] {
+                let mut addresses = Vec::new();
                 let s = read(|addr| {
-                    assert_ne!(addr, RO_WR); // New register not touched before CORE_ALIVE+PERSTN.
+                    addresses.push(addr);
+                    assert!(!(PCIE_DBI_WINDOW..PCIE_DBI_WINDOW + 0x1000).contains(&addr));
                     if addr == PCIE_APBS_READS[0] { levels } else { 0 }
                 }, || 0);
-                assert_eq!(s.reads, 0xdfff);
+                assert_eq!(s.reads, 0xd01f); // ALL seven payload words and RO were skipped.
+                assert!(!s.dbi.valid);
+                assert_eq!(s.dbi.dwords, [0; 7]); // Invalid placeholders only.
+                assert_eq!(s.ro, 0); // Unexecuted: bit13 is clear.
+                let mut expected = PCIE_APBS_READS.to_vec();
+                expected.extend([PCIE_VIEWPORT_SELECTOR; 3]);
+                expected.push(PCIE_APBS_READS[0]);
+                assert_eq!(addresses, expected);
+                assert_eq!(dbi_line(DbiEvent::Initial, 0, s.dbi)[54], b'0');
             }
             let mut g = Gate::new(0);
             let mut m = DbiMonitor::new();
@@ -386,11 +423,54 @@ pub(crate) mod endpoint_gate {
             assert!(g.done);
             let line = &lines[1];
             assert_eq!(line, b"RP1GATE code=0x00000003 before=0x00002710 after=0x00002710 low=0x0000012c high=0x00002710 gap=0x000025e4 reads=0x0000ffff ro=0x00000000 sel=0x00000000 mon0=0x00030000 mon1=0x00030000 budget=0x00001388 maxgap=0x000009c4\r\n");
-            let mut reads = Vec::new();
-            sample(&mut m, &mut g, 20_000, |addr| { reads.push(addr); 0 },
-                || panic!("terminal gate must not sample time or rearm"), |_| ());
-            assert_eq!(reads.len(), 13); // Original observer only after terminal output.
-            assert!(!reads.contains(&RO_WR));
+            for levels in [0, PERSTN, CORE_ALIVE, DBI_READY] {
+                let mut reads = Vec::new();
+                sample(&mut m, &mut g, 20_000, |addr| {
+                    reads.push(addr);
+                    if levels != DBI_READY {
+                        assert!(!(PCIE_DBI_WINDOW..PCIE_DBI_WINDOW + 0x1000).contains(&addr));
+                    }
+                    if addr == PCIE_APBS_READS[0] { levels } else { 0 }
+                }, || panic!("terminal gate must not sample time or rearm"), |_| ());
+                assert_eq!(reads.len(), if levels == DBI_READY { 13 } else { 6 });
+                assert!(!reads.contains(&RO_WR));
+                assert_eq!(m.last.unwrap().valid, levels == DBI_READY);
+            }
+        }
+
+        #[test]
+        fn actual_reset_aware_low_to_high_candidate_and_mixed_levels() {
+            let mut g = Gate::new(0);
+            let mut m = DbiMonitor::new();
+            let mut lines = Vec::new();
+            sample(&mut m, &mut g, 0, |addr| {
+                assert!(!(PCIE_DBI_WINDOW..PCIE_DBI_WINDOW + 0x1000).contains(&addr)); 0
+            }, || 100, |line| lines.push(line.to_vec()));
+            assert_eq!(g.low, Some(100));
+            assert!(!m.last.unwrap().valid);
+            sample(&mut m, &mut g, 1000, |addr| match addr {
+                a if a == PCIE_APBS_READS[0] => DBI_READY,
+                a if a == PCIE_DBI_WINDOW => 0x0001_1de4,
+                a if a == PCIE_DBI_WINDOW + 8 => 2,
+                _ => 0,
+            }, || 1100, |line| lines.push(line.to_vec()));
+            assert!(g.done);
+            assert_eq!((g.low, g.high), (Some(100), Some(1100)));
+            assert!(lines[1].starts_with(b"RP1GATE code=0x00000001 "));
+            assert!(m.last.unwrap().valid);
+
+            let mut monitors = 0;
+            let s = read(|addr| {
+                assert!(!(PCIE_DBI_WINDOW..PCIE_DBI_WINDOW + 0x1000).contains(&addr));
+                if addr == PCIE_APBS_READS[0] {
+                    monitors += 1;
+                    if monitors == 1 { 0 } else { DBI_READY }
+                } else { 0 }
+            }, || 0);
+            assert_eq!(s.reads, 0xd01f); // Later readiness cannot authorize earlier payload reads.
+            let mut g = Gate::new(0);
+            assert_eq!(g.observe(s), Some(Result::Levels));
+            assert_eq!((g.low, g.high), (None, None));
         }
     }
 }
@@ -482,8 +562,13 @@ fn read_dbi_sample(mut read32: impl FnMut(usize) -> u32) -> DbiSample {
     // ambiguous. Sequential reads are not an atomic event/level snapshot.
     let apbs = PCIE_APBS_READS.map(&mut read32);
     let sel0 = read32(PCIE_VIEWPORT_SELECTOR);
-    if sel0 != 0 {
-        // A non-zero selector makes the DBI window ambiguous; do not touch it.
+    #[cfg(feature = "freertos-endpoint-uart")]
+    let ready = apbs[0] & DBI_READY == DBI_READY;
+    #[cfg(not(feature = "freertos-endpoint-uart"))]
+    let ready = true; // Preserve the standalone, non-RTOS observer's behavior.
+    if sel0 != 0 || !ready {
+        // Ambiguous selector or initial reset level: no DBI payload access.
+        // Zero placeholders are invalid/unexecuted, not measured hardware zeros.
         let sel1 = read32(PCIE_VIEWPORT_SELECTOR);
         return DbiSample { apbs, ..DbiSample::invalid(sel0, sel1) };
     }
@@ -605,10 +690,12 @@ mod tests {
         let mut addresses = Vec::new();
         let sample = read_dbi_sample(|address| {
             addresses.push(address);
-            if address == PCIE_VIEWPORT_SELECTOR { 0 } else { address as u32 }
+            if address == PCIE_VIEWPORT_SELECTOR { 0 }
+            else if address == PCIE_APBS_READS[0] { 0x0003_0000 }
+            else { address as u32 }
         });
         assert!(sample.valid);
-        assert_eq!(sample.apbs, PCIE_APBS_READS.map(|address| address as u32));
+        assert_eq!(sample.apbs, [0x0003_0000, 0x4010_81a8, 0x4010_81ac, 0x4010_81b4]);
         let mut expected = PCIE_APBS_READS.to_vec();
         expected.push(PCIE_VIEWPORT_SELECTOR);
         expected.extend((0..7).map(|n| PCIE_DBI_WINDOW + n*4));
@@ -623,9 +710,21 @@ mod tests {
         assert_eq!(sample.apbs, [1; 4]);
         let mut selectors = 0;
         let sample = read_dbi_sample(|address| {
-            if address == PCIE_VIEWPORT_SELECTOR { selectors += 1; selectors - 1 } else { 0 }
+            if address == PCIE_VIEWPORT_SELECTOR { selectors += 1; selectors - 1 }
+            else if address == PCIE_APBS_READS[0] { 0x0003_0000 } else { 0 }
         });
         assert!(!sample.valid); // A selector ABA still cannot be detected by two reads.
+    }
+
+    #[cfg(all(feature = "rp1-linux-pcie-dbi-transition-monitor", not(feature = "freertos-endpoint-uart")))]
+    #[test]
+    fn standalone_monitor_keeps_legacy_low_level_reads() {
+        let mut addresses = Vec::new();
+        let sample = read_dbi_sample(|address| { addresses.push(address); 0 });
+        assert!(sample.valid);
+        assert_eq!(addresses.len(), 13);
+        assert_eq!(sample.apbs[0], 0);
+        assert!(addresses.contains(&PCIE_DBI_WINDOW));
     }
 
     #[test]

@@ -27,6 +27,8 @@ def decode_gate(raw):
     for r in records:
         assert 1 <= r['code'] <= len(GATE_RESULTS), 'unknown gate code'
         r['result'] = GATE_RESULTS[r['code']-1]
+        r['dbi_payload_reads_executed'] = r['reads'] & 0xfe0 == 0xfe0
+        r['ro_read_executed'] = bool(r['reads'] & (1 << 13))
         assert (r['budget'], r['maxgap']) == (5000, 2500), 'unknown diagnostic timing contract'
         if r['code'] == 1:
             assert r['reads'] == 0xffff and r['ro'] & 1 == 0 and r['sel'] == 0
@@ -49,6 +51,7 @@ def decode(raw):
         row = {'event': m[1].decode().strip(), 'elapsed_us': int(m[2], 16), 'valid': int(m[3])}
         row.update({k: int(v, 16) for k, v in zip(NAMES+APBS, m.groups()[3:]) if v is not None})
         assert not row['valid'] or row['sel0'] == row['sel1'] == 0
+        row['dbi_payload_status'] = 'VALID_OBSERVED' if row['valid'] else 'INVALID_OR_UNEXECUTED'
         rows.append(row)
     assert 0 < len(rows) <= 33 and rows[0]['event'] == 'INIT'
     assert all(a['elapsed_us'] < b['elapsed_us'] for a, b in zip(rows, rows[1:]))
@@ -91,11 +94,19 @@ def selftest():
             else:
                 raise AssertionError('malformed observation admitted')
     assert decode(first+later.replace(b' ints=0x00000000', b''))['incomplete_or_corrupt_lines'] == 1
+    skipped = later.replace(b'valid=1', b'valid=0')
+    report = decode(first+skipped)
+    assert report['result'] == 'INCONCLUSIVE'
+    assert report['records'][1]['dbi_payload_status'] == 'INVALID_OR_UNEXECUTED'
     gate = b'RP1GATE code=0x00000001 before=0x000003e8 after=0x0000044c low=0x00000064 high=0x0000044c gap=0x000003e8 reads=0x0000ffff ro=0x00000000 sel=0x00000000 mon0=0x00130000 mon1=0x00130000 budget=0x00001388 maxgap=0x000009c4\r\n'
     report = decode(first+later+gate)
     assert report['result'] == 'OBSERVED_CLASS_LOSS'
     assert report['fresh_boot_gate']['records'][0]['result'] == 'WINDOW_CANDIDATE_ONLY'
     assert report['fresh_boot_gate']['write_admission'] == 'NOT_GRANTED'
+    unread = gate.replace(b'code=0x00000001', b'code=0x00000007').replace(
+        b'reads=0x0000ffff', b'reads=0x0000d01f')
+    record = decode_gate(unread)['records'][0]
+    assert not record['dbi_payload_reads_executed'] and not record['ro_read_executed']
     wrapped = gate.replace(b'low=0x00000064', b'low=0xffffff00').replace(
         b'before=0x000003e8', b'before=0x00000050').replace(
         b'after=0x0000044c', b'after=0x00000100').replace(
@@ -120,7 +131,7 @@ def selftest():
             pass
         else:
             raise AssertionError('malformed candidate admitted')
-    print('HOST endpoint parser PASS: legacy/extended unchanged, independent one-shot gate and rejection cases')
+    print('HOST endpoint parser PASS: legacy/extended classification unchanged, invalid/unexecuted payload, one-shot gate, no write admission')
 
 
 if __name__ == '__main__':

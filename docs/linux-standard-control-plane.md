@@ -277,10 +277,18 @@ never do. Every sample is classified before any UART output; UART gaps can
 therefore cause rejection, never grant extra time. No buffering/deferred DBI
 output is introduced.
 
-The known RO-write-enable register `0x401098bc` is read only after both existing
-selector reads are zero and the first MONITOR2 has CORE_ALIVE/PERSTN high;
-otherwise its read bit is clear. Then selector and MONITOR2 are read again. The seven
-existing DBI words remain between the selector/MONITOR2 checks. Candidate
+In the diagnostic feature, the seven DBI payload words are skipped whenever the
+first MONITOR2 lacks either CORE_ALIVE or PERSTN, or the first selector is nonzero.
+Only the known plain-read APBS registers and selector are sampled in that case;
+`valid=0` labels the payload placeholders invalid/unexecuted, not hardware zeros.
+Stable low levels can update the before-timestamp origin without a valid payload,
+but all observed selectors must still be zero and all five levels must agree.
+The standalone non-RTOS monitor retains its previous sampling behavior.
+
+The known RO-write-enable register `0x401098bc` is read only after a valid payload
+sample (both selector reads zero and initial CORE_ALIVE/PERSTN high); otherwise
+its read bit is clear. Then selector and MONITOR2 are read again. The seven
+DBI words, when executed, remain between the selector/MONITOR2 checks. Candidate
 classification requires selector zero throughout observed checks, all five
 reset/link levels unchanged within the bracket, CORE_ALIVE and PERSTN high,
 ID `0x00011de4`, class/revision `2`, BAR0/1/2 zero, Command MSE/BME clear and
@@ -288,7 +296,8 @@ RO-write-enable bit0 clear. Link already up does not independently reject.
 Levels changing between bracket endpoints, a second observed reset, selector
 ambiguity, tuple mismatch or timing failure terminate this one-shot classifier.
 It never writes DBI/selector/IRQ mask/ACK or rearms, including after timer wrap.
-After termination, the original observer continues without the extra gate reads.
+After termination, the reset-aware observer continues without the extra gate reads;
+it still skips every DBI payload access when initial readiness is absent.
 
 At most one `RP1GATE` line is emitted in addition to unchanged `RP1DBI` lines.
 `code=1` means **WINDOW_CANDIDATE_ONLY, never write admission**; codes2–9 mean
@@ -301,7 +310,9 @@ The bitmap bits are: 0 MONITOR2-before; 1–3 INTR/INTE/INTS; 4 selector-before;
 14 final selector; 15 MONITOR2-after. Zero unread fields are not measurements.
 Low/high/gap are zero when those milestones have not been seen; zero can also
 be a valid wrapped timer value, so do not infer a milestone from zero alone.
-The parser adds `fresh_boot_gate` without changing the DBI classification.
+The parser adds `fresh_boot_gate` without changing the DBI classification, labels
+invalid/unexecuted payloads, and exposes payload/RO execution from the bitmap.
+With readiness absent the bracket bitmap is `0xd01f`, not `0xdfff`.
 
 The absolute observation epoch expires at60,000,000us (in addition to the
 existing finite60s RTOS fast cadence); low-to-first-high gap must be<=2500us and
