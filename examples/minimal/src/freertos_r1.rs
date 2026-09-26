@@ -402,6 +402,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     #[cfg(feature = "freertos-endpoint-uart")]
     let (mut endpoint_fast, endpoint_epoch, mut endpoint_last_sample) =
         (true, unsafe { os::tick().unwrap() }, endpoint_start);
+    #[cfg(feature = "freertos-endpoint-uart")]
+    let mut endpoint_gate = crate::linux_clk_uart_ownership::endpoint_gate::Gate::new(endpoint_start);
     let (ipsr, control, psp, msp): (u32, u32, u32, u32);
     unsafe {
         core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL", "mrs {2}, PSP", "mrs {3}, MSP",
@@ -454,9 +456,11 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
                 let now = raw_low();
                 put(62, get(62).max(now.wrapping_sub(endpoint_last_sample)));
                 endpoint_last_sample = now;
-                if let Some(line) = endpoint.sample_line(u64::from(now.wrapping_sub(endpoint_start))) {
-                    increment(if endpoint_line(&mut endpoint_uart, &line) { 60 } else { 61 });
-                }
+                crate::linux_clk_uart_ownership::endpoint_gate::sample(
+                    &mut endpoint, &mut endpoint_gate, u64::from(now.wrapping_sub(endpoint_start)),
+                    |address| unsafe { (address as *const u32).read_volatile() }, raw_low, |line| {
+                        increment(if endpoint_line(&mut endpoint_uart, line) { 60 } else { 61 });
+                    });
             });
             put(63, u32::from_le_bytes(*b"EP01")); // plain-R1-only diagnostic words
         }

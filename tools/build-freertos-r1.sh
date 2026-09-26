@@ -57,8 +57,9 @@ else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 fi
 if [[ "$cargo_feature" == freertos-endpoint-uart ]]; then
-    # The optional UART formatter must fit the unchanged SRAM/MSP reservation.
-    export CARGO_PROFILE_RELEASE_OPT_LEVEL=s
+    # The read-only edge classifier/formatters must fit the unchanged SRAM/MSP.
+    # Scope Oz to this diagnostic; normal R1/R2/SCMI optimization is unchanged.
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=z
 fi
 if [[ "$family_feature" == freertos-r3-watchdog-warm-uart || "$family_feature" == freertos-r3-watchdog-warm-spi || "$family_feature" == freertos-r3-watchdog-warm-i2c || "$family_feature" == freertos-r3-watchdog-warm-combined || "$family_feature" == freertos-r3-watchdog-warm-persistent ]]; then
     # Individual selected owners retain O3. Combined uses explicit delay bodies

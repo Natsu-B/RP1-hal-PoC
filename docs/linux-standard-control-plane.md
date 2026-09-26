@@ -262,6 +262,59 @@ inventing APBS fields. Latched events plus current levels cannot establish their
 order, the electrical reset cause, or the official firmware's current state.
 New event-only changes are observable even if the DBI selector is ambiguous.
 
+The diagnostic builder uses Rust `opt-level=z` to keep this classifier and its
+formatters within the existing SRAM/MSP layout. Plain R1/R2/SCMI optimization and
+the pinned official C port remain unchanged; this is a separately verified image.
+
+The same optional task now has a finite, read-only fresh-boot classifier; plain
+SCMI and standalone observer modes are unchanged. It ignores initial high levels,
+then consumes only the first observed PERSTN low-to-high interval. A RawTimer-low
+timestamp precedes the first MONITOR2 read; another follows the final MONITOR2
+read. The last low sample's **before** timestamp is the conservative origin;
+the first high sample's **after** timestamp bounds the low/high gap. Repeated
+low samples update that origin, but subsequent high samples awaiting CORE_ALIVE
+never do. Every sample is classified before any UART output; UART gaps can
+therefore cause rejection, never grant extra time. No buffering/deferred DBI
+output is introduced.
+
+The known RO-write-enable register `0x401098bc` is read only after both existing
+selector reads are zero and the first MONITOR2 has CORE_ALIVE/PERSTN high;
+otherwise its read bit is clear. Then selector and MONITOR2 are read again. The seven
+existing DBI words remain between the selector/MONITOR2 checks. Candidate
+classification requires selector zero throughout observed checks, all five
+reset/link levels unchanged within the bracket, CORE_ALIVE and PERSTN high,
+ID `0x00011de4`, class/revision `2`, BAR0/1/2 zero, Command MSE/BME clear and
+RO-write-enable bit0 clear. Link already up does not independently reject.
+Levels changing between bracket endpoints, a second observed reset, selector
+ambiguity, tuple mismatch or timing failure terminate this one-shot classifier.
+It never writes DBI/selector/IRQ mask/ACK or rearms, including after timer wrap.
+After termination, the original observer continues without the extra gate reads.
+
+At most one `RP1GATE` line is emitted in addition to unchanged `RP1DBI` lines.
+`code=1` means **WINDOW_CANDIDATE_ONLY, never write admission**; codes2–9 mean
+epoch expired, low/high gap too large, deadline reached, reset recurrence,
+selector mismatch, level drift, reset tuple mismatch and RO enabled/unread.
+The line records before/after/low/first-high RawTimer-low timestamps, gap,
+executed-read bitmap, RO value, final selector, both MONITOR2 values and bounds.
+The bitmap bits are: 0 MONITOR2-before; 1–3 INTR/INTE/INTS; 4 selector-before;
+5–11 ID/Command/Class/BHLC/BAR0/1/2; 12 original selector-after; 13 RO-enable;
+14 final selector; 15 MONITOR2-after. Zero unread fields are not measurements.
+Low/high/gap are zero when those milestones have not been seen; zero can also
+be a valid wrapped timer value, so do not infer a milestone from zero alone.
+The parser adds `fresh_boot_gate` without changing the DBI classification.
+
+The absolute observation epoch expires at60,000,000us (in addition to the
+existing finite60s RTOS fast cadence); low-to-first-high gap must be<=2500us and
+the complete candidate bracket must end strictly before low-origin+5000us.
+These are conservative **diagnostic targets**, not a proven physical100ms
+host-probe exclusion. A stalled MMIO read cannot be bounded by a later timer
+read. Sequential reads cannot exclude missed transitions or selector ABA, and
+do not establish legal access/ownership, exact host edge attribution, absence
+of concurrent consumers, timer accuracy or a future write-completion budget.
+The standard Linux brcmstb post-deassert100ms sleep is nominal source ordering,
+not electrical-edge proof. Actual classifier/read-order/UART-boundary tests
+run in the existing host endpoint test command in `tools/build-freertos-r1.sh`.
+
 This optional build intentionally exits3 after successful ELF/test validation:
 it is not hardware admission. Rebind the final DT, SRAM reader and bootloader to
 the new ELF, and review the compiled observer/memory budget before deployment.

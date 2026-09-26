@@ -149,20 +149,248 @@ impl DbiMonitor {
         }
     }
 
-    /// Reuse the fixed read-only sample/encoder from a task, not the terminal
-    /// standalone proof loop. Caller chooses cadence and owns bounded TX.
-    #[cfg(all(target_arch = "arm", feature = "freertos-endpoint-uart"))]
-    pub(crate) fn sample_line(&mut self, elapsed_us: u64) -> Option<[u8; DBI_LINE_TEMPLATE.len()]> {
-        let sample = read_dbi_sample(read32);
-        self.observe(sample).map(|event| dbi_line(event, elapsed_us, sample))
-    }
-
     fn finish(&mut self) -> Option<DbiEvent> {
         if self.ended {
             None
         } else {
             self.ended = true;
             Some(DbiEvent::End)
+        }
+    }
+}
+
+#[cfg(feature = "freertos-endpoint-uart")]
+pub(crate) mod endpoint_gate {
+    use super::*;
+
+    const WINDOW: u32 = 60_000_000;
+    const BUDGET: u32 = 5_000;
+    const MAX_GAP: u32 = 2_500;
+    const PERSTN: u32 = 1 << 17;
+    const CORE_ALIVE: u32 = 1 << 16;
+    const LEVELS: u32 = 0x001f_0000;
+    const RO_WR: usize = PCIE_DBI_WINDOW + 0x8bc;
+
+    #[derive(Clone, Copy)]
+    struct Sample {
+        dbi: DbiSample,
+        before: u32,
+        after: u32,
+        selector: u32,
+        levels: u32,
+        ro: u32,
+        reads: u32,
+    }
+
+    fn read(mut read: impl FnMut(usize) -> u32, mut clock: impl FnMut() -> u32) -> Sample {
+        // Before the first MONITOR2 read, not after detecting a low level.
+        // This conservatively also covers the final MONITOR2 read if both are low.
+        let before = clock();
+        let dbi = read_dbi_sample(&mut read);
+        let mut reads = if dbi.sel0 == 0 { 0x1fff } else { 0x101f };
+        let ro = if dbi.valid && dbi.apbs[0] & (PERSTN | CORE_ALIVE) == PERSTN | CORE_ALIVE {
+            reads |= 1 << 13; read(RO_WR)
+        } else { 0 };
+        let selector = read(PCIE_VIEWPORT_SELECTOR);
+        let levels = read(PCIE_APBS_READS[0]);
+        reads |= 3 << 14;
+        let after = clock(); // After the last high-level read, never before it.
+        Sample { dbi, before, after, selector, levels, ro, reads }
+    }
+
+    // Numeric wire codes; only Candidate is positive, and it grants NO writes.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[repr(u32)]
+    enum Result { Candidate = 1, Expired, Gap, Deadline, Reset, Selector, Levels, Tuple, RoEnabled }
+
+    pub(crate) struct Gate {
+        epoch: u32,
+        low: Option<u32>,
+        high: Option<u32>,
+        done: bool,
+    }
+
+    impl Gate {
+        pub(crate) const fn new(epoch: u32) -> Self {
+            Self { epoch, low: None, high: None, done: false }
+        }
+
+        fn observe(&mut self, s: Sample) -> Option<Result> {
+            if self.done { return None; }
+            let result = if s.after.wrapping_sub(self.epoch) >= WINDOW {
+                Result::Expired
+            } else if self.low.is_none() && s.dbi.apbs[0] & s.levels & PERSTN != 0 {
+                return None; // Initial configured/high boot is not the reset of interest.
+            } else if self.high.is_some() && s.dbi.apbs[0] & s.levels & PERSTN == 0 {
+                Result::Reset
+            } else if !s.dbi.valid || s.selector != 0 {
+                Result::Selector
+            } else if (s.dbi.apbs[0] ^ s.levels) & LEVELS != 0 {
+                Result::Levels
+            } else if s.levels & PERSTN == 0 {
+                self.low = Some(s.before);
+                return None;
+            } else {
+                let low = self.low.unwrap(); // A stable low is required above.
+                let high = *self.high.get_or_insert(s.after);
+                if high.wrapping_sub(low) > MAX_GAP {
+                    Result::Gap
+                } else if s.after.wrapping_sub(low) >= BUDGET {
+                    Result::Deadline
+                } else if s.levels & CORE_ALIVE == 0 {
+                    return None; // Keep the SAME low origin while awaiting CORE_ALIVE.
+                } else if s.dbi.dwords[0] != 0x0001_1de4 || s.dbi.dwords[1] & 6 != 0
+                    || s.dbi.dwords[2] != 2 || s.dbi.dwords[4..] != [0, 0, 0] {
+                    Result::Tuple
+                } else if s.reads != 0xffff || s.ro & 1 != 0 {
+                    Result::RoEnabled
+                } else {
+                    Result::Candidate
+                }
+            };
+            self.done = true; // One terminal result; elapsed-counter wrap cannot rearm it.
+            Some(result)
+        }
+    }
+
+    const LINE: &[u8] = b"RP1GATE code=0x00000000 before=0x00000000 after=0x00000000 low=0x00000000 high=0x00000000 gap=0x00000000 reads=0x00000000 ro=0x00000000 sel=0x00000000 mon0=0x00000000 mon1=0x00000000 budget=0x00001388 maxgap=0x000009c4\r\n";
+
+    /// Actual endpoint path: classify the measured sample BEFORE any UART callback.
+    /// Legacy RP1DBI sample/format/trigger semantics remain independent of the gate.
+    pub(crate) fn sample(monitor: &mut DbiMonitor, gate: &mut Gate, elapsed_us: u64,
+        read32: impl FnMut(usize) -> u32, clock: impl FnMut() -> u32, mut emit: impl FnMut(&[u8])) {
+        if gate.done {
+            let s = read_dbi_sample(read32); // No extra gate reads after its one-shot terminal result.
+            if let Some(event) = monitor.observe(s) { emit(&dbi_line(event, elapsed_us, s)); }
+            return;
+        }
+        let s = read(read32, clock);
+        if let Some(result) = gate.observe(s) {
+            let mut line = [0; LINE.len()];
+            line.copy_from_slice(LINE);
+            let low = gate.low.unwrap_or(0);
+            let high = gate.high.unwrap_or(0);
+            let gap = if gate.high.is_some() { high.wrapping_sub(low) } else { 0 };
+            for (offset, value) in [15, 33, 50, 65, 81, 96, 113, 127, 142, 158, 174]
+                .into_iter().zip([result as u32, s.before, s.after, low, high, gap,
+                    s.reads, s.ro, s.selector, s.dbi.apbs[0], s.levels]) {
+                encode_hex_u32(&mut line, offset, value);
+            }
+            emit(&line);
+        }
+        if let Some(event) = monitor.observe(s.dbi) {
+            emit(&dbi_line(event, elapsed_us, s.dbi));
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn sample_at(before: u32, after: u32, levels: u32) -> Sample {
+            Sample { dbi: DbiSample { valid: true, sel0: 0, sel1: 0,
+                dwords: [0x0001_1de4, 0, 2, 0, 0, 0, 0], apbs: [levels, 0, 0, 0] },
+                before, after, selector: 0, levels, ro: 0, reads: 0xffff }
+        }
+
+        #[test]
+        fn actual_gate_wrap_deadlines_and_rejections() {
+            let low = sample_at(100, 200, 0);
+            let high = sample_at(1000, 1100, PERSTN | CORE_ALIVE | (1 << 20));
+            let fresh = || { let mut g = Gate::new(0); assert_eq!(g.observe(low), None); g };
+            let mut g = Gate::new(0);
+            assert_eq!(g.observe(high), None); // Configured initial high doesn't consume it.
+            assert_eq!(g.observe(low), None);
+            assert_eq!(g.observe(high), Some(Result::Candidate)); // Early link-up is allowed.
+            assert_eq!(g.observe(low), None); // No second reset, or timer wrap, can rearm.
+            assert_eq!(g.observe(high), None);
+
+            let mut g = Gate::new(u32::MAX - 1000);
+            assert_eq!(g.observe(sample_at(u32::MAX - 100, u32::MAX - 50, 0)), None);
+            assert_eq!(g.observe(sample_at(50, 100, PERSTN | CORE_ALIVE)), Some(Result::Candidate));
+            assert_eq!(g.high.unwrap().wrapping_sub(g.low.unwrap()), 201);
+            assert_eq!(fresh().observe(sample_at(2599, 2600, high.levels)), Some(Result::Candidate));
+            assert_eq!(fresh().observe(sample_at(2599, 2601, high.levels)), Some(Result::Gap));
+            // Using after-low or before-high would incorrectly admit this stale low.
+            let mut g = Gate::new(0);
+            assert_eq!(g.observe(sample_at(100, 2400, 0)), None);
+            assert_eq!(g.observe(sample_at(2500, 2700, high.levels)), Some(Result::Gap));
+            for (at, result) in [(5099, Result::Candidate), (5100, Result::Deadline)] {
+                let mut g = fresh();
+                assert_eq!(g.observe(sample_at(1000, 1100, PERSTN)), None);
+                assert_eq!(g.observe(sample_at(at - 1, at, high.levels)), Some(result));
+                assert_eq!((g.low, g.high), (Some(100), Some(1100)));
+            }
+            let mut g = fresh();
+            assert_eq!(g.observe(sample_at(1000, 1100, PERSTN)), None);
+            assert_eq!(g.observe(low), Some(Result::Reset));
+            assert_eq!(g.observe(high), None);
+            let mut g = fresh();
+            assert_eq!(g.observe(sample_at(WINDOW - 1, WINDOW, 0)), Some(Result::Expired));
+            assert_eq!(g.observe(low), None);
+            assert_eq!(g.observe(high), None);
+            let mut wrong = high;
+            wrong.selector = 1;
+            assert_eq!(fresh().observe(wrong), Some(Result::Selector));
+            wrong = high; wrong.dbi.valid = false;
+            assert_eq!(fresh().observe(wrong), Some(Result::Selector));
+            wrong = high; wrong.levels ^= 1 << 20;
+            assert_eq!(fresh().observe(wrong), Some(Result::Levels));
+            for (index, value) in [(0, 0), (1, 2), (1, 4), (2, 0x0200_0002), (4, 1), (5, 1), (6, 1)] {
+                wrong = high; wrong.dbi.dwords[index] = value;
+                assert_eq!(fresh().observe(wrong), Some(Result::Tuple));
+            }
+            wrong = high; wrong.ro = 1;
+            assert_eq!(fresh().observe(wrong), Some(Result::RoEnabled));
+        }
+
+        #[test]
+        fn actual_sample_read_order_mask_and_uart_boundary() {
+            use core::cell::Cell;
+            let addresses = core::cell::RefCell::new(Vec::new());
+            let time = Cell::new(100);
+            let s = read(|addr| {
+                addresses.borrow_mut().push(addr);
+                if addr == PCIE_APBS_READS[0] { PERSTN | CORE_ALIVE } else { 0 }
+            }, || {
+                let n = addresses.borrow().len();
+                assert!(n == 0 || n == 16); // Clock brackets ALL actual MMIO reads.
+                let now = time.get(); time.set(now + 100); now
+            });
+            assert_eq!((s.before, s.after, s.reads), (100, 200, 0xffff));
+            assert_eq!(&addresses.borrow()[12..], &[PCIE_VIEWPORT_SELECTOR, RO_WR,
+                PCIE_VIEWPORT_SELECTOR, PCIE_APBS_READS[0]]);
+            let s = read(|addr| if addr == PCIE_VIEWPORT_SELECTOR { 1 } else { 0 }, || 0);
+            assert_eq!(s.reads, 0xd01f); // No DBI/RO reads while selector is nonzero.
+            for levels in [0, PERSTN, CORE_ALIVE] {
+                let s = read(|addr| {
+                    assert_ne!(addr, RO_WR); // New register not touched before CORE_ALIVE+PERSTN.
+                    if addr == PCIE_APBS_READS[0] { levels } else { 0 }
+                }, || 0);
+                assert_eq!(s.reads, 0xdfff);
+            }
+            let mut g = Gate::new(0);
+            let mut m = DbiMonitor::new();
+            let mut lines = Vec::new();
+            // Actual low sample is consumed before the UART callback delays the next sample.
+            sample(&mut m, &mut g, 0, |_| 0, || time.get(), |line| {
+                lines.push(line.to_vec()); time.set(10_000);
+            });
+            assert_eq!(g.low, Some(300));
+            sample(&mut m, &mut g, 10_000, |addr| match addr {
+                a if a == PCIE_APBS_READS[0] => PERSTN | CORE_ALIVE,
+                a if a == PCIE_DBI_WINDOW => 0x0001_1de4,
+                a if a == PCIE_DBI_WINDOW + 8 => 2,
+                _ => 0,
+            }, || time.get(), |line| lines.push(line.to_vec()));
+            assert!(g.done);
+            let line = &lines[1];
+            assert_eq!(line, b"RP1GATE code=0x00000003 before=0x00002710 after=0x00002710 low=0x0000012c high=0x00002710 gap=0x000025e4 reads=0x0000ffff ro=0x00000000 sel=0x00000000 mon0=0x00030000 mon1=0x00030000 budget=0x00001388 maxgap=0x000009c4\r\n");
+            let mut reads = Vec::new();
+            sample(&mut m, &mut g, 20_000, |addr| { reads.push(addr); 0 },
+                || panic!("terminal gate must not sample time or rearm"), |_| ());
+            assert_eq!(reads.len(), 13); // Original observer only after terminal output.
+            assert!(!reads.contains(&RO_WR));
         }
     }
 }

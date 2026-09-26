@@ -12,6 +12,33 @@ HEX32 = rb'0x([0-9a-f]{8})'
 FIELDS = b''.join(b' '+n.encode()+b'='+HEX32 for n in NAMES)
 EXTRA = b''.join(b' '+n.encode()+b'='+HEX32 for n in APBS)
 ROW = re.compile(rb'RP1DBI event=(INIT|CHG |CAP |END ) elapsed_us=0x([0-9a-f]{16}) valid=([01])'+FIELDS+b'(?:'+EXTRA+b')?\r\n')
+GATE_NAMES = ('code', 'before', 'after', 'low', 'high', 'gap', 'reads', 'ro', 'sel',
+              'mon0', 'mon1', 'budget', 'maxgap')
+GATE = re.compile(b'RP1GATE'+b''.join(b' '+n.encode()+b'='+HEX32 for n in GATE_NAMES)+rb'\r\n')
+GATE_RESULTS = ('WINDOW_CANDIDATE_ONLY', 'REJECT_EPOCH_EXPIRED', 'REJECT_LOW_HIGH_GAP',
+                'REJECT_DEADLINE', 'REJECT_RESET_RECURRENCE', 'REJECT_SELECTOR',
+                'REJECT_LEVEL_DRIFT', 'REJECT_RESET_TUPLE', 'REJECT_RO_ENABLED_OR_UNREAD')
+
+
+def decode_gate(raw):
+    """Independent diagnostic field; never changes legacy DBI classification."""
+    records = [{k: int(v, 16) for k, v in zip(GATE_NAMES, m.groups())} for m in GATE.finditer(raw)]
+    assert len(records) <= 1, 'one-shot gate must not rearm'
+    for r in records:
+        assert 1 <= r['code'] <= len(GATE_RESULTS), 'unknown gate code'
+        r['result'] = GATE_RESULTS[r['code']-1]
+        assert (r['budget'], r['maxgap']) == (5000, 2500), 'unknown diagnostic timing contract'
+        if r['code'] == 1:
+            assert r['reads'] == 0xffff and r['ro'] & 1 == 0 and r['sel'] == 0
+            assert r['mon0'] & r['mon1'] & 0x30000 == 0x30000
+            assert (r['mon0'] ^ r['mon1']) & 0x1f0000 == 0
+            assert r['gap'] == (r['high']-r['low']) & 0xffffffff
+            age = (r['after']-r['low']) & 0xffffffff
+            assert age < r['budget'] and r['gap'] <= min(r['maxgap'], age)
+            assert (r['before']-r['low']) & 0xffffffff <= age
+    return {'records': records, 'incomplete_or_corrupt_lines': raw.count(b'RP1GATE')-len(records),
+            'write_admission': 'NOT_GRANTED',
+            'boundary': '5ms/2.5ms diagnostic targets only; no physical 100ms exclusion, atomicity, MMIO completion or selector ownership proof'}
 
 
 def decode(raw):
@@ -36,6 +63,7 @@ def decode(raw):
         'reset_cause': 'OPEN', 'BAR_size': 'NOT_MEASURED', 'SCMI_completion': 'OPEN',
             'sampling': 'sequential plain reads; cadence is image-dependent (legacy ~1s or bounded one-tick loop); missed transitions and selector ABA possible',
         'apbs_boundary': 'No acknowledgement or mask write; latched events and current levels do not establish event order or official state',
+        'fresh_boot_gate': decode_gate(raw),
     }
 
 
@@ -63,7 +91,36 @@ def selftest():
             else:
                 raise AssertionError('malformed observation admitted')
     assert decode(first+later.replace(b' ints=0x00000000', b''))['incomplete_or_corrupt_lines'] == 1
-    print('HOST endpoint parser PASS: legacy/extended, truncation, partial APBS and eight rejection cases')
+    gate = b'RP1GATE code=0x00000001 before=0x000003e8 after=0x0000044c low=0x00000064 high=0x0000044c gap=0x000003e8 reads=0x0000ffff ro=0x00000000 sel=0x00000000 mon0=0x00130000 mon1=0x00130000 budget=0x00001388 maxgap=0x000009c4\r\n'
+    report = decode(first+later+gate)
+    assert report['result'] == 'OBSERVED_CLASS_LOSS'
+    assert report['fresh_boot_gate']['records'][0]['result'] == 'WINDOW_CANDIDATE_ONLY'
+    assert report['fresh_boot_gate']['write_admission'] == 'NOT_GRANTED'
+    wrapped = gate.replace(b'low=0x00000064', b'low=0xffffff00').replace(
+        b'before=0x000003e8', b'before=0x00000050').replace(
+        b'after=0x0000044c', b'after=0x00000100').replace(
+        b'high=0x0000044c', b'high=0x00000100').replace(b'gap=0x000003e8', b'gap=0x00000200')
+    assert decode_gate(wrapped)['records'][0]['result'] == 'WINDOW_CANDIDATE_ONLY'
+    assert decode(first+gate[:-3])['fresh_boot_gate']['incomplete_or_corrupt_lines'] == 1
+    for code, result in enumerate(GATE_RESULTS[1:], 2):
+        reject = gate.replace(b'code=0x00000001', f'code=0x{code:08x}'.encode())
+        assert decode_gate(reject)['records'][0]['result'] == result
+    for bad in (gate+gate, gate.replace(b'code=0x00000001', b'code=0x00000000'),
+                gate.replace(b'ro=0x00000000', b'ro=0x00000001'),
+                gate.replace(b'gap=0x000003e8', b'gap=0x000009c5'),
+                gate.replace(b'after=0x0000044c', b'after=0x000013ec'),
+                gate.replace(b'before=0x000003e8', b'before=0x0000044d'),
+                gate.replace(b'high=0x0000044c', b'high=0x0000044d').replace(
+                    b'gap=0x000003e8', b'gap=0x000003e9'),
+                gate.replace(b'reads=0x0000ffff', b'reads=0x0000dfff'),
+                gate.replace(b'mon1=0x00130000', b'mon1=0x00030000')):
+        try:
+            decode_gate(bad)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('malformed candidate admitted')
+    print('HOST endpoint parser PASS: legacy/extended unchanged, independent one-shot gate and rejection cases')
 
 
 if __name__ == '__main__':
