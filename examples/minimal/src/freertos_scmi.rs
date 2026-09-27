@@ -36,14 +36,14 @@ fn mask() { write(0xe000_e184, BIT); barrier(); }
 
 /// Passive task observation only. Does not ACK, service, enable or pend an IRQ.
 #[cfg(feature = "freertos-endpoint-config-once")]
-pub fn irq_observation() -> [u32; 10] {
+pub fn irq_observation() -> [u32; 11] {
     let primask: u32; let basepri: u32;
     unsafe { core::arch::asm!("mrs {}, PRIMASK", "mrs {}, BASEPRI",
         out(reg) primask, out(reg) basepri, options(nomem, nostack)); }
     let shared = scmi_mailbox::shared_address() as usize;
     [read(0x4000_8008), read(shared + 4), read(shared + 24),
         read(0xe000_e104), read(0xe000_e204), read(0xe000_e304),
-        primask, basepri, read(shared + 16), read(shared + 20)]
+        primask, basepri, read(shared + 16), read(shared + 20), read(0xf800_0008)]
 }
 
 /// # Safety

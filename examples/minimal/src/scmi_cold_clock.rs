@@ -29,7 +29,7 @@ pub fn release_syscfg() -> Result<(), &'static str> {
     const BIT: u32 = 1 << 22;
     let ctrl = read(0x4001_4004);
     let done = read(0x4001_401c);
-    if ctrl & BIT == 0 || done & BIT != 0
+    if read(0xf800_0008) != 0 || ctrl & BIT == 0 || done & BIT != 0
         || ctrl != read(0x4001_4004) || done != read(0x4001_401c) {
         return Err("SYSCFG cold reset tuple");
     }
@@ -40,7 +40,13 @@ pub fn release_syscfg() -> Result<(), &'static str> {
         }
         let observed = read(0x4001_401c);
         if observed & !BIT != done { return Err("SYSCFG unrelated DONE drift"); }
-        if observed & BIT != 0 { return Ok(()); }
+        if observed & BIT != 0 {
+            // Official part0 0x20000b24..38: proc-local bit 0, then NVIC IRQ57.
+            // Sole cold proc0 owner; no other local interrupt sources enabled.
+            write_proc_event_route();
+            return if read(0xf800_0008) == 1 { Ok(()) }
+                else { Err("proc event route readback") };
+        }
     }
     Err("SYSCFG reset DONE timeout")
 }
@@ -49,6 +55,14 @@ pub fn release_syscfg() -> Result<(), &'static str> {
 fn write_syscfg_release() {
     unsafe {
         (0x4001_7004 as *mut u32).write_volatile(1 << 22);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(all(not(test), feature = "freertos-endpoint-config-once"))]
+fn write_proc_event_route() {
+    unsafe {
+        (0xf800_0008 as *mut u32).write_volatile(1);
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
     }
 }
@@ -90,7 +104,7 @@ pub fn prepare() -> Result<(), &'static str> {
 // Compile this same prepare body on the host. Only the MMIO primitives and
 // existing hardware helpers are substituted; rejection must cause NO writes.
 #[cfg(test)]
-use tests::{read, write_prim, write_syscfg_release, release_pll_sys_reset_bit29, pll_sys_core_lock_transition,
+use tests::{read, write_prim, write_syscfg_release, write_proc_event_route, release_pll_sys_reset_bit29, pll_sys_core_lock_transition,
     release_uart0_reset_bank1_bit26, PllSysCoreLockDecision};
 #[cfg(test)]
 mod tests {
@@ -98,14 +112,15 @@ mod tests {
     use std::cell::RefCell;
     const COLD: [u32; 13] = [PLL_RESET, 0, UART_RESET, 0, 1, 0x3f, 0, 0,
         0x77000, 0x8001_0000, 0, 1, 1];
-    struct Mock { registers: [u32; 13], writes: Vec<u32>, reject_prim: u32, reads: usize, drift: bool, syscfg_fault: u8 }
+    struct Mock { registers: [u32; 13], writes: Vec<u32>, reject_prim: u32, reads: usize, drift: bool, syscfg_fault: u8, route: u32 }
     thread_local! { static HW: RefCell<Mock> = RefCell::new(Mock {
-        registers: COLD, writes: Vec::new(), reject_prim: 0, reads: 0, drift: false, syscfg_fault: 0 }); }
+        registers: COLD, writes: Vec::new(), reject_prim: 0, reads: 0, drift: false, syscfg_fault: 0, route: 0 }); }
     fn seed(registers: [u32; 13]) {
-        HW.with(|h| *h.borrow_mut() = Mock { registers, writes: Vec::new(), reject_prim: 0, reads: 0, drift: false, syscfg_fault: 0 });
+        HW.with(|h| *h.borrow_mut() = Mock { registers, writes: Vec::new(), reject_prim: 0, reads: 0, drift: false, syscfg_fault: 0, route: 0 });
     }
     pub fn read(address: usize) -> u32 {
         HW.with(|h| { let mut h = h.borrow_mut(); h.reads += 1;
+            if address == 0xf800_0008 { return h.route; }
             let value = h.registers[ADDRESSES.iter().position(|&a| a == address).unwrap()];
             if h.drift && h.reads == 26 { value ^ 1 } else { value }
         })
@@ -122,14 +137,25 @@ mod tests {
             if h.syscfg_fault == 3 { h.registers[3] ^= 1; }
         });
     }
+    pub fn write_proc_event_route() {
+        HW.with(|h| { let mut h = h.borrow_mut(); h.writes.push(1);
+            if h.syscfg_fault != 4 { h.route = 1; }
+        });
+    }
     #[test] fn syscfg_release_is_one_bit_cold_only_and_checked() {
         let mut cold = COLD;
         cold[2] = 0xf973fffe; cold[3] = 0x078c0001;
-        for fault in 0..4 {
+        for fault in 0..5 {
             seed(cold); HW.with(|h| h.borrow_mut().syscfg_fault = fault);
             assert_eq!(release_syscfg().is_ok(), fault == 0);
-            HW.with(|h| assert_eq!(h.borrow().writes, [1 << 22]));
+            HW.with(|h| assert_eq!(h.borrow().writes,
+                if fault == 0 || fault == 4 { vec![1 << 22, 1] } else { vec![1 << 22] }));
             if fault == 0 { assert!(release_syscfg().is_err()); }
+        }
+        for route in [1, 2, u32::MAX] {
+            seed(cold); HW.with(|h| h.borrow_mut().route = route);
+            assert!(release_syscfg().is_err());
+            HW.with(|h| assert!(h.borrow().writes.is_empty()));
         }
         for (ctrl, done) in [(0, 0), (0, 1 << 22), (1 << 22, 1 << 22)] {
             let mut bad = cold; bad[2] = ctrl; bad[3] = done;
