@@ -42,8 +42,10 @@ clock_names = ["core-clk", "cfgr-clk"]
 name = "uart"
 rp1_id = 15
 binding = "RP1_CLK_UART"
-mode = "fixed"
+mode = "scmi"
+scmi_id = 1
 rate_hz = 50000000
+allowed_rates = [50000000]
 boot_required = true
 rp1_required = true
 
@@ -65,7 +67,8 @@ rate_hz = 25000000
 boot_required = true
 rp1_required = false
 
-# Discovery/policy bring-up object; UART1's first (functional) clock is FIXED.
+# PL011 AXI controls only its first functional clock (SCMI UART ID 1).
+# Firmware retains this APB prerequisite independently of Linux's UART vote.
 # This is the existing 100 MHz APB contract, not permission to retune PLL_SYS.
 [[clock]]
 name = "uart_apb"

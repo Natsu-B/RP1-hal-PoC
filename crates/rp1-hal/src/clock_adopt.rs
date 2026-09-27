@@ -56,6 +56,12 @@ fn sys_pll() -> SysPllSnapshot {
 pub struct ReadOnlyUartApb;
 impl ClockHardware for ReadOnlyUartApb {
     fn read(&mut self, rp1_id: u32) -> Result<PhysicalState, Error> {
+        if rp1_id == 15 {
+            // UART0 and UART1 share this physical 50MHz clock. Firmware owns
+            // its permanent UART0 hold; Linux only adds/removes a logical vote.
+            adopt_uart_clock(50_000_000).map_err(|_| Error::Hardware)?;
+            return Ok(PhysicalState { rate_hz: 50_000_000, enabled: true });
+        }
         if rp1_id != 6 { return Err(Error::NotFound); }
         let a = sys_pll(); let b = sys_pll();
         if a != b { return Err(Error::Hardware); }
@@ -87,7 +93,7 @@ mod tests {
     }
     #[test] fn generated_policy_matches_admitted_readonly_backends() {
         for c in crate::clock_profile_generated::CLOCKS {
-            if c.scmi_id.is_some() {
+            if c.scmi_id == Some(0) {
                 assert_eq!(c.rp1_id, 6);
                 let s = SysPllSnapshot { cs: 0x8000_0001, pwr: 4, fb_int: 20, fb_frac: 0, prim: 0x51010 };
                 assert_eq!(s.known_apb().unwrap().rate_hz, u64::from(c.rate_hz));

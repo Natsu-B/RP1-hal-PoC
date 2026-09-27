@@ -7,7 +7,7 @@
 &rp1_fw_shmem { status = "disabled"; };
 &rp1_uart1 {
     status = "okay";
-    clocks = <&rp1_fixed_uart>;
+    clocks = <&rp1_scmi_clocks 1>;
     clock-names = "uartclk";
     pinctrl-0 = <&rp1_uart1_0_1>;
     pinctrl-names = "default";

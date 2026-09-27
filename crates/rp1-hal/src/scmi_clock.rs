@@ -215,7 +215,7 @@ mod tests {
         for id in [0, 1, 3, 4, 5] { assert_eq!(req(&mut s, &mut h, 0x10, id, &[]).words[0], 0); }
         assert_eq!(req(&mut s, &mut h, 0x10, 6, &[0]).words[..3], [0, 1, 0x14]);
         assert_eq!(req(&mut s, &mut h, 0x10, 7, &[0xffff_ffff]).words[..2], [0, 1]);
-        assert_eq!(req(&mut s, &mut h, 0x14, 1, &[]).words[..2], [0, 1]);
+        assert_eq!(req(&mut s, &mut h, 0x14, 1, &[]).words[..2], [0, 2]);
         assert_eq!(req(&mut s, &mut h, 0x14, 4, &[0, 0]).words[..4], [0, 1, 100_000_000, 0]);
         assert_eq!(req(&mut s, &mut h, 0x14, 6, &[0]).words[..3], [0, 100_000_000, 0]);
         assert_eq!(h.writes, 0);
@@ -238,6 +238,21 @@ mod tests {
         }
         assert_eq!(h.writes, 0);
         assert_eq!(s.config_requests, 2);
+    }
+    #[test] fn uart1_repeated_close_preserves_uart0_physical_clock() {
+        let (mut s, mut h) = (Server::new(CLOCKS, true).unwrap(), hw());
+        h.state.rate_hz = 50_000_000;
+        for _ in 0..4 {
+            for en in [1, 0] {
+                assert_eq!(req(&mut s, &mut h, 0x14, 7, &[1, en]).words[0], 0);
+                assert_eq!(s.linux_votes(), en << 1);
+                assert!(h.state.enabled);
+            }
+        }
+        assert_eq!(h.writes, 0);
+        assert_eq!(s.config_requests, 8);
+        assert_eq!(req(&mut s, &mut h, 0x14, 5, &[0, 1, 100_000_000, 0]).words[0] as i32, -3);
+        assert_eq!(req(&mut s, &mut h, 0x14, 5, &[0, 1, 50_000_000, 0]).words[0], 0);
     }
     #[test] fn wrong_physical_rate_is_not_reported_as_profile_rate() {
         let (mut s, mut h) = (Server::new(CLOCKS, true).unwrap(), hw());

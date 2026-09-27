@@ -1,13 +1,17 @@
 {
   "clock": [
     {
+      "allowed_rates": [
+        50000000
+      ],
       "binding": "RP1_CLK_UART",
       "boot_required": true,
-      "mode": "fixed",
+      "mode": "scmi",
       "name": "uart",
       "rate_hz": 50000000,
       "rp1_id": 15,
-      "rp1_required": true
+      "rp1_required": true,
+      "scmi_id": 1
     },
     {
       "binding": "RP1_CLK_MIPI0_CFG",
@@ -178,5 +182,5 @@
   "mailbox_channel": 0,
   "name": "proc0-linux-standard-v1",
   "schema": 1,
-  "sha256": "bf852245517b3c9e5530750c98e224c9983837e9bfdc3ff67ff4aa2e3bc1b60c"
+  "sha256": "f70c9c19e4561430498bce9ad7d718840caf4548b5ea9d4427218be456924e77"
 }

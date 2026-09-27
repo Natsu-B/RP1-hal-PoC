@@ -1,5 +1,5 @@
-//! Cold-only SCMI IRQ commissioning. No clock writes, RTOS calls or polling.
-//! Does not prove the candidate IRQ57 route or Linux endpoint reset survival.
+//! Cold-only SCMI IRQ service. Firmware retains UART0's physical clock holds.
+//! CONFIG_SET changes Linux votes only; no PLL/gate writes, RTOS calls or polling.
 use core::ptr;
 use rp1_hal::{clock_adopt::ReadOnlyUartApb, clock_profile_generated::CLOCKS,
     scmi_clock::{ClockHardware, Server}, scmi_mailbox::{self, Counters, MailboxIo, Rp1Mailbox}};
@@ -57,7 +57,8 @@ pub unsafe fn prepare() -> Result<(), &'static str> {
     }
     #[cfg(feature = "freertos-endpoint-config-once")]
     crate::scmi_cold_clock::release_syscfg()?;
-    let server = Server::new(CLOCKS, false).map_err(|_| "profile")?;
+    let server = Server::new(CLOCKS, cfg!(feature = "freertos-endpoint-config-once"))
+        .map_err(|_| "profile")?;
     let shared = scmi_mailbox::shared_address();
     let mut io = unsafe { Rp1Mailbox::new(shared) }.ok_or("SRAM")?;
     scmi_mailbox::initialize(&mut io);

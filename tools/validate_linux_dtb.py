@@ -416,8 +416,12 @@ def validate(root, profile, require_camera=False, firmware_layout=None):
             fail(path + ": UART1 pin function must be uart1")
         try:
             clocks = t.refs(path, "clocks", "#clock-cells")
-            if not clocks or clocks[0] != (fixed_paths.get("uart"), []):
-                fail(path + ": functional clock must be profile fixed UART clock")
+            uart = next(c for c in profile["clock"] if c["name"] == profile["linux"]["uart1_clock"])
+            expected_uart = ((protocol_paths[0], [uart["scmi_id"]])
+                             if uart["mode"] == "scmi" and len(protocol_paths) == 1
+                             else (fixed_paths.get(uart["name"]), []))
+            if not clocks or clocks[0] != expected_uart:
+                fail(path + ": functional clock must match profile UART clock")
         except ValueError as exc:
             fail(str(exc))
     if require_camera and not camera_paths:

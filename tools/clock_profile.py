@@ -52,7 +52,9 @@ def load(path=DEFAULT):
         raise ValueError("invalid DTS label")
     if len(linux["cfe_labels"]) != len(linux["cfe_clocks"]):
         raise ValueError("CFE profile mapping length")
-    for name in [linux["uart1_clock"]] + linux["cfe_clocks"]:
+    if not any(c["name"] == linux["uart1_clock"] and c["mode"] in ("fixed", "scmi") for c in p["clock"]):
+        raise ValueError("UART consumer must use a declared fixed or SCMI clock")
+    for name in linux["cfe_clocks"]:
         if not any(c["name"] == name and c["mode"] == "fixed" for c in p["clock"]):
             raise ValueError("initial UART/CFE consumer must use a declared fixed clock")
     seen_nodes, seen_labels = set(), set()
@@ -116,10 +118,13 @@ def outputs(p):
     dts += ["};", "&rp1_scmi {", '    rp1_scmi_clocks: protocol@14 {',
             '        reg = <0x14>;', '        #clock-cells = <1>;', '    };', '};']
     linux = p["linux"]
+    uart = next(c for c in p["clock"] if c["name"] == linux["uart1_clock"])
+    uart_ref = (f'&rp1_scmi_clocks {uart["scmi_id"]}' if uart["mode"] == "scmi"
+                else f'&rp1_fixed_{uart["name"]}')
     ownership = ["/* Generated ownership; compile with the base DTS, not as deletion-only overlays. */"]
     ownership += [f'&{label} {{ status = "disabled"; }};' for label in linux["disable_labels"]]
     ownership += [f'&{linux["uart1_label"]} {{', '    status = "okay";',
-                  f'    clocks = <&rp1_fixed_{linux["uart1_clock"]}>;', '    clock-names = "uartclk";',
+                  f'    clocks = <{uart_ref}>;', '    clock-names = "uartclk";',
                   f'    pinctrl-0 = <&{linux["uart1_pins_label"]}>;', '    pinctrl-names = "default";',
                   '    /delete-property/ uart-has-rtscts;', '    /delete-property/ skip-init;',
                   '    /delete-property/ assigned-clocks;', '    /delete-property/ assigned-clock-parents;',

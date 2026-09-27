@@ -1,13 +1,7 @@
 /* Generated policy definitions; transport placement is separate. */
 / {
     rp1_clock_profile {
-        profile-sha256 = "bf852245517b3c9e5530750c98e224c9983837e9bfdc3ff67ff4aa2e3bc1b60c";
-    };
-    rp1_fixed_uart: rp1-fixed-uart {
-        compatible = "fixed-clock";
-        #clock-cells = <0>;
-        clock-frequency = <50000000>;
-        clock-output-names = "rp1-profile-uart";
+        profile-sha256 = "f70c9c19e4561430498bce9ad7d718840caf4548b5ea9d4427218be456924e77";
     };
     rp1_fixed_mipi0_cfg: rp1-fixed-mipi0-cfg {
         compatible = "fixed-clock";

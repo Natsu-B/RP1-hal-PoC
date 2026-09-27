@@ -55,7 +55,7 @@ class CandidateTests(unittest.TestCase):
   spi@50000 { status = "disabled"; };
   i2c@74000 { status = "disabled"; };
   uart1: serial@34000 { compatible = "arm,pl011-axi"; status = "okay";
-   clocks = <&rp1_fixed_uart>; clock-names = "uartclk";
+   clocks = <&rp1_scmi_clocks 1>; clock-names = "uartclk";
    pinctrl-names = "default"; pinctrl-0 = <&uart_pins>;
   };
   cam1: i2c@70000 { status = "disabled"; pinctrl-0 = <&cam1_pins>; };
@@ -165,10 +165,13 @@ SECTIONS {
         self.bad('&uart1 { clocks = <0x12345678>; };', 'unresolved clocks')
 
     def test_fixed_rate(self):
-        self.bad('&rp1_fixed_uart { clock-frequency = <48000000>; };', 'fixed clock/profile mismatch')
+        self.bad('&rp1_fixed_mipi0_cfg { clock-frequency = <48000000>; };', 'fixed clock/profile mismatch')
 
     def test_bad_scmi_id(self):
-        self.bad('&uart1 { clocks = <&rp1_fixed_uart>, <&rp1_scmi_clocks 99>; };', 'SCMI clock ID mismatch')
+        self.bad('&uart1 { clocks = <&rp1_scmi_clocks 1>, <&rp1_scmi_clocks 99>; };', 'SCMI clock ID mismatch')
+
+    def test_uart_apb_is_not_functional_clock(self):
+        self.bad('&uart1 { clocks = <&rp1_scmi_clocks 0>; };', 'functional clock must match')
 
     def test_private_uart(self):
         self.bad('/ { rp1 { serial@30000 { status = "okay"; }; }; };', 'firmware-owned')
