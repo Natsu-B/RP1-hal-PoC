@@ -13,6 +13,7 @@ const LEVELS: u32 = 0x1f << 16;
 const PROC1: u32 = 1 << 31;
 const NORMAL: [usize; 8] = [DBI, DBI + 4, DBI + 8, DBI + 0x10,
     DBI + 0x14, DBI + 0x18, SELECTOR, RO];
+const INBOUND: [usize; 4] = [DBI + 0x114, DBI + 0x118, DBI + 0x100, DBI + 0x104];
 
 /// NOT constructed from WINDOW_CANDIDATE_ONLY. No safe constructor is provided.
 pub(crate) struct ReviewedWindow { low_before_us: u32, budget_us: u32 }
@@ -50,9 +51,12 @@ pub(crate) struct Receipt {
     pub before: [Option<u32>; 8],
     pub after: [Option<u32>; 8],
     /// Recipe-order bits: RO-enable, class, sel1, masks0..2, sel0,
-    /// normal BAR0..2, RO-restore. Returned writes are not acceptance proof.
-    pub writes_attempted: u16,
-    pub writes_returned: u16,
+    /// normal BAR0..2, two known inbound windows, sel0, RO-restore.
+    /// Returned writes are not acceptance proof.
+    pub writes_attempted: u32,
+    pub writes_returned: u32,
+    /// One bit per exact target-low/high/CTRL1/CTRL2 readback, BAR1 then BAR2.
+    pub inbound_readback: u32,
     /// Cleanup-only bits: selector0, saved RO. Not configuration rollback.
     pub cleanup_attempted: u8,
     pub cleanup_returned: u8,
@@ -63,7 +67,7 @@ impl Receipt {
         Self { status, cleanup: Cleanup::NotNeeded, mask_before: None,
             mask_restored: false, first_us: None, last_us: None, proc1: [None; 2],
             before: [None; 8], after: [None; 8], writes_attempted: 0,
-            writes_returned: 0, cleanup_attempted: 0, cleanup_returned: 0 }
+            writes_returned: 0, inbound_readback: 0, cleanup_attempted: 0, cleanup_returned: 0 }
     }
 
     /// A partial transaction is never claimed rolled back, even if RO/selector
@@ -164,12 +168,41 @@ impl Transaction {
             (SELECTOR, 1, 0), (DBI + 0x10, 0x3fff, 1),
             (DBI + 0x14, 0x3f_ffff, 1), (DBI + 0x18, 0xffff, 1),
             (SELECTOR, 0, 1), (DBI + 0x10, 0xffff_fff0, 0),
-            (DBI + 0x14, 0xffff_fff0, 0), (DBI + 0x18, 0xffff_fff0, 0), (RO, ro, 0)];
+            (DBI + 0x14, 0xffff_fff0, 0), (DBI + 0x18, 0xffff_fff0, 0)];
         for (index, (address, value, selector)) in recipe.into_iter().enumerate() {
             guard(io, selector, w, r)?;
             r.writes_attempted |= 1 << index;
             call(io, Op::Write(address, value))?;
             r.writes_returned |= 1 << index;
+        }
+        // Exact inbound recipe from rp1-rt/src/pcie_ep_init.rs state 5.
+        // These map BAR1/2 to RP1 peripherals/SRAM, never to Linux DDR.
+        let mut index = 10;
+        let mut selected = 0;
+        for (region, (selector, target, control)) in
+            [(0x23, 0x4000_0000, 0xc000_0100), (0x63, 0x2000_0000, 0xc000_0200)].into_iter().enumerate() {
+            let values = [target, 0xc0, 0, control];
+            for (address, value) in core::iter::once((SELECTOR, selector)).chain(INBOUND.into_iter().zip(values)) {
+                guard(io, selected, w, r)?;
+                r.writes_attempted |= 1 << index;
+                call(io, Op::Write(address, value))?;
+                r.writes_returned |= 1 << index;
+                index += 1;
+                selected = selector;
+            }
+            for (word, (address, expected)) in INBOUND.into_iter().zip(values).enumerate() {
+                guard(io, selected, w, r)?;
+                if call(io, Op::Read(address))? != expected { return Err(Status::ReadbackMismatch); }
+                r.inbound_readback |= 1 << (region * 4 + word);
+            }
+        }
+        for (address, value) in [(SELECTOR, 0), (RO, ro)] {
+            guard(io, selected, w, r)?;
+            r.writes_attempted |= 1 << index;
+            call(io, Op::Write(address, value))?;
+            r.writes_returned |= 1 << index;
+            index += 1;
+            selected = 0;
         }
         for (index, address) in NORMAL.into_iter().enumerate() {
             guard(io, 0, w, r)?;
@@ -302,9 +335,9 @@ pub(crate) mod commissioning {
         pub(crate) fn report(&mut self, mut emit: impl FnMut(&[u8])) {
             if !self.safe_to_report() || self.reported { return; }
             let Some(r) = self.receipt.as_ref() else { return; };
-            for key in 0..33 {
+            for key in 0..34 {
                 let word = match key {
-                    0 => Some(1), 1 => Some(r.status as u32), 2 => Some(r.cleanup as u32),
+                    0 => Some(2), 1 => Some(r.status as u32), 2 => Some(r.cleanup as u32),
                     3 => r.mask_before, 4 => Some(u32::from(r.mask_restored)),
                     5 => r.first_us, 6 => r.last_us, 7 => Some(self.low),
                     8 => r.proc1[0], 9 => r.proc1[1],
@@ -314,6 +347,7 @@ pub(crate) mod commissioning {
                     28 => Some(u32::from(r.cleanup_attempted)), 29 => Some(u32::from(r.cleanup_returned)),
                     30 => Some(u32::from(r.needs_external_recovery())),
                     31 => r.last_us.zip(r.first_us).map(|(last, first)| last.wrapping_sub(first)),
+                    32 => Some(r.inbound_readback),
                     _ => Some(0x454e_4421),
                 };
                 let mut line = *b"RP1CFG key=0x00000000 valid=0x00000000 value=0x00000000\r\n";
@@ -345,7 +379,7 @@ mod tests {
         now: u32, writes: usize, fail_writes: Vec<usize>, apply_failed: bool,
         reset_after: Option<usize>, timeout_after: Option<usize>,
         ignore_write: Option<usize>, fail_read: Option<usize>, drift_at: Option<usize>,
-        fail_restore: bool,
+        fail_restore: bool, inbound: BTreeMap<(u32, usize), u32>,
     }
 
     impl Bus {
@@ -356,7 +390,8 @@ mod tests {
                 (DBI + 0x10, 0), (DBI + 0x14, 0), (DBI + 0x18, 0)].into(),
                 shadow: [0; 3], trace: Vec::new(), mask, now: 1100, writes: 0,
                 fail_writes: Vec::new(), apply_failed: true, reset_after: None,
-                timeout_after: None, ignore_write: None, fail_read: None, drift_at: None, fail_restore: false }
+                timeout_after: None, ignore_write: None, fail_read: None, drift_at: None, fail_restore: false,
+                inbound: [0x23, 0x63].into_iter().flat_map(|s| INBOUND.map(|a| ((s, a), u32::MAX))).collect() }
         }
 
         fn io(&mut self, op: Op) -> Result<u32, ()> {
@@ -373,19 +408,28 @@ mod tests {
                 Op::Read(address) => {
                     if (DBI..DBI + 0x1000).contains(&address) {
                         assert_eq!(self.regs[&MONITOR2] & READY, READY, "no reset-low DBI read");
-                        assert_eq!(self.regs[&SELECTOR], 0, "no DBI2/shadow read oracle");
+                        let selected = self.regs[&SELECTOR];
+                        if selected != 0 {
+                            assert!([0x23, 0x63].contains(&selected) && INBOUND.contains(&address), "known inbound views only");
+                            if self.fail_read == Some(address) { return Err(()); }
+                            return Ok(self.inbound[&(selected, address)]);
+                        }
                     }
                     if self.fail_read == Some(address) { return Err(()); }
                     Ok(self.regs[&address])
                 }
                 Op::Write(address, value) => {
                     assert!([SELECTOR, RO, DBI + 8, DBI + 0x10, DBI + 0x14, DBI + 0x18]
-                        .contains(&address), "forbidden write address");
+                        .contains(&address) || INBOUND.contains(&address), "forbidden write address");
                     assert_eq!(self.regs[&MONITOR2] & READY, READY, "no reset-low writes");
                     self.writes += 1;
                     let fail = self.fail_writes.contains(&self.writes);
                     if (!fail || self.apply_failed) && self.ignore_write != Some(self.writes) {
-                        if (DBI + 0x10..=DBI + 0x18).contains(&address) {
+                        if INBOUND.contains(&address) {
+                            let selected = self.regs[&SELECTOR];
+                            assert!([0x23, 0x63].contains(&selected));
+                            self.inbound.insert((selected, address), value);
+                        } else if (DBI + 0x10..=DBI + 0x18).contains(&address) {
                             let index = (address - DBI - 0x10) / 4;
                             if self.regs[&SELECTOR] == 1 { self.shadow[index] = value; }
                             else { self.regs.insert(address, value & !self.shadow[index]); }
@@ -419,7 +463,8 @@ mod tests {
             assert_eq!((r.status, r.cleanup), (Status::Complete, Cleanup::Restored));
             assert_eq!((r.mask_before, r.mask_restored, bus.mask), (Some(saved_mask), true, saved_mask));
             assert_eq!((r.first_us, r.last_us), (Some(1100), Some(1100)));
-            assert_eq!((r.writes_attempted, r.writes_returned), (0x7ff, 0x7ff));
+            assert_eq!((r.writes_attempted, r.writes_returned), (0x3fffff, 0x3fffff));
+            assert_eq!(r.inbound_readback, 0xff);
             assert_eq!((r.cleanup_attempted, r.cleanup_returned), (0, 0));
             assert_eq!(r.proc1, [Some(0xda31_efff), Some(0x25ce_1000)]);
             assert_eq!(r.before, [Some(0x11de4), Some(0), Some(2), Some(0),
@@ -436,7 +481,18 @@ mod tests {
             for (address, value) in [(RO, 0xbff41), (DBI + 8, 0x0200_0000),
                 (SELECTOR, 1), (DBI + 0x10, 0x3fff), (DBI + 0x14, 0x3f_ffff),
                 (DBI + 0x18, 0xffff), (SELECTOR, 0), (DBI + 0x10, 0xffff_fff0),
-                (DBI + 0x14, 0xffff_fff0), (DBI + 0x18, 0xffff_fff0), (RO, 0xbff40)] {
+                (DBI + 0x14, 0xffff_fff0), (DBI + 0x18, 0xffff_fff0)] {
+                guard_trace(&mut expected); expected.push(Op::Write(address, value));
+            }
+            for (selector, target, ctrl) in [(0x23, 0x4000_0000, 0xc000_0100), (0x63, 0x2000_0000, 0xc000_0200)] {
+                for (address, value) in [(SELECTOR, selector), (DBI+0x114, target), (DBI+0x118, 0xc0), (DBI+0x100, 0), (DBI+0x104, ctrl)] {
+                    guard_trace(&mut expected); expected.push(Op::Write(address, value));
+                }
+                for address in [DBI+0x114, DBI+0x118, DBI+0x100, DBI+0x104] {
+                    guard_trace(&mut expected); expected.push(Op::Read(address));
+                }
+            }
+            for (address, value) in [(SELECTOR, 0), (RO, 0xbff40)] {
                 guard_trace(&mut expected); expected.push(Op::Write(address, value));
             }
             for address in NORMAL {
@@ -478,7 +534,7 @@ mod tests {
 
     #[test]
     fn mutation_failures_cleanup_without_claiming_rollback() {
-        for failed in 1..=11 {
+        for failed in 1..=22 {
             for apply in [false, true] {
                 let mut bus = Bus::new(0); bus.fail_writes = vec![failed]; bus.apply_failed = apply;
                 let r = run(&mut bus);
@@ -500,7 +556,7 @@ mod tests {
 
     #[test]
     fn reset_loss_and_deadline_after_every_mutation_are_terminal() {
-        for changed in 1..=11 {
+        for changed in 1..=22 {
             for reset in [false, true] {
                 let mut bus = Bus::new(0);
                 if reset { bus.reset_after = Some(changed); } else { bus.timeout_after = Some(changed); }
@@ -549,7 +605,7 @@ mod tests {
         }
         let mut bus = Bus::new(0);
         let r = Transaction::new().run(window(), |op| {
-            if bus.writes == 11 && op == Op::Read(DBI + 8) { return Err(()); }
+            if bus.writes == 22 && op == Op::Read(DBI + 8) { return Err(()); }
             bus.io(op)
         });
         assert_eq!(r.status, Status::CallbackFailure);
@@ -584,7 +640,7 @@ mod tests {
             assert_eq!((r.cleanup_attempted, r.cleanup_returned, bus.writes), (1, 1, 2));
             assert!(r.needs_external_recovery()); assert!(r.mask_restored);
         }
-        for changed in 1..=11 {
+        for changed in 1..=22 {
             let mut bus = Bus::new(1);
             let r = Transaction::new().run(window(), |op| {
                 let result = bus.io(op);
@@ -641,7 +697,7 @@ mod tests {
             assert!(once.pending().is_none());
             bus.borrow_mut().regs.insert(MONITOR2, 0x0007_0020);
             let lines = observe(&mut once, &mut gate, &mut monitor, &bus, 1100, &hooks);
-            assert_eq!(hooks.get(), 1); assert_eq!(bus.borrow().writes, 11);
+            assert_eq!(hooks.get(), 1); assert_eq!(bus.borrow().writes, 22);
             assert_eq!(once.pending().unwrap().status, Status::Complete);
             assert!(lines[0].starts_with(b"RP1GATE code=0x00000001 "));
             assert!(std::str::from_utf8(&lines[0]).unwrap().contains("low=0x00000064"));
@@ -649,7 +705,7 @@ mod tests {
             assert_eq!(bus.borrow().regs[&(DBI + 8)], 0x0200_0000); // Packet used ORIGINAL sample.
             let mut packet = Vec::new();
             once.finish(|line| packet.push(line.to_vec()), |_| panic!("complete must not stop"));
-            assert_eq!(packet.len(), 33);
+            assert_eq!(packet.len(), 34);
             let mut values = Vec::new();
             for (key, line) in packet.iter().enumerate() {
                 assert_eq!(line.len(), 57);
@@ -657,13 +713,13 @@ mod tests {
                 assert_eq!((decode(13), decode(30)), (key as u32, 1));
                 values.push(decode(47));
             }
-            assert_eq!((values[0], values[1], values[7], values[26], values[27], values[32]),
-                (1, Status::Complete as u32, 100, 0x7ff, 0x7ff, 0x454e_4421));
+            assert_eq!((values[0], values[1], values[7], values[26], values[27], values[32], values[33]),
+                (2, Status::Complete as u32, 100, 0x3fffff, 0x3fffff, 0xff, 0x454e_4421));
             once.finish(|_| panic!("no duplicate receipt"), |_| panic!("no duplicate stop"));
             for at in [2100, u32::MAX, 0] {
                 observe(&mut once, &mut gate, &mut monitor, &bus, at, &hooks);
             }
-            assert_eq!(hooks.get(), 1); assert_eq!(bus.borrow().writes, 11);
+            assert_eq!(hooks.get(), 1); assert_eq!(bus.borrow().writes, 22);
             assert!(!unsafe { once.candidate_with(0, 5000, |_, _| panic!("must retain first receipt")) });
         }
 
@@ -681,7 +737,7 @@ mod tests {
                     observe(&mut once, &mut gate, &mut monitor, &bus, low.wrapping_add(1000), &hooks);
                     let r = once.pending().unwrap();
                     assert_eq!(r.status, if expired { Status::Deadline } else { Status::Complete });
-                    assert_eq!(bus.borrow().writes, if expired { 0 } else { 11 });
+                    assert_eq!(bus.borrow().writes, if expired { 0 } else { 22 });
                     assert_eq!(r.first_us, Some(low.wrapping_add(if expired { 5000 } else { 4999 })));
                     assert_eq!(hooks.get(), 1);
                 }
@@ -720,7 +776,7 @@ mod tests {
                 let events = RefCell::new(Vec::new());
                 once.finish(|_| events.borrow_mut().push("emit"), |_| events.borrow_mut().push("stop"));
                 let events = events.into_inner();
-                assert_eq!(events.len(), if mode == 0 { 34 } else { 1 });
+                assert_eq!(events.len(), if mode == 0 { 35 } else { 1 });
                 assert_eq!(events.last(), Some(&"stop"));
                 let writes = bus.borrow().writes;
                 once.finish(|_| panic!("no retry"), |_| panic!("no repeated stop"));
