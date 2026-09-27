@@ -7,7 +7,7 @@ feature=${RP1_RTOS_FEATURE:-freertos-r1}
 cargo_feature=$feature
 scmi=0
 case "$feature" in
-    freertos-scmi-readonly|freertos-endpoint-uart) feature=freertos-r1; scmi=1 ;;
+    freertos-scmi-readonly|freertos-endpoint-uart|freertos-endpoint-config-once) feature=freertos-r1; scmi=1 ;;
     freertos-scmi-readonly-mixed) feature=freertos-r2-mixed; scmi=1 ;;
 esac
 # R1 local-stack control and halt-only UDF probe are independent of WDT requests.
@@ -34,12 +34,19 @@ case "$feature" in freertos-r3-watchdog-warm-guard|freertos-r3-watchdog-kernel-r
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
-if [[ "$cargo_feature" == freertos-endpoint-uart ]]; then
+if [[ "$cargo_feature" == freertos-endpoint-uart || "$cargo_feature" == freertos-endpoint-config-once ]]; then
     rustc +stable --edition=2024 -C strip=debuginfo --test \
         --cfg 'feature="freertos-endpoint-uart"' \
         examples/minimal/src/linux_clk_uart_ownership.rs -o "$out/endpoint-test"
     "$out/endpoint-test" > "$out/endpoint-host-test.txt"
     python3 -B tools/check-endpoint-uart.py --self-test > "$out/endpoint-parser-test.txt"
+fi
+if [[ "$cargo_feature" == freertos-endpoint-config-once ]]; then
+    rustc +stable --edition=2024 -C strip=debuginfo --test \
+        --cfg 'feature="freertos-endpoint-uart"' \
+        --cfg 'feature="freertos-endpoint-config-once"' \
+        examples/minimal/src/endpoint_config.rs -o "$out/endpoint-config-test"
+    "$out/endpoint-config-test" > "$out/endpoint-config-host-test.txt"
 fi
 date --iso-8601=seconds
 printf 'selected_feature=%s\n' "$cargo_feature"
@@ -56,10 +63,14 @@ if [[ "$feature" == freertos-r2-spi-lifecycle || "$feature" == freertos-r2-spi-c
 else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 fi
-if [[ "$cargo_feature" == freertos-endpoint-uart ]]; then
+if [[ "$cargo_feature" == freertos-endpoint-uart || "$cargo_feature" == freertos-endpoint-config-once ]]; then
     # The read-only edge classifier/formatters must fit the unchanged SRAM/MSP.
     # Scope Oz to this diagnostic; normal R1/R2/SCMI optimization is unchanged.
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=z
+fi
+if [[ "$cargo_feature" == freertos-endpoint-config-once ]]; then
+    # Fit the added transaction/receipt inside the unchanged SRAM and task pool.
+    export CARGO_PROFILE_RELEASE_LTO=fat
 fi
 if [[ "$family_feature" == freertos-r3-watchdog-warm-uart || "$family_feature" == freertos-r3-watchdog-warm-spi || "$family_feature" == freertos-r3-watchdog-warm-i2c || "$family_feature" == freertos-r3-watchdog-warm-combined || "$family_feature" == freertos-r3-watchdog-warm-persistent ]]; then
     # Individual selected owners retain O3. Combined uses explicit delay bodies

@@ -403,7 +403,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     let (mut endpoint_fast, endpoint_epoch, mut endpoint_last_sample) =
         (true, unsafe { os::tick().unwrap() }, endpoint_start);
     #[cfg(feature = "freertos-endpoint-uart")]
-    let mut endpoint_gate = crate::linux_clk_uart_ownership::endpoint_gate::Gate::new(endpoint_start);
+    let mut endpoint_gate = crate::linux_clk_uart_ownership::endpoint_gate::Gate::new(endpoint_start); #[cfg(feature = "freertos-endpoint-config-once")] let mut endpoint_config = crate::endpoint_config::commissioning::Once::new();
     let (ipsr, control, psp, msp): (u32, u32, u32, u32);
     unsafe {
         core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL", "mrs {2}, PSP", "mrs {3}, MSP",
@@ -460,7 +460,7 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
                     &mut endpoint, &mut endpoint_gate, u64::from(now.wrapping_sub(endpoint_start)),
                     |address| unsafe { (address as *const u32).read_volatile() }, raw_low, |line| {
                         increment(if endpoint_line(&mut endpoint_uart, line) { 60 } else { 61 });
-                    });
+                    }, #[cfg(feature = "freertos-endpoint-config-once")] |low, budget| unsafe { endpoint_config.candidate(low, budget) }); #[cfg(feature = "freertos-endpoint-config-once")] endpoint_config_finish(&mut endpoint_config, &mut endpoint_uart);
             });
             put(63, u32::from_le_bytes(*b"EP01")); // plain-R1-only diagnostic words
         }
@@ -1061,4 +1061,22 @@ unsafe extern "C" fn spin(_: *mut c_void) {
         "ldr r1, [r0]", "adds r1, #1", "str r1, [r0]", "b 2b",
         "3:", "movs r1, #1", "str r1, [r0, #24]", "b 3b",
     );
+}
+
+// Opt-in additions are at file end / on existing lines to preserve feature-off
+// panic source locations and the sealed observer ELF byte identity.
+#[cfg(feature = "freertos-endpoint-config-once")]
+#[inline(never)]
+fn endpoint_config_finish(once: &mut crate::endpoint_config::commissioning::Once,
+    uart: &mut rp1_hal::uart::Uart0Tx) {
+    once.finish(|line| { increment(if endpoint_line(uart, line) { 60 } else { 61 }); }, |r| {
+        let mask_fault = !r.mask_restored || r.mask_before != Some(0);
+        if mask_fault {
+            // SRAM-only bounded fault evidence; no formatting, UART, RTOS wait or DBI.
+            put(60, u32::from(r.writes_attempted)); put(61, u32::from(r.writes_returned));
+            put(62, (u32::from(r.cleanup_attempted) << 8) | u32::from(r.cleanup_returned));
+            put(63, u32::from_le_bytes(*b"CFGM"));
+        }
+        rp1_freertos_fault_hook(if mask_fault { 0x4346_474d } else { 0x4346_4746 }, r.status as u32);
+    });
 }

@@ -1,4 +1,4 @@
-//! Compile-only config transaction foundation. No observer or startup calls this.
+//! Config transaction foundation; only the explicit conditional experiment calls it.
 //! Host callback errors model returned failures, NOT catchable target MMIO faults.
 #![allow(dead_code)]
 
@@ -19,9 +19,10 @@ pub(crate) struct ReviewedWindow { low_before_us: u32, budget_us: u32 }
 
 impl ReviewedWindow {
     /// # Safety
-    /// A separate deployment review must establish the fresh low timestamp,
-    /// finite host-access exclusion margin, proc0 accessor/exception scope and
-    /// external known-good recovery. Diagnostic 5000/2500us bounds do not do so.
+    /// A separate review must establish the fresh low timestamp, finite margin,
+    /// accessor/exception scope and external recovery, OR explicitly accept
+    /// those platform/progress assumptions for a recoverable experiment. The
+    /// experimental 5000/2500us guards alone prove no physical exclusion bound.
     pub(crate) unsafe fn new(low_before_us: u32, budget_us: u32) -> Self {
         Self { low_before_us, budget_us }
     }
@@ -186,7 +187,8 @@ impl Transaction {
 
     /// # Safety
     /// Requires ReviewedWindow's separately reviewed admission, one persistent
-    /// Transaction per boot epoch, and proc0 task context. Not called by firmware.
+    /// Transaction per boot epoch, and proc0 task context. Only the separately
+    /// opted-in conditional commissioning caller may use the experimental contract.
     /// PRIMASK excludes local configurable IRQs only, not NMI/HardFault, proc1,
     /// host config cycles or reset hardware. No MMIO-stall recovery is provided.
     #[cfg(target_arch = "arm")]
@@ -235,6 +237,104 @@ fn cleanup(w: &ReviewedWindow, io: &mut impl FnMut(Op) -> Result<u32, ()>, r: &m
     } else { Cleanup::Restored }
 }
 
+/// Opt-in proc0 monitor state; never reconstructed by a polling iteration.
+#[cfg(feature = "freertos-endpoint-config-once")]
+pub(crate) mod commissioning {
+    use super::*;
+
+    pub(crate) struct Once {
+        transaction: Transaction,
+        receipt: Option<Receipt>,
+        low: u32,
+        reported: bool,
+    }
+
+    impl Once {
+        pub(crate) const fn new() -> Self {
+            Self { transaction: Transaction::new(), receipt: None, low: 0, reported: false }
+        }
+
+        /// Conditional commissioning only (phase121400 design): pinned fresh
+        /// cold-child host path; MONITOR2 low/high belongs to that host release;
+        /// raw timer retains 1us ticks; propagation/normal MMIO progress leave
+        /// the nominal96ms host delay available. These are accepted experiment
+        /// assumptions, NOT certified physical exclusion or no-stall guarantees.
+        /// Fault/stall/partial-write outcomes require the external original-R1
+        /// recovery plan. No other feature/host path may use this unsafe caller.
+        #[cfg(target_arch = "arm")]
+        pub(crate) unsafe fn candidate(&mut self, low: u32, budget: u32) -> bool {
+            unsafe { self.candidate_with(low, budget, |txn, window| txn.attempt_mmio(window)) }
+        }
+
+        pub(super) unsafe fn candidate_with(&mut self, low: u32, budget: u32,
+            attempt: impl FnOnce(&mut Transaction, Option<ReviewedWindow>) -> Receipt) -> bool {
+            if self.receipt.is_some() { return false; } // Preserve the FIRST receipt; never rearm.
+            self.low = low;
+            // Preserve the original stable-low BEFORE sample, never high/now/UART time.
+            let window = if budget == 5000 { Some(unsafe { ReviewedWindow::new(low, budget) }) }
+                else { None };
+            self.receipt = Some(attempt(&mut self.transaction, window));
+            self.safe_to_report()
+        }
+
+        pub(crate) fn pending(&self) -> Option<&Receipt> {
+            if self.reported { None } else { self.receipt.as_ref() }
+        }
+
+        pub(crate) fn safe_to_report(&self) -> bool {
+            self.receipt.as_ref().is_some_and(|r| r.mask_restored && r.mask_before == Some(0))
+        }
+
+        pub(crate) fn finish(&mut self, emit: impl FnMut(&[u8]), mut stop: impl FnMut(&Receipt)) {
+            let Some(r) = self.pending() else { return; };
+            if !self.safe_to_report() {
+                stop(r); // Target stop never returns; HOST callback may return for testing.
+                self.reported = true;
+                return;
+            }
+            let recovery = r.needs_external_recovery();
+            self.report(emit);
+            if recovery { if let Some(r) = self.receipt.as_ref() { stop(r); } }
+        }
+
+        /// Call only after the timing-critical transaction and sampler return.
+        /// Fixed57-byte lines, one finite packet; drops are not retried here.
+        pub(crate) fn report(&mut self, mut emit: impl FnMut(&[u8])) {
+            if !self.safe_to_report() || self.reported { return; }
+            let Some(r) = self.receipt.as_ref() else { return; };
+            for key in 0..33 {
+                let word = match key {
+                    0 => Some(1), 1 => Some(r.status as u32), 2 => Some(r.cleanup as u32),
+                    3 => r.mask_before, 4 => Some(u32::from(r.mask_restored)),
+                    5 => r.first_us, 6 => r.last_us, 7 => Some(self.low),
+                    8 => r.proc1[0], 9 => r.proc1[1],
+                    10..=17 => r.before.get(key - 10).copied().flatten(),
+                    18..=25 => r.after.get(key - 18).copied().flatten(),
+                    26 => Some(u32::from(r.writes_attempted)), 27 => Some(u32::from(r.writes_returned)),
+                    28 => Some(u32::from(r.cleanup_attempted)), 29 => Some(u32::from(r.cleanup_returned)),
+                    30 => Some(u32::from(r.needs_external_recovery())),
+                    31 => r.last_us.zip(r.first_us).map(|(last, first)| last.wrapping_sub(first)),
+                    _ => Some(0x454e_4421),
+                };
+                let mut line = *b"RP1CFG key=0x00000000 valid=0x00000000 value=0x00000000\r\n";
+                for (start, value) in [(13, key as u32), (30, u32::from(word.is_some())),
+                    (47, word.unwrap_or(0))] {
+                    for (index, byte) in line[start..start + 8].iter_mut().enumerate() {
+                        *byte = b"0123456789abcdef"[((value >> (28 - 4 * index)) & 15) as usize];
+                    }
+                }
+                emit(&line);
+            }
+            self.reported = true;
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "freertos-endpoint-config-once")]
+#[path = "linux_clk_uart_ownership.rs"]
+mod linux_clk_uart_ownership;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +345,7 @@ mod tests {
         now: u32, writes: usize, fail_writes: Vec<usize>, apply_failed: bool,
         reset_after: Option<usize>, timeout_after: Option<usize>,
         ignore_write: Option<usize>, fail_read: Option<usize>, drift_at: Option<usize>,
+        fail_restore: bool,
     }
 
     impl Bus {
@@ -255,7 +356,7 @@ mod tests {
                 (DBI + 0x10, 0), (DBI + 0x14, 0), (DBI + 0x18, 0)].into(),
                 shadow: [0; 3], trace: Vec::new(), mask, now: 1100, writes: 0,
                 fail_writes: Vec::new(), apply_failed: true, reset_after: None,
-                timeout_after: None, ignore_write: None, fail_read: None, drift_at: None }
+                timeout_after: None, ignore_write: None, fail_read: None, drift_at: None, fail_restore: false }
         }
 
         fn io(&mut self, op: Op) -> Result<u32, ()> {
@@ -267,7 +368,7 @@ mod tests {
             }
             match op {
                 Op::Mask => unreachable!(),
-                Op::Restore(saved) => { self.mask = saved; Ok(saved) }
+                Op::Restore(saved) => { self.mask = saved; if self.fail_restore { Err(()) } else { Ok(saved) } }
                 Op::Clock => Ok(self.now),
                 Op::Read(address) => {
                     if (DBI..DBI + 0x1000).contains(&address) {
@@ -502,5 +603,130 @@ mod tests {
         assert_eq!((r.status, r.writes_attempted, bus.writes), (Status::Deadline, 0, 0));
         assert_eq!(r.cleanup, Cleanup::NotNeeded);
         assert!(r.mask_restored);
+    }
+
+    #[cfg(feature = "freertos-endpoint-config-once")]
+    mod integrated {
+        use super::*;
+        use std::cell::{Cell, RefCell};
+        use crate::linux_clk_uart_ownership::{DbiMonitor, endpoint_gate::{Gate, sample}};
+        use commissioning::Once;
+
+        fn observe(once: &mut Once, gate: &mut Gate, monitor: &mut DbiMonitor,
+            bus: &RefCell<Bus>, at: u32, hooks: &Cell<usize>) -> Vec<Vec<u8>> {
+            let mut lines = Vec::new();
+            sample(monitor, gate, u64::from(at), |address| {
+                *bus.borrow().regs.get(&address).unwrap_or(&0)
+            }, || at, |line| {
+                if line.starts_with(b"RP1GATE code=0x00000001 ") {
+                    assert!(hooks.get() > 0, "candidate callback precedes ALL candidate UART");
+                    assert!(bus.borrow().trace.last().is_some_and(|op| matches!(op, Op::Restore(_))));
+                }
+                lines.push(line.to_vec());
+            }, |low, budget| {
+                hooks.set(hooks.get() + 1);
+                unsafe { once.candidate_with(low, budget, |txn, w| txn.run(w, |op| bus.borrow_mut().io(op))) }
+            });
+            lines
+        }
+
+        #[test]
+        fn actual_candidate_hook_before_uart_preserves_original_sample_and_lifetime() {
+            let mut once = Once::new(); let mut gate = Gate::new(0); let mut monitor = DbiMonitor::new();
+            let bus = RefCell::new(Bus::new(0)); let hooks = Cell::new(0);
+            observe(&mut once, &mut gate, &mut monitor, &bus, 50, &hooks); // initial high
+            assert!(once.pending().is_none()); assert_eq!(hooks.get(), 0);
+            bus.borrow_mut().regs.insert(MONITOR2, 0);
+            observe(&mut once, &mut gate, &mut monitor, &bus, 100, &hooks);
+            assert!(once.pending().is_none());
+            bus.borrow_mut().regs.insert(MONITOR2, 0x0007_0020);
+            let lines = observe(&mut once, &mut gate, &mut monitor, &bus, 1100, &hooks);
+            assert_eq!(hooks.get(), 1); assert_eq!(bus.borrow().writes, 11);
+            assert_eq!(once.pending().unwrap().status, Status::Complete);
+            assert!(lines[0].starts_with(b"RP1GATE code=0x00000001 "));
+            assert!(std::str::from_utf8(&lines[0]).unwrap().contains("low=0x00000064"));
+            assert!(std::str::from_utf8(&lines[1]).unwrap().contains("classrev=0x00000002"));
+            assert_eq!(bus.borrow().regs[&(DBI + 8)], 0x0200_0000); // Packet used ORIGINAL sample.
+            let mut packet = Vec::new();
+            once.finish(|line| packet.push(line.to_vec()), |_| panic!("complete must not stop"));
+            assert_eq!(packet.len(), 33);
+            let mut values = Vec::new();
+            for (key, line) in packet.iter().enumerate() {
+                assert_eq!(line.len(), 57);
+                let decode = |start| u32::from_str_radix(std::str::from_utf8(&line[start..start + 8]).unwrap(), 16).unwrap();
+                assert_eq!((decode(13), decode(30)), (key as u32, 1));
+                values.push(decode(47));
+            }
+            assert_eq!((values[0], values[1], values[7], values[26], values[27], values[32]),
+                (1, Status::Complete as u32, 100, 0x7ff, 0x7ff, 0x454e_4421));
+            once.finish(|_| panic!("no duplicate receipt"), |_| panic!("no duplicate stop"));
+            for at in [2100, u32::MAX, 0] {
+                observe(&mut once, &mut gate, &mut monitor, &bus, at, &hooks);
+            }
+            assert_eq!(hooks.get(), 1); assert_eq!(bus.borrow().writes, 11);
+            assert!(!unsafe { once.candidate_with(0, 5000, |_, _| panic!("must retain first receipt")) });
+        }
+
+        #[test]
+        fn actual_hook_uses_original_low_deadline_and_rejects_bad_candidates() {
+            for low in [100u32, u32::MAX - 100] {
+                for expired in [false, true] {
+                    let mut once = Once::new(); let mut gate = Gate::new(low.wrapping_sub(1));
+                    let mut monitor = DbiMonitor::new(); let hooks = Cell::new(0);
+                    let mut model = Bus::new(0); model.regs.insert(MONITOR2, 0);
+                    model.now = low.wrapping_add(if expired { 5000 } else { 4999 });
+                    let bus = RefCell::new(model);
+                    observe(&mut once, &mut gate, &mut monitor, &bus, low, &hooks);
+                    bus.borrow_mut().regs.insert(MONITOR2, 0x0007_0020);
+                    observe(&mut once, &mut gate, &mut monitor, &bus, low.wrapping_add(1000), &hooks);
+                    let r = once.pending().unwrap();
+                    assert_eq!(r.status, if expired { Status::Deadline } else { Status::Complete });
+                    assert_eq!(bus.borrow().writes, if expired { 0 } else { 11 });
+                    assert_eq!(r.first_us, Some(low.wrapping_add(if expired { 5000 } else { 4999 })));
+                    assert_eq!(hooks.get(), 1);
+                }
+            }
+            for bad in 0..2 {
+                let mut once = Once::new(); let mut gate = Gate::new(0); let mut monitor = DbiMonitor::new();
+                let bus = RefCell::new(Bus::new(0)); let hooks = Cell::new(0);
+                bus.borrow_mut().regs.insert(MONITOR2, 0);
+                observe(&mut once, &mut gate, &mut monitor, &bus, 100, &hooks);
+                bus.borrow_mut().regs.insert(MONITOR2, 0x0007_0020);
+                if bad == 1 { bus.borrow_mut().regs.insert(DBI + 8, 0xdead); }
+                observe(&mut once, &mut gate, &mut monitor, &bus, if bad == 0 { 2601 } else { 1100 }, &hooks);
+                assert_eq!(hooks.get(), 0); assert!(once.pending().is_none());
+                bus.borrow_mut().regs.insert(DBI + 8, 2);
+                observe(&mut once, &mut gate, &mut monitor, &bus, 1200, &hooks);
+                assert_eq!(hooks.get(), 0); assert_eq!(bus.borrow().writes, 0);
+            }
+            let mut once = Once::new(); let mut bus = Bus::new(0);
+            assert!(!unsafe { once.candidate_with(100, 5001, |txn, w| txn.run(w, |op| bus.io(op))) });
+            assert_eq!(once.pending().unwrap().status, Status::Disabled); assert!(bus.trace.is_empty());
+        }
+
+        #[test]
+        fn actual_partial_and_mask_failures_stop_without_unsafe_output_or_retry() {
+            for mode in 0..3 {
+                let mut once = Once::new(); let mut gate = Gate::new(0); let mut monitor = DbiMonitor::new();
+                let mut model = Bus::new(if mode == 2 { 1 } else { 0 });
+                if mode == 0 { model.fail_writes = vec![1]; }
+                if mode == 1 { model.fail_restore = true; }
+                model.regs.insert(MONITOR2, 0);
+                let bus = RefCell::new(model); let hooks = Cell::new(0);
+                observe(&mut once, &mut gate, &mut monitor, &bus, 100, &hooks);
+                bus.borrow_mut().regs.insert(MONITOR2, 0x0007_0020);
+                let lines = observe(&mut once, &mut gate, &mut monitor, &bus, 1100, &hooks);
+                assert_eq!(lines.len(), if mode == 0 { 2 } else { 0 });
+                let events = RefCell::new(Vec::new());
+                once.finish(|_| events.borrow_mut().push("emit"), |_| events.borrow_mut().push("stop"));
+                let events = events.into_inner();
+                assert_eq!(events.len(), if mode == 0 { 34 } else { 1 });
+                assert_eq!(events.last(), Some(&"stop"));
+                let writes = bus.borrow().writes;
+                once.finish(|_| panic!("no retry"), |_| panic!("no repeated stop"));
+                assert!(!unsafe { once.candidate_with(100, 5000, |_, _| panic!("no second transaction")) });
+                assert_eq!(bus.borrow().writes, writes);
+            }
+        }
     }
 }
