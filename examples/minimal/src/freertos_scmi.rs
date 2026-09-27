@@ -34,6 +34,18 @@ fn write(a: usize, v: u32) { unsafe { (a as *mut u32).write_volatile(v) } }
 fn barrier() { unsafe { core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags)); } }
 fn mask() { write(0xe000_e184, BIT); barrier(); }
 
+/// Passive task observation only. Does not ACK, service, enable or pend an IRQ.
+#[cfg(feature = "freertos-endpoint-config-once")]
+pub fn irq_observation() -> [u32; 10] {
+    let primask: u32; let basepri: u32;
+    unsafe { core::arch::asm!("mrs {}, PRIMASK", "mrs {}, BASEPRI",
+        out(reg) primask, out(reg) basepri, options(nomem, nostack)); }
+    let shared = scmi_mailbox::shared_address() as usize;
+    [read(0x4000_8008), read(shared + 4), read(shared + 24),
+        read(0xe000_e104), read(0xe000_e204), read(0xe000_e304),
+        primask, basepri, read(shared + 16), read(shared + 20)]
+}
+
 /// # Safety
 /// Sole proc0 cold startup, before Linux and scheduler, PRIMASK=1. IRQ57 must
 /// not belong to another service. No restart or live-channel reinitialization.
