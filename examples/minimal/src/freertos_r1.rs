@@ -404,8 +404,6 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
         (true, unsafe { os::tick().unwrap() }, endpoint_start);
     #[cfg(feature = "freertos-endpoint-uart")]
     let mut endpoint_gate = crate::linux_clk_uart_ownership::endpoint_gate::Gate::new(endpoint_start); #[cfg(feature = "freertos-endpoint-config-once")] let mut endpoint_config = crate::endpoint_config::commissioning::Once::new();
-    #[cfg(feature = "freertos-endpoint-config-once")]
-    let mut scmi_last = [u32::MAX; 3];
     let (ipsr, control, psp, msp): (u32, u32, u32, u32);
     unsafe {
         core::arch::asm!("mrs {0}, IPSR", "mrs {1}, CONTROL", "mrs {2}, PSP", "mrs {3}, MSP",
@@ -464,8 +462,6 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
                         increment(if endpoint_line(&mut endpoint_uart, line) { 60 } else { 61 });
                     }, #[cfg(feature = "freertos-endpoint-config-once")] |low, budget| unsafe { endpoint_config.candidate(low, budget) }); #[cfg(feature = "freertos-endpoint-config-once")] endpoint_config_finish(&mut endpoint_config, &mut endpoint_uart);
             });
-            #[cfg(feature = "freertos-endpoint-config-once")]
-            if endpoint_config.safe_to_report() { endpoint_scmi_diagnostic(&mut scmi_last, &mut endpoint_uart); }
             put(63, u32::from_le_bytes(*b"EP01")); // plain-R1-only diagnostic words
         }
         #[cfg(feature = "freertos-r2-mixed-repeat")]
@@ -1083,21 +1079,4 @@ fn endpoint_config_finish(once: &mut crate::endpoint_config::commissioning::Once
         }
         rp1_freertos_fault_hook(if mask_fault { 0x4346_474d } else { 0x4346_4746 }, r.status as u32);
     });
-}
-
-#[cfg(feature = "freertos-endpoint-config-once")]
-#[inline(never)]
-fn endpoint_scmi_diagnostic(last: &mut [u32; 3], uart: &mut rp1_hal::uart::Uart0Tx) {
-    let words = scmi::irq_observation();
-    if words[..3] == last[..] { return; }
-    last.copy_from_slice(&words[..3]);
-    for (key, value) in words.into_iter().enumerate() {
-        let mut line = *b"SCMIDIAG key=0x00000000 value=0x00000000\r\n";
-        for (start, v) in [(15, key as u32), (32, value)] {
-            for (index, byte) in line[start..start+8].iter_mut().enumerate() {
-                *byte = b"0123456789abcdef"[((v >> (28-4*index)) & 15) as usize];
-            }
-        }
-        increment(if endpoint_line(uart, &line) { 60 } else { 61 });
-    }
 }
