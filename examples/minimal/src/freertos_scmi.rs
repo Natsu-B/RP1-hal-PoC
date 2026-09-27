@@ -67,6 +67,8 @@ pub unsafe fn prepare() -> Result<(), &'static str> {
             return Err("physical clock mismatch");
         }
     }
+    #[cfg(feature = "freertos-endpoint-config-once")]
+    crate::scmi_cold_clock::release_syscfg()?;
     let server = Server::new(CLOCKS, false).map_err(|_| "profile")?;
     let shared = scmi_mailbox::shared_address();
     let mut io = unsafe { Rp1Mailbox::new(shared) }.ok_or("SRAM")?;

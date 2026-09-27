@@ -43,6 +43,9 @@ if [[ "$cargo_feature" == freertos-endpoint-uart || "$cargo_feature" == freertos
 fi
 if [[ "$cargo_feature" == freertos-endpoint-config-once ]]; then
     rustc +stable --edition=2024 -C strip=debuginfo --test \
+        examples/minimal/src/scmi_cold_clock.rs -o "$out/scmi-cold-test"
+    "$out/scmi-cold-test" > "$out/scmi-cold-host-test.txt"
+    rustc +stable --edition=2024 -C strip=debuginfo --test \
         --cfg 'feature="freertos-endpoint-uart"' \
         --cfg 'feature="freertos-endpoint-config-once"' \
         examples/minimal/src/endpoint_config.rs -o "$out/endpoint-config-test"
