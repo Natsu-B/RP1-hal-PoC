@@ -1,7 +1,7 @@
 /* Generated policy definitions; transport placement is separate. */
 / {
     rp1_clock_profile {
-        profile-sha256 = "083b92cf455528961952ff0aee24a0d292601fd5471a4b04ab40c66b9003517f";
+        profile-sha256 = "bf852245517b3c9e5530750c98e224c9983837e9bfdc3ff67ff4aa2e3bc1b60c";
     };
     rp1_fixed_uart: rp1-fixed-uart {
         compatible = "fixed-clock";

@@ -156,7 +156,7 @@ mod tests {
         fn enable(&mut self, _: u32, _: bool) -> Result<(), Error> { panic!("read-only test must not write") }
     }
     fn fake() -> Fake {
-        let mut f = Fake { words: [0; WORDS], events: MASK | 1, log: std::vec::Vec::new() };
+        let mut f = Fake { words: [0; WORDS], events: MASK | (1 << ((MAILBOX_CHANNEL + 1) % 4)), log: std::vec::Vec::new() };
         f.words[FLAGS] = 1; f.words[LENGTH] = 8;
         f.words[HEADER] = (0x3ff << 18) | (0x14 << 10) | 6;
         f
@@ -165,7 +165,7 @@ mod tests {
         let mut f = fake(); let header = f.words[HEADER];
         let mut s = Server::new(CLOCKS, false).unwrap(); let mut c = Counters::default();
         assert!(service_irq(&mut s, &mut Hw, &mut f, &mut c));
-        assert_eq!(f.events, 1);
+        assert_eq!(f.events, 1 << ((MAILBOX_CHANNEL + 1) % 4));
         assert_eq!(f.words[HEADER], header);
         assert_eq!(f.words[PAYLOAD..PAYLOAD+3], [0, 100_000_000, 0]);
         assert_eq!(f.words[LENGTH], 16);
@@ -177,7 +177,7 @@ mod tests {
         let mut s = Server::new(CLOCKS, false).unwrap(); let mut c = Counters::default();
         assert!(!service_irq(&mut s, &mut Hw, &mut f, &mut c));
         assert!(!service_irq(&mut s, &mut Hw, &mut f, &mut c));
-        assert_eq!(c.responses, 0); assert_eq!(f.events, 1);
+        assert_eq!(c.responses, 0); assert_eq!(f.events, 1 << ((MAILBOX_CHANNEL + 1) % 4));
     }
     #[test] fn malformed_length_is_bounded_and_reported() {
         for len in [0, 3, 5, 24, 232, u32::MAX] {

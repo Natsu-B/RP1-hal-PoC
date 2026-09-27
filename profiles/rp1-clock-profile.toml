@@ -2,7 +2,7 @@
 # Never program a PLL from this file. Admission also requires physical readback.
 schema = 1
 name = "proc0-linux-standard-v1"
-mailbox_channel = 1
+mailbox_channel = 0
 firmware_pins = [2, 3, 8, 9, 10, 11, 14, 15]
 firmware_nodes = ["serial@30000", "spi@50000", "i2c@74000"]
 

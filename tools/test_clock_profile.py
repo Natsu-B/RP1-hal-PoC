@@ -27,7 +27,7 @@ class CandidateTests(unittest.TestCase):
  };
  firmware {
   rp1_scmi: scmi { compatible = "arm,scmi"; #address-cells = <1>; #size-cells = <0>;
-   mboxes = <&mbox 1>; shmem = <&scmi_mem>;
+   mboxes = <&mbox 0>; shmem = <&scmi_mem>;
   };
  };
  rp1 { compatible = "simple-bus"; #address-cells = <2>; #size-cells = <2>; ranges;
@@ -201,7 +201,7 @@ SECTIONS {
         self.bad('&rp1_scmi { mboxes = <&mbox 2>; };', 'one bidirectional mailbox')
 
     def test_channel_reuse(self):
-        self.bad('/ { another-client { mboxes = <&mbox 1>; }; };', 'mailbox channel also owned')
+        self.bad('/ { another-client { mboxes = <&mbox 0>; }; };', 'mailbox channel also owned')
 
     def test_gpio_consumer_firmware_pin(self):
         self.bad('/ { sensor { reset-gpios = <&rp1_gpio 14 0>; }; };', 'firmware pins')
