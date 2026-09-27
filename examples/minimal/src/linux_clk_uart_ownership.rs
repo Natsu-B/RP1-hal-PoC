@@ -513,7 +513,7 @@ fn encode_hex_u64(out: &mut [u8], offset: usize, value: u64) {
     }
 }
 
-fn heartbeat_line(sequence: u32, ctrl: u32, off_periods: u32) -> [u8; HEARTBEAT_TEMPLATE.len()] {
+pub(crate) fn heartbeat_line(sequence: u32, ctrl: u32, off_periods: u32) -> [u8; HEARTBEAT_TEMPLATE.len()] {
     let mut line = HEARTBEAT_TEMPLATE;
     encode_hex_u32(&mut line, 13, sequence);
     encode_hex_u32(&mut line, 29, ctrl);

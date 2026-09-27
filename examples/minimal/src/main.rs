@@ -10684,6 +10684,11 @@ fn main(mut p: Peripherals) -> ! {
                 freertos_r1::set_endpoint_uart(p.uart0
                     .init_uart_with_existing_clock(50_000_000, false)
                     .expect("endpoint observer UART clock mismatch"));
+                // PL011 AXI has no reset-control hook. Release only UART1 before
+                // Linux owns its registers/pins; retain the shared clock tuple.
+                #[cfg(feature = "freertos-endpoint-config-once")]
+                p.resets.deassert_uart_clock_ready(rp1_hal::reset::UartReset::Uart1, 100_000)
+                    .expect("Linux UART1 reset release failed");
                 freertos_r1::run(gpio22);
             }
             #[cfg(all(

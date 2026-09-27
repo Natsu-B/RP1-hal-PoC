@@ -402,6 +402,8 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     #[cfg(feature = "freertos-endpoint-uart")]
     let (mut endpoint_fast, endpoint_epoch, mut endpoint_last_sample) =
         (true, unsafe { os::tick().unwrap() }, endpoint_start);
+    #[cfg(feature = "freertos-endpoint-config-once")]
+    let (mut heartbeat_tick, mut heartbeat_seq, mut heartbeat_off) = (endpoint_epoch, 0u32, 0u32);
     #[cfg(feature = "freertos-endpoint-uart")]
     let mut endpoint_gate = crate::linux_clk_uart_ownership::endpoint_gate::Gate::new(endpoint_start); #[cfg(feature = "freertos-endpoint-config-once")] let mut endpoint_config = crate::endpoint_config::commissioning::Once::new();
     let (ipsr, control, psp, msp): (u32, u32, u32, u32);
@@ -461,6 +463,19 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
                     |address| unsafe { (address as *const u32).read_volatile() }, raw_low, |line| {
                         increment(if endpoint_line(&mut endpoint_uart, line) { 60 } else { 61 });
                     }, #[cfg(feature = "freertos-endpoint-config-once")] |low, budget| unsafe { endpoint_config.candidate(low, budget) }); #[cfg(feature = "freertos-endpoint-config-once")] endpoint_config_finish(&mut endpoint_config, &mut endpoint_uart);
+                #[cfg(feature = "freertos-endpoint-config-once")]
+                {
+                    let tick = unsafe { os::tick().unwrap() };
+                    // No extra UART latency during the one-shot endpoint window.
+                    if endpoint_config.safe_to_report() && tick.wrapping_sub(heartbeat_tick) >= 1000 {
+                        heartbeat_tick = tick;
+                        heartbeat_seq = heartbeat_seq.wrapping_add(1);
+                        let ctrl = unsafe { (0x4001_8054 as *const u32).read_volatile() };
+                        heartbeat_off += u32::from(ctrl & 0x800 == 0);
+                        let line = crate::linux_clk_uart_ownership::heartbeat_line(heartbeat_seq, ctrl, heartbeat_off);
+                        if !endpoint_line(&mut endpoint_uart, &line) { increment(61); }
+                    }
+                }
             });
             put(63, u32::from_le_bytes(*b"EP01")); // plain-R1-only diagnostic words
         }
