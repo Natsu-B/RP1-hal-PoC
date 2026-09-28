@@ -5,6 +5,8 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 cargo_feature=$feature
+if [[ "$feature" == freertos-timesync ]]; then feature=freertos-endpoint-config-once; fi
+check_feature=$feature
 scmi=0
 case "$feature" in
     freertos-scmi-readonly|freertos-endpoint-uart|freertos-endpoint-config-once) feature=freertos-r1; scmi=1 ;;
@@ -34,14 +36,14 @@ case "$feature" in freertos-r3-watchdog-warm-guard|freertos-r3-watchdog-kernel-r
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
-if [[ "$cargo_feature" == freertos-endpoint-uart || "$cargo_feature" == freertos-endpoint-config-once ]]; then
+if [[ "$check_feature" == freertos-endpoint-uart || "$check_feature" == freertos-endpoint-config-once ]]; then
     rustc +stable --edition=2024 -C strip=debuginfo --test \
         --cfg 'feature="freertos-endpoint-uart"' \
         examples/minimal/src/linux_clk_uart_ownership.rs -o "$out/endpoint-test"
     "$out/endpoint-test" > "$out/endpoint-host-test.txt"
     python3 -B tools/check-endpoint-uart.py --self-test > "$out/endpoint-parser-test.txt"
 fi
-if [[ "$cargo_feature" == freertos-endpoint-config-once ]]; then
+if [[ "$check_feature" == freertos-endpoint-config-once ]]; then
     rustc +stable --edition=2024 -C strip=debuginfo --test \
         examples/minimal/src/scmi_cold_clock.rs -o "$out/scmi-cold-test"
     "$out/scmi-cold-test" > "$out/scmi-cold-host-test.txt"
@@ -66,12 +68,12 @@ if [[ "$feature" == freertos-r2-spi-lifecycle || "$feature" == freertos-r2-spi-c
 else
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 fi
-if [[ "$cargo_feature" == freertos-endpoint-uart || "$cargo_feature" == freertos-endpoint-config-once ]]; then
+if [[ "$check_feature" == freertos-endpoint-uart || "$check_feature" == freertos-endpoint-config-once ]]; then
     # The read-only edge classifier/formatters must fit the unchanged SRAM/MSP.
     # Scope Oz to this diagnostic; normal R1/R2/SCMI optimization is unchanged.
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=z
 fi
-if [[ "$cargo_feature" == freertos-endpoint-config-once ]]; then
+if [[ "$check_feature" == freertos-endpoint-config-once ]]; then
     # Fit the added transaction/receipt inside the unchanged SRAM and task pool.
     export CARGO_PROFILE_RELEASE_LTO=fat
 fi

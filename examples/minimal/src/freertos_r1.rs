@@ -103,6 +103,9 @@ pub mod uart;
 #[cfg(feature = "freertos-scmi-readonly")]
 #[path = "freertos_scmi.rs"]
 mod scmi;
+#[cfg(feature = "freertos-timesync")]
+#[path = "timesync.rs"]
+mod timesync;
 #[cfg(all(feature = "freertos-scmi-readonly", feature = "freertos-r3-watchdog-kernel-restart"))]
 compile_error!("SCMI cold-only commissioning requires a separate Linux-quiesced restart contract");
 
@@ -244,6 +247,8 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
     let hz = calibrate_cpu_hz(); put(5, hz); put(2, 2);
     #[cfg(feature = "freertos-scmi-readonly")]
     unsafe { scmi::prepare().expect("SCMI readonly cold admission failed"); }
+    #[cfg(feature = "freertos-timesync")]
+    unsafe { timesync::prepare(); }
     unsafe {
         // A valid unused slot isolates the capacity guard from slot/occupied errors.
         assert!(U32Queue::create(0, 0).is_err());
@@ -1006,6 +1011,8 @@ unsafe extern "C" fn producer(_: *mut c_void) {
         assert!(sem.give().unwrap());
         task(3).notification_give().unwrap();
         put(48, sequence);
+        #[cfg(feature = "freertos-timesync")]
+        unsafe { timesync::service(); }
         os::delay(5).unwrap();
     } }
 }
