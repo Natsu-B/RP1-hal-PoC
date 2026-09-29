@@ -16,6 +16,7 @@ pub mod i2c_rx_irq_adapter;
 pub mod mailbox;
 pub mod mmio;
 pub mod owner;
+pub mod pcie_outbound;
 pub mod peripherals;
 pub mod prelude;
 pub mod pwm;

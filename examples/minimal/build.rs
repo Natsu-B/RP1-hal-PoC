@@ -3,7 +3,7 @@ fn main() {
         // Exact local closure only. Dependency feature unions still need sealed-build review.
         const ALLOWED: &[&str] = &["BAR2_READONLY_HANDSHAKE", "DEBUG_MAILBOX_LAYOUT",
             "DEBUG_STACK_LOW", "ENDPOINT_CLOCK_ONLY", "ENDPOINT_CONFIG_FOUNDATION",
-            "FREERTOS_ENDPOINT_CONFIG_ONCE", "FREERTOS_ENDPOINT_UART", "FREERTOS_R1", "FREERTOS_TIMESYNC",
+            "FREERTOS_ENDPOINT_CONFIG_ONCE", "FREERTOS_ENDPOINT_UART", "FREERTOS_R1", "FREERTOS_TIMESYNC", "FREERTOS_DDR",
             "FREERTOS_SCMI_READONLY", "PLL_SYS_CORE_LOCK_ONLY", "STATE3_COMPOSITE_BOUNDARY",
             "STATE5_COMPOSITE_BOUNDARY", "UART0_FUNCTIONAL_CLOCK_BEFORE_RESET_DONE", "UART0_RESET_ONLY"];
         for (name, _) in std::env::vars_os() {
@@ -23,6 +23,11 @@ fn main() {
             std::fs::write(&path, "SECTIONS { .timesync 0x2000d900 (NOLOAD) : { KEEP(*(.timesync)); } > RP1_APP_SRAM } INSERT AFTER .scmi_shmem;\nASSERT(ADDR(.timesync) >= __scmi_shmem_end, \"TimeSync overlaps SCMI\")\nASSERT(SIZEOF(.timesync) == 64, \"TimeSync ABI size\")\nASSERT(ADDR(.timesync) + SIZEOF(.timesync) <= __app_limit, \"TimeSync exceeds SRAM\")\n").unwrap();
             println!("cargo:rustc-link-arg=-T{}", path.display());
         }
+    }
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_DDR").is_some() {
+        let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("ddr.x");
+        std::fs::write(&path, "SECTIONS { .ddr 0x2000d940 (NOLOAD) : { KEEP(*(.ddr)); } > RP1_APP_SRAM } INSERT AFTER .timesync;\nASSERT(SIZEOF(.ddr) == 256, \"DDR record size\")\nASSERT(ADDR(.ddr) + SIZEOF(.ddr) <= __app_limit, \"DDR exceeds SRAM\")\n").unwrap();
+        println!("cargo:rustc-link-arg=-T{}", path.display());
     }
     rp1_build::generate().expect("generate RP1 note");
     if std::env::var_os("CARGO_FEATURE_FREERTOS_R1_CRITICAL_TIMING").is_some() {
