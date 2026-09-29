@@ -254,6 +254,8 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
     unsafe { timesync::prepare(); }
     #[cfg(feature = "freertos-ddr")]
     unsafe { ddr::prepare(); }
+    #[cfg(feature = "freertos-virtio-probe")]
+    unsafe { rp1_hal::virtio_probe::prepare(); }
     unsafe {
         // A valid unused slot isolates the capacity guard from slot/occupied errors.
         assert!(U32Queue::create(0, 0).is_err());
