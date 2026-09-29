@@ -6,6 +6,8 @@ edition = "2024"
 [features]
 default = []
 virtio-probe = []
+openamp = ["rp1-rt/openamp-holdboot"]
+openamp-rpmsg = ["openamp"]
 scmi-clock = ["rp1-rt/scmi-shmem"]
 pcie-ep-init = ["rp1-rt/pcie-ep-init"]
 debug-stack-low = ["rp1-rt/debug-stack-low"]

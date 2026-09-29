@@ -3,7 +3,7 @@ fn main() {
         // Exact local closure only. Dependency feature unions still need sealed-build review.
         const ALLOWED: &[&str] = &["BAR2_READONLY_HANDSHAKE", "DEBUG_MAILBOX_LAYOUT",
             "DEBUG_STACK_LOW", "ENDPOINT_CLOCK_ONLY", "ENDPOINT_CONFIG_FOUNDATION",
-            "FREERTOS_ENDPOINT_CONFIG_ONCE", "FREERTOS_ENDPOINT_UART", "FREERTOS_R1", "FREERTOS_TIMESYNC", "FREERTOS_DDR", "FREERTOS_VIRTIO_PROBE",
+            "FREERTOS_ENDPOINT_CONFIG_ONCE", "FREERTOS_ENDPOINT_UART", "FREERTOS_R1", "FREERTOS_TIMESYNC", "FREERTOS_DDR", "FREERTOS_VIRTIO_PROBE", "FREERTOS_OPENAMP", "FREERTOS_OPENAMP_RPMSG",
             "FREERTOS_SCMI_READONLY", "PLL_SYS_CORE_LOCK_ONLY", "STATE3_COMPOSITE_BOUNDARY",
             "STATE5_COMPOSITE_BOUNDARY", "UART0_FUNCTIONAL_CLOCK_BEFORE_RESET_DONE", "UART0_RESET_ONLY"];
         for (name, _) in std::env::vars_os() {
@@ -45,6 +45,27 @@ ASSERT(ADDR(.virtio_mmio) >= ADDR(.ddr) + SIZEOF(.ddr), "VirtIO overlaps DDR RPC
 ASSERT(ADDR(.openamp_telemetry) >= ADDR(.virtio_mmio) + SIZEOF(.virtio_mmio), "VirtIO overlaps telemetry")
 ASSERT(ADDR(.openamp_telemetry) + SIZEOF(.openamp_telemetry) <= __app_limit, "OpenAMP overlaps reserved SRAM/MSP")
 ASSERT(__app_limit <= _stack_start - 4096, "OpenAMP MSP separation")
+"#).unwrap();
+        println!("cargo:rustc-link-arg=-T{}", path.display());
+    }
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_OPENAMP").is_some() {
+        assert!(std::env::var_os("CARGO_FEATURE_FREERTOS_VIRTIO_PROBE").is_none());
+        let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("openamp.x");
+        std::fs::write(&path, r#"
+SECTIONS {
+ .openamp_control 0x2000da40 (NOLOAD) : { KEEP(*(.openamp_control)); } > RP1_APP_SRAM
+ .openamp_telemetry 0x2000da80 (NOLOAD) : { KEEP(*(.openamp_telemetry)); } > RP1_APP_SRAM
+ .openamp_state 0x2000db80 (NOLOAD) : { KEEP(*(.openamp_state)); } > RP1_APP_SRAM
+} INSERT AFTER .ddr;
+ASSERT(SIZEOF(.openamp_control) == 64, "OpenAMP control ABI")
+ASSERT(SIZEOF(.openamp_telemetry) == 256, "OpenAMP telemetry ABI")
+ASSERT(ADDR(.openamp_control) >= __ebss, "OpenAMP overlaps BSS/tasks")
+ASSERT(ADDR(.openamp_control) >= __scmi_shmem_end, "OpenAMP overlaps SCMI")
+ASSERT(ADDR(.openamp_control) >= ADDR(.timesync) + SIZEOF(.timesync), "OpenAMP overlaps TimeSync")
+ASSERT(ADDR(.openamp_control) >= ADDR(.ddr) + SIZEOF(.ddr), "OpenAMP overlaps DDR RPC")
+ASSERT(ADDR(.openamp_state) >= ADDR(.openamp_telemetry) + SIZEOF(.openamp_telemetry), "OpenAMP state overlaps telemetry")
+ASSERT(ADDR(.openamp_state) + SIZEOF(.openamp_state) <= __app_limit, "OpenAMP exceeds app SRAM")
+ASSERT(__app_limit <= _stack_start - 4096, "OpenAMP overlaps MSP")
 "#).unwrap();
         println!("cargo:rustc-link-arg=-T{}", path.display());
     }

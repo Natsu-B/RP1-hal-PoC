@@ -5,6 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [features]
+openamp-holdboot = []
 default = []
 freertos = []
 scmi-shmem = ["freertos"]

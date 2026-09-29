@@ -54,6 +54,16 @@ pub unsafe extern "C" fn Reset() {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn rp1_freertos_reset() -> ! {
+    // The attach provider holds this latch low while Linux owns live queues.
+    // It prevents autonomous re-entry from clearing BSS or reusing descriptors.
+    // The loader's cold segment initialization clears the NOLOAD magic.
+    #[cfg(feature = "openamp-holdboot")]
+    unsafe {
+        while (0x2000_da58 as *const u32).read_volatile() == 0x3150_4d41
+            && (0x2000_da40 as *const u32).read_volatile() & 1 == 0 {
+            core::arch::asm!("nop", options(nomem, nostack));
+        }
+    }
     #[cfg(feature = "freertos-reset-entry")]
     let reentered = unsafe { rp1_freertos_capture_reset_entry() };
     #[cfg(feature = "freertos-warm-data")]

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 
@@ -23,6 +24,7 @@ def sha(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("out", type=Path, help="new absolute build directory")
+    parser.add_argument("--rp1", action="store_true", help="use single-owner mutex and ordering/cache hooks")
     parser.add_argument("--lock", type=Path, default=Path(os.environ.get(
         "CM5_HACK_ROOT", "/opt/rpi-cm5-hack")) / "tools/openamp-lock.json")
     args = parser.parse_args()
@@ -63,6 +65,10 @@ def main():
             if name == "openamp":
                 options.update(LIBMETAL_INCLUDE_DIR=str(prefix / "include"),
                                LIBMETAL_LIB=str(prefix / "lib/libmetal.a"))
+                if args.rp1:
+                    shutil.copyfile(repo/'openamp/metal-mutex.h', prefix/'include/metal/system/generic/mutex.h')
+                    shutil.copyfile(repo/'openamp/metal-sleep.h', prefix/'include/metal/system/generic/sleep.h')
+                    options['WITH_DCACHE'] = True
             configured[name] = options
             run(["cmake", "-S", item["checkout"], "-B", str(build), "-G", "Ninja",
                  f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
@@ -82,6 +88,8 @@ def main():
         "builder_sha256": sha(Path(__file__)),
         "source_commits": {n: lock[n]["commit"] for n in ("libmetal", "openamp")},
         "effective_build_options": configured,
+        "rp1_port": args.rp1,
+        "mutex_header_sha256": sha(repo/'openamp/metal-mutex.h') if args.rp1 else None,
         "archives": {},
         "required_before_firmware_link": [
             "Replace Generic/template no-op IRQ/cache/sleep/time hooks with qualified RP1 hooks",

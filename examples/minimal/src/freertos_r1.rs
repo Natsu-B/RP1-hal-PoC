@@ -115,7 +115,7 @@ compile_error!("SCMI cold-only commissioning requires a separate Linux-quiesced 
 const TELEMETRY: *mut u32 = 0x2000_f800 as *mut u32;
 static mut DATA_SENTINEL: u32 = 0x1357_9bdf;
 static mut BSS_SENTINEL: u32 = 0;
-const TASK_COUNT: usize = if cfg!(any(feature = "freertos-r3-watchdog-arm-receipt", feature = "freertos-r3-proc1-worker", feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")) { 8 } else { 7 };
+const TASK_COUNT: usize = if cfg!(any(feature = "freertos-openamp-rpmsg", feature = "freertos-r3-watchdog-arm-receipt", feature = "freertos-r3-proc1-worker", feature = "freertos-r1-timer-irq", feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed")) { 8 } else { 7 };
 static mut TASKS: [Option<Task>; TASK_COUNT] = [None; TASK_COUNT];
 static mut QUEUE: Option<U32Queue> = None;
 static mut CHECK_QUEUE: Option<U32Queue> = None;
@@ -125,7 +125,7 @@ static mut MUTEX: Option<Mutex> = None;
 static mut MARKER: Option<ConfiguredPin<22, Output>> = None;
 
 #[cfg(feature = "freertos-endpoint-uart")]
-const _: () = assert!(TASK_COUNT == 7 && !cfg!(any(
+const _: () = assert!(TASK_COUNT == if cfg!(feature = "freertos-openamp-rpmsg") {8} else {7} && !cfg!(any(
     feature = "freertos-r1-critical-timing", feature = "freertos-r1-local-stack",
     feature = "freertos-r1-fault", feature = "freertos-r1-panic", feature = "freertos-r1-assert",
     feature = "uart0-rx-irq", feature = "rp1-linux-clk-uart-ownership-conflict")),
@@ -256,6 +256,8 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
     unsafe { ddr::prepare(); }
     #[cfg(feature = "freertos-virtio-probe")]
     unsafe { rp1_hal::virtio_probe::prepare(); }
+    #[cfg(feature = "freertos-openamp")]
+    unsafe { rp1_hal::openamp::prepare(timesync::boot_epoch()); }
     unsafe {
         // A valid unused slot isolates the capacity guard from slot/occupied errors.
         assert!(U32Queue::create(0, 0).is_err());
@@ -295,6 +297,13 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
             let arg = match slot { 1 => 0x2000_f900, 2 => 0x2000_f940, _ => 0 };
             let handle = Task::create(slot as u32, name, entry, arg as *mut c_void, priority, words).unwrap();
             ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(slot).write(Some(handle));
+        }
+        #[cfg(feature = "freertos-openamp-rpmsg")]
+        {
+            // DDR reads can span scheduler ticks. Share priority with the R1
+            // low-priority owner so its bounded mutex progress remains fair.
+            let handle = Task::create(7, c"openamp", openamp_worker, ptr::null_mut(), 1, 512).unwrap();
+            ptr::addr_of_mut!(TASKS).cast::<Option<Task>>().add(7).write(Some(handle));
         }
         #[cfg(feature = "freertos-r1-timer-irq")]
         {
@@ -533,6 +542,11 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
                 put(32+slot, task(slot).stack_high_water().unwrap());
                 #[cfg(feature="freertos-r3-watchdog-warm-persistent")]
                 assert!(get(32+slot)>=32);
+            }
+            #[cfg(feature = "freertos-openamp-rpmsg")]
+            {
+                let free=task(7).stack_high_water().unwrap();
+                put(45,free); assert!(free>=32);
             }
             #[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
             if kernel_restart::is_warm() {
@@ -1008,6 +1022,14 @@ unsafe extern "C" fn rp1_rtos_fault_probe() -> ! {
     );
 }
 
+#[cfg(feature = "freertos-openamp-rpmsg")]
+unsafe extern "C" fn openamp_worker(_: *mut c_void) {
+    loop {
+        unsafe { rp1_hal::openamp::service(); }
+        unsafe { os::delay(1).unwrap(); }
+    }
+}
+
 unsafe extern "C" fn producer(_: *mut c_void) {
     let q = unsafe { ptr::addr_of!(QUEUE).read().unwrap() };
     let sem = unsafe { ptr::addr_of!(SEM).read().unwrap() };
@@ -1022,6 +1044,8 @@ unsafe extern "C" fn producer(_: *mut c_void) {
         unsafe { timesync::service(); }
         #[cfg(feature = "freertos-ddr")]
         unsafe { ddr::service(); }
+        #[cfg(all(feature = "freertos-openamp", not(feature = "freertos-openamp-rpmsg")))]
+        unsafe { rp1_hal::openamp::service(); }
         os::delay(5).unwrap();
     } }
 }

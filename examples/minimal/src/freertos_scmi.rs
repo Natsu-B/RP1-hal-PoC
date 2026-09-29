@@ -84,6 +84,8 @@ pub unsafe fn prepare() -> Result<(), &'static str> {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn RP1_SCMI_IRQHandler() {
+    #[cfg(feature = "freertos-openamp")]
+    if rp1_hal::openamp::ack_kicks() & 1 == 0 { return; }
     let start = read(0x400a_c028);
     let ipsr: u32; let primask: u32; let basepri: u32;
     unsafe { core::arch::asm!("mrs {}, IPSR", "mrs {}, PRIMASK", "mrs {}, BASEPRI",
@@ -96,7 +98,8 @@ pub unsafe extern "C" fn RP1_SCMI_IRQHandler() {
     t.proc_events = read(0x4000_8008);
     t.nvic_pending = read(0xe000_e204); t.nvic_active = read(0xe000_e304);
     t.raw_entry_us = start;
-    if ipsr != IPSR || t.proc_events & !(1 << rp1_hal::clock_profile_generated::MAILBOX_CHANNEL) != 0 {
+    let owned = if cfg!(feature = "freertos-openamp") { 0xf } else { 1 << rp1_hal::clock_profile_generated::MAILBOX_CHANNEL };
+    if ipsr != IPSR || t.proc_events & !owned != 0 {
         t.error = 1; t.ready = 0; mask(); // No broad ACK or interrupt storm.
     } else if let Some(state) = unsafe { &mut *ptr::addr_of_mut!(STATE) } {
         t.header = state.io.read(6);

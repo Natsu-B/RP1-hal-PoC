@@ -24,6 +24,8 @@ fn now() -> Option<u64> {
     None
 }
 fn stamp(i: usize, t: u64) { write(i, t as u32); write(i + 1, (t >> 32) as u32); }
+#[cfg(feature = "freertos-openamp")]
+pub fn boot_epoch() -> u64 { u64::from(read(5)) | (u64::from(read(6)) << 32) }
 
 /// Sole cold startup before scheduler/Linux. NOLOAD survives an M3 reset;
 /// ELF reload may clear it, so clients also bind Linux boot ID and boot_raw.

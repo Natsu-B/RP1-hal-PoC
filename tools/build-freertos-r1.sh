@@ -5,7 +5,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 cargo_feature=$feature
-if [[ "$feature" == freertos-timesync || "$feature" == freertos-ddr || "$feature" == freertos-virtio-probe ]]; then feature=freertos-endpoint-config-once; fi
+if [[ "$feature" == freertos-timesync || "$feature" == freertos-ddr || "$feature" == freertos-virtio-probe || "$feature" == freertos-openamp || "$feature" == freertos-openamp-rpmsg ]]; then feature=freertos-endpoint-config-once; fi
 check_feature=$feature
 scmi=0
 case "$feature" in
