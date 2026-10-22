@@ -1,28 +1,31 @@
-//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`).
+//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v2.
 //!
 //! The RP1 Cortex-M3 has no DWT cycle counter (DWT NOCYCCNT=1), so C1's own
 //! SysTick is used as a free-running core-clock down counter with TICKINT=0.
 //! It is only taken when it reads idle (CSR/RVR zero); otherwise every hook is
-//! a no-op and STATE records the refusal. Results live in raw SRAM
-//! 0x2000f600..0x2000f800 (Linux: BAR2 + 0xf600), outside every linked
-//! section, between the MSP top (0x2000f000) and the RTOS record (0x2000f800).
+//! a no-op and STATE records the refusal.
+//!
+//! v2 keeps the per-iteration cost low: every iteration records only its total
+//! (begin..end), lateness and a histogram; the per-section breakdown is taken
+//! on one iteration in SAMPLE_EVERY. On other iterations `mark()` is a flag
+//! test, whose call cost is probed before READY so totals can be corrected.
+//! Results: SRAM 0x2000f700 (64 words) and 0x2000f600 (32 words), outside every
+//! linked section, between the profile code and the RTOS record (0x2000f800).
 const BASE: usize = 0x2000_f700; // 64 published words, Linux BAR2 + 0xf700
-const LOCAL: usize = 0x2000_f600; // C1-private scratch between profile code and results
+const LOCAL: usize = 0x2000_f600; // 32 words: C1 scratch 0..15, published sums 16..31
 const SYST_CSR: usize = 0xe000_e010;
 const SYST_RVR: usize = 0xe000_e014;
 const SYST_CVR: usize = 0xe000_e018;
 const SYST_CALIB: usize = 0xe000_e01c;
-const RAW_HIGH: usize = 0x400a_c024;
 const RAW_LOW: usize = 0x400a_c028;
-const GPIO_STATUS: usize = 0x400e_0000;
 const SHARED_SRAM: usize = 0x2000_ba00; // RP1_AMP_PROC1_STATUS word 0 (read only here)
-const PPB_ISER0: usize = 0xe000_e100;
 const MASK: u32 = 0x00ff_ffff;
+const SAMPLE_EVERY: u32 = 64;
 pub(super) const SEGMENTS: usize = 11;
 
-// Published words (u32). Probes are (min, max) over PROBE_N samples.
+// Published words at BASE (u32). Probes are (min, max) over PROBE_N samples.
 const MAGIC: usize = 0; // "PRF1" written last
-const VERSION: usize = 1;
+const VERSION: usize = 1; // 2
 const STATE: usize = 2; // 1 probing, 2 loop live, 0xbad0 SysTick not idle
 const CSR_BEFORE: usize = 3;
 const RVR_BEFORE: usize = 4;
@@ -32,25 +35,32 @@ const CYCLES_10MS: usize = 7;
 const CYCLES_PER_US: usize = 8;
 const PROBES: usize = 9; // 8 probes x 2 words = 9..24
 const PROBE_N: u32 = 64;
-const ITERATIONS: usize = 25;
-const TOTAL_MAX: usize = 26;
+const ITERATIONS: usize = 25; // every iteration
+const TOTAL_MAX: usize = 26; // every iteration, begin..end
 const SLACK_MIN: usize = 27;
-const OVERRUNS: usize = 28; // iteration work >= 200 us
+const OVERRUNS: usize = 28; // total >= 200 us
 const LATE_MAX_US: usize = 29;
 const LATE_SUM_US: usize = 30;
 const WORST_CYCLE: usize = 31;
 const WORST_LATE_US: usize = 32;
 const LATE_COUNT: usize = 33; // deadline detected >= 1 us late
-const SEG_MAX: usize = 34; // 34..44
-const WORST: usize = 45; // 45..55 breakdown of the slowest iteration
-const HIST: usize = 56; // 56..63 work buckets <10,<20,<40,<80,<120,<160,<200,>=200 us
+const SEG_MAX: usize = 34; // 34..44, sampled iterations only
+const WORST: usize = 45; // 45..55, slowest sampled iteration
+const HIST: usize = 56; // 56..63 totals <10,<20,<40,<80,<120,<160,<200,>=200 us
 const WORDS: usize = 64;
-// C1-private scratch words.
+// LOCAL words: 0..15 C1 scratch, 16..31 published sums.
 const PREV: usize = 0;
 const END: usize = 1;
 const LATE_NOW: usize = 2;
-const SINK: usize = 3;
+const START: usize = 3;
 const SCRATCH: usize = 4; // 4..14
+const SAMPLE: usize = 15; // nonzero while this iteration is sampled
+const SAMPLES: usize = 16;
+const SAMPLED_MAX: usize = 17; // total of the WORST iteration
+const TOTAL_SUM: usize = 18; // every iteration, wrapping
+const SAMPLED_SUM: usize = 19;
+const SEG_SUM: usize = 20; // 20..30
+const LOCAL_WORDS: usize = 32;
 
 #[inline(always)]
 fn read(address: usize) -> u32 { unsafe { (address as *const u32).read_volatile() } }
@@ -59,11 +69,17 @@ fn write(address: usize, value: u32) { unsafe { (address as *mut u32).write_vola
 #[inline(always)]
 fn get(i: usize) -> u32 { read(BASE + 4 * i) }
 #[inline(always)]
+fn put(i: usize, value: u32) { write(BASE + 4 * i, value) }
+#[inline(always)]
 fn lget(i: usize) -> u32 { read(LOCAL + 4 * i) }
 #[inline(always)]
 fn lput(i: usize, value: u32) { write(LOCAL + 4 * i, value) }
 #[inline(always)]
-fn put(i: usize, value: u32) { write(BASE + 4 * i, value) }
+fn ladd(i: usize, value: u32) { lput(i, lget(i).wrapping_add(value)) }
+#[inline(always)]
+fn add(i: usize, value: u32) { put(i, get(i).wrapping_add(value)) }
+#[inline(always)]
+fn raise(i: usize, value: u32) { if value > get(i) { put(i, value); } }
 #[inline(always)]
 fn cycles() -> u32 { read(SYST_CVR) }
 /// SysTick counts down: `earlier - later`, modulo 24 bits.
@@ -74,32 +90,30 @@ fn live() -> bool { get(STATE) == 2 }
 
 #[inline(always)]
 fn measure(slot: usize, f: impl Fn()) {
-    let (mut min, mut max, mut sum) = (u32::MAX, 0u32, 0u32);
+    let (mut min, mut max) = (u32::MAX, 0u32);
     for _ in 0..PROBE_N {
         let a = cycles();
         f();
         let d = elapsed(a, cycles());
         min = min.min(d);
         max = max.max(d);
-        sum = sum.wrapping_add(d);
     }
-    let _ = sum;
     put(slot, min);
     put(slot + 1, max);
 }
 
-/// Runs once on C1 before READY. Bounded: ~10 ms rate check + 8x64 samples.
+/// Runs once on C1 before READY. Bounded: ~10 ms rate check + 5x64 samples.
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 pub(super) fn probe() -> bool {
     for i in 0..WORDS { put(i, 0); }
-    for i in 0..16 { lput(i, 0); }
-    put(VERSION, 1);
+    for i in 0..LOCAL_WORDS { lput(i, 0); }
+    put(VERSION, 2);
     put(STATE, 1);
     let (csr, rvr) = (read(SYST_CSR), read(SYST_RVR));
     put(CSR_BEFORE, csr);
     put(RVR_BEFORE, rvr);
-    if csr != 0 || rvr != 0 {
+    if csr & 1 != 0 || rvr != 0 {
         // Not an idle private SysTick (e.g. shared with C0 FreeRTOS): never touch it.
         put(STATE, 0xbad0);
         put(MAGIC, u32::from_le_bytes(*b"PRF1"));
@@ -120,25 +134,17 @@ pub(super) fn probe() -> bool {
     }
     let c10 = elapsed(c0, cycles());
     put(CYCLES_10MS, c10);
-    let per_us = (c10 / 10_000).max(1);
-    put(CYCLES_PER_US, per_us);
+    put(CYCLES_PER_US, (c10 / 10_000).max(1));
     measure(PROBES, || {});
-    measure(PROBES + 2, || { let _ = read(RAW_LOW); });
-    measure(PROBES + 4, || {
-        for _ in 0..4 {
-            let hi = read(RAW_HIGH);
-            let _ = read(RAW_LOW);
-            if hi == read(RAW_HIGH) { break; }
-        }
-    });
-    measure(PROBES + 6, || { let _ = read(GPIO_STATUS); });
+    // Probe slots 1 (RawTimer low), 2 (now() hi/lo/hi) and 3 (GPIO read) stay 0 in v2: measured in v1.
     measure(PROBES + 8, || { let _ = read(SHARED_SRAM); });
-    measure(PROBES + 10, || unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); });
+    measure(PROBES + 10, || { let _ = lget(SAMPLES); }); // C1 scratch SRAM read
     measure(PROBES + 12, || {
-        lput(SINK, 1);
+        lput(PREV, 1);
         unsafe { core::arch::asm!("dmb sy", options(nostack, preserves_flags)); }
     });
-    measure(PROBES + 14, || { let _ = read(PPB_ISER0); });
+    // Unsampled hook (SAMPLE=0): call + flag test, as paid 10x per iteration.
+    measure(PROBES + 14, || mark(0));
     put(SLACK_MIN, u32::MAX);
     lput(END, cycles());
     put(STATE, 2);
@@ -152,10 +158,13 @@ pub(super) fn probe() -> bool {
 pub(super) fn begin(late_us: u32) {
     if !live() { return; }
     let now = cycles();
-    if get(ITERATIONS) != 0 {
+    let n = get(ITERATIONS);
+    if n != 0 {
         let slack = elapsed(lget(END), now);
         if slack < get(SLACK_MIN) { put(SLACK_MIN, slack); }
     }
+    lput(SAMPLE, u32::from(n % SAMPLE_EVERY == 0));
+    lput(START, now);
     lput(PREV, now);
     lput(LATE_NOW, late_us);
 }
@@ -163,39 +172,47 @@ pub(super) fn begin(late_us: u32) {
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 pub(super) fn mark(segment: usize) {
-    if !live() || segment >= SEGMENTS { return; }
+    if lget(SAMPLE) == 0 || segment >= SEGMENTS { return; }
     let now = cycles();
     lput(SCRATCH + segment, elapsed(lget(PREV), now));
     lput(PREV, now);
 }
 
-/// Closes the iteration: last segment, maxima, worst breakdown, histograms.
+/// Closes the iteration: total, lateness, histogram; sampled breakdown.
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 pub(super) fn end(cycle: u32) {
     if !live() { return; }
-    mark(SEGMENTS - 1);
-    let mut total = 0u32;
-    for s in 0..SEGMENTS {
-        let d = lget(SCRATCH + s);
-        total = total.wrapping_add(d);
-        if d > get(SEG_MAX + s) { put(SEG_MAX + s, d); }
-    }
+    let now = cycles();
+    let total = elapsed(lget(START), now);
     let late = lget(LATE_NOW);
+    if lget(SAMPLE) != 0 {
+        lput(SCRATCH + SEGMENTS - 1, elapsed(lget(PREV), now));
+        for s in 0..SEGMENTS {
+            let d = lget(SCRATCH + s);
+            raise(SEG_MAX + s, d);
+            ladd(SEG_SUM + s, d);
+        }
+        if total > lget(SAMPLED_MAX) {
+            lput(SAMPLED_MAX, total);
+            for s in 0..SEGMENTS { put(WORST + s, lget(SCRATCH + s)); }
+        }
+        ladd(SAMPLES, 1);
+        ladd(SAMPLED_SUM, total);
+    }
     if total > get(TOTAL_MAX) {
         put(TOTAL_MAX, total);
-        for s in 0..SEGMENTS { put(WORST + s, lget(SCRATCH + s)); }
         put(WORST_CYCLE, cycle);
         put(WORST_LATE_US, late);
     }
-    let per_us = get(CYCLES_PER_US).max(1);
-    let us = total / per_us;
+    ladd(TOTAL_SUM, total);
+    let us = total / get(CYCLES_PER_US).max(1);
     let bucket = [10, 20, 40, 80, 120, 160, 200].iter().position(|b| us < *b).unwrap_or(7);
-    put(HIST + bucket, get(HIST + bucket).wrapping_add(1));
-    if us >= 200 { put(OVERRUNS, get(OVERRUNS).wrapping_add(1)); }
-    if late != 0 { put(LATE_COUNT, get(LATE_COUNT).wrapping_add(1)); }
-    if late > get(LATE_MAX_US) { put(LATE_MAX_US, late); }
-    put(LATE_SUM_US, get(LATE_SUM_US).wrapping_add(late));
-    put(ITERATIONS, get(ITERATIONS).wrapping_add(1));
+    add(HIST + bucket, 1);
+    if us >= 200 { add(OVERRUNS, 1); }
+    if late != 0 { add(LATE_COUNT, 1); }
+    raise(LATE_MAX_US, late);
+    add(LATE_SUM_US, late);
+    add(ITERATIONS, 1);
     lput(END, cycles());
 }

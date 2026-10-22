@@ -40,7 +40,7 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
     body_code='\n'.join(line.split(':',1)[1].split('@',1)[0].strip() for line in text.splitlines()
         if re.match(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+[a-z]',line)).encode()
     if profile:
-        assert hashlib.sha256(body_code).hexdigest() == '1e68d335e6317b2ab4d853461f9646157e3565ba4be66a96fbcdd2b7a75dc69f', 'profile loop instructions changed; review again'
+        assert hashlib.sha256(body_code).hexdigest() == 'afe9292ec9f8ca0a5bd0b438362a74ef7674aa4fa4d4bf1dae2b3e406e8008ec', 'profile loop instructions changed; review again'
     peer_quiesce=not observation and version=='P1A9' and hashlib.sha256(body_code).hexdigest()=='c4324f7e22b9c180a8de3c004d22117f29b904f7c17d8e663eb1ec6f116f1508'
     cold_irq=observation and hashlib.sha256(body_code).hexdigest()=='c437a91dfc53c19b1d62c47e26e0e4c5d469f608d0b9e852e9a1de268ad149eb'
     # Profiler builds keep the same cold-IRQ admission source; the guard symbol check in check() still applies.
@@ -445,7 +445,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             # Profiler scratch 0x2000f600 and results 0x2000f700 follow the code, below the RTOS record.
             assert profile_loads==[(0x2000f000,0x2000f000+amp_sections[b'.amp_proc1_profile_text'][5])], 'profile segment/section mismatch'
             prof = amp_sections[b'.amp_proc1_profile_text']
-            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == '15095898d8335c98257aa74ae4f547c935eed9449848000b136f2e68bc18283a', 'profile SysTick instructions changed; review again'
+            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == 'dfb0b788762b08b72fc801c5bd08fff1952f55985a8662f5afa34bbb092e20c1', 'profile SysTick instructions changed; review again'
         assert control_contract[0][3]+24<=0x2000ba00, 'proc1 overlaps clock/proc0 contract'
         assert 0x2000c750<=diagnostic[0][3], 'proc1 stack overlaps DDR code'
         for name,value in [('__amp_proc1_vectors',0x2000be00),('__amp_proc1_guard_low',0x2000bf40),
