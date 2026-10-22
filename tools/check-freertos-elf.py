@@ -44,7 +44,7 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         # Keyed by (DSRAM stack, hooks compiled out); each value was reviewed against its disassembly.
         body_pins={('0','0'):'afe9292ec9f8ca0a5bd0b438362a74ef7674aa4fa4d4bf1dae2b3e406e8008ec',
                    ('1','0'):'79b4cad2ba4eebfb2653e2b1c1d7ed3f268ad088fdb0b1ef4714dbccd3b99405',
-                   ('1','1'):'0f5a4d247630308abc03da7f0f061728a2061ff7f3552ae5d8b1473991b27751'}
+                   ('1','1'):'06d632e8045b1f6dcfb314eabaa72dbb24842b23a6a00de38c95aa50bc6b88be'}
         mode=(os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))
         assert mode in body_pins and hashlib.sha256(body_code).hexdigest()==body_pins[mode], 'profile loop instructions changed; review again'
     peer_quiesce=not observation and version=='P1A9' and hashlib.sha256(body_code).hexdigest()=='c4324f7e22b9c180a8de3c004d22117f29b904f7c17d8e663eb1ec6f116f1508'
@@ -285,7 +285,8 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
                     if 'amp_proc18hardware12clear_output' in name:permitted.update({0x400e3000,0x400e0000})
                     if gpio:permitted.add(0x400e2000 if '8set_high' in name else 0x400e3000)
                 if profiled:permitted.update({0x400ac028,0x400e0000})
-                if profiled and 'lib_probes' in name and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1':permitted.update({0x400ac03c,0x400ac040,0x40008008,0x4000a008,0x4000b008})
+                # v6 PIO probe: only DONE0 and CTRL0 SET/CLR literal bases.
+                if profiled and 'lib_probes' in name and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1':permitted.update({0x40014018,0x40016000,0x40017000})
                 if irq:
                     permitted.update({0x400d0110,0x400d0114,0x400d0118,0x400d0048,
                         0x400d004c,0x400d204c,0x400d304c,0x400d2114,0x400d3110,0x400d3114,0x400e0004})
@@ -294,6 +295,8 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
                 assert value in ({0xe000ed08,0xe00ff01c}|({0xe000e100,0xe000e180,0xe000e200,0xe000e280} if irq else set())
                     |({0xe000e010,0xe000e014,0xe000e018,0xe000e01c,0xe000e100} if profiled else set())
                     |({0xe000e104,0xe000e200,0xe000e204,0xe000e280,0xe000e284} if profiled and 'lib_probes' in name and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1' else set())), 'proc1 references unadmitted local MMIO'
+            if 0xf0000000<=value<0xf9000000:
+                assert profiled and 'lib_probes' in name and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1' and value==0xf0000004, 'proc1 references unadmitted PIO/local window'
         for branch in re.finditer(r'\b(?:bl|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(?:\.[nw])?|cbnz|cbz)\s+(?:r\d+,\s*)?([0-9a-f]+)\s+<',body):
             target=int(branch[1],16)
             if target in blocks and target!=address:todo.append(target)
@@ -417,13 +420,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             assert address is None or int(rows[0][0], 16) == address
     assert not subprocess.check_output(['arm-none-eabi-nm', '-u', str(path)]), 'undefined symbols'
     dis = subprocess.check_output(['arm-none-eabi-objdump', '-d', '-M', 'reg-names-raw', str(path)], text=True)
-    exclusive_scope = dis
-    if os.environ.get('RP1_AMP_PROC1_NO_HOOKS') == '1':
-        # No-hooks diagnostic: one LDREX/STREX pair per test address inside lib_probes only (G2 probe).
-        probe_blocks = re.findall(r'^[0-9a-f]+ <[^>]*amp_proc17profile10lib_probes[^>]*>:\n.*?(?=^[0-9a-f]+ <|\Z)', dis, re.M | re.S)
-        assert len(probe_blocks) == 1 and len(re.findall(r'\bldrex\b', probe_blocks[0])) == len(re.findall(r'\bstrex\b', probe_blocks[0])), 'lib_probes exclusive pair'
-        exclusive_scope = dis.replace(probe_blocks[0], '')
-    assert not re.search(r'\b(?:ldrex\w*|strex\w*|clrex)\b', exclusive_scope), 'unproven exclusive instruction linked'
+    assert not re.search(r'\b(?:ldrex\w*|strex\w*|clrex)\b', dis), 'unproven exclusive instruction linked'
     assert not any(name in symbols for name in ['pvPortMalloc', 'vPortFree', 'malloc', '_Unwind_Resume'])
     scmi = None
     assert not require_scmi or 'RP1_SCMI_IRQHandler' in symbols, 'SCMI handler missing'
@@ -485,7 +482,8 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             # Profiler scratch 0x2000f600 and results 0x2000f700 follow the code, below the RTOS record.
             assert profile_loads==[(0x2000f000,0x2000f000+amp_sections[b'.amp_proc1_profile_text'][5])], 'profile segment/section mismatch'
             prof = amp_sections[b'.amp_proc1_profile_text']
-            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == {('0','0'):'d5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328',('1','0'):'d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8',('1','1'):'8b9a16cb49fb99a7c6c3954024af44af20bce1a841c02326d9ae25d82a5891a5'}.get((os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))), 'profile SysTick instructions changed; review again'
+            # v6 no-hooks PIO: reviewed fw-02 disassembly; fixed region unchanged.
+            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == {('0','0'):'d5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328',('1','0'):'d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8',('1','1'):'57f882072093f653e22f305757c76003fa531da5bef23e6704a2eb63b5e1f3e1'}.get((os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))), 'profile SysTick instructions changed; review again'
         assert control_contract[0][3]+24<=0x2000ba00, 'proc1 overlaps clock/proc0 contract'
         assert 0x2000c750<=diagnostic[0][3], 'proc1 stack overlaps DDR code'
         for name,value in [('__amp_proc1_vectors',0x2000be00),('__amp_proc1_guard_low',0x2000bf40),

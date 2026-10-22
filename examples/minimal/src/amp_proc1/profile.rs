@@ -1,4 +1,4 @@
-//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3/v5.
+//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3/v6.
 //!
 //! The RP1 Cortex-M3 has no DWT cycle counter (DWT NOCYCCNT=1), so C1's own
 //! SysTick is used as a free-running core-clock down counter with TICKINT=0.
@@ -28,7 +28,7 @@ pub(super) const SEGMENTS: usize = 11;
 
 // Published words at BASE (u32). Probes are (min, max) over PROBE_N samples.
 const MAGIC: usize = 0; // "PRF1" written last
-const VERSION: usize = 1; // 3, or 5 for the no-hooks library probes
+const VERSION: usize = 1; // 3, or 6 for the no-hooks PIO probe
 const STATE: usize = 2; // 1 probing, 2 loop live, 0xbad0 SysTick not idle
 const CSR_BEFORE: usize = 3;
 const RVR_BEFORE: usize = 4;
@@ -110,7 +110,7 @@ fn measure(slot: usize, f: impl Fn()) {
 pub(super) fn probe() -> bool {
     for i in 0..WORDS { put(i, 0); }
     for i in 0..LOCAL_WORDS { lput(i, 0); }
-    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 5 } else { 3 });
+    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 6 } else { 3 });
     put(STATE, 1);
     let (csr, rvr) = (read(SYST_CSR), read(SYST_RVR));
     put(CSR_BEFORE, csr);
@@ -137,6 +137,9 @@ pub(super) fn probe() -> bool {
     let c10 = elapsed(c0, cycles());
     put(CYCLES_10MS, c10);
     put(CYCLES_PER_US, (c10 / 10_000).max(1));
+    // v6 uses the fixed 0x600-byte code budget for PIO instead of memory timing.
+    #[cfg(not(feature = "freertos-amp-proc1-no-hooks"))]
+    {
     // v3 memory probes. The same 16-NOP + `bx lr` snippet is written to C1's
     // proc-local ISRAM (Code region, 0x10000000) and to free shared SRAM
     // (0x2000f680, System region) and timed through the same indirect call.
@@ -155,6 +158,7 @@ pub(super) fn probe() -> bool {
     // Shared SRAM read (slot 4) was 34 cycles in v1 and v2; dropped for space.
     // Unsampled hook (SAMPLE=0): call + flag test, as paid 10x per iteration.
     measure(PROBES + 14, || mark(0));
+    }
     #[cfg(feature = "freertos-amp-proc1-no-hooks")]
     lib_probes();
     put(SLACK_MIN, u32::MAX);
@@ -229,52 +233,106 @@ pub(super) fn end(cycle: u32) {
     lput(END, cycles());
 }
 
-/// v5, no-hooks only: G4 per-core mailbox event gate (core-local 0xF8000008).
-/// LOCAL 16..31. IRQ57 stays disabled on C1 (only ISPR is observed). Refuses if IRQ57 is
-/// enabled or pending on C1, or channel 1 is already set. Only PROC_EVENTS bit1 (an OpenAMP
-/// kick channel that C0 acks via the CLR alias) is set/cleared; channel 0 (SCMI) is untouched.
-/// Trial 0 opens C1's gate bit1, trial 1 closes it (control); the gate is restored each time.
+/// v6, no-hooks only: G9 direct PIO, SM0, no GPIO instructions or pinmux/pad writes.
+/// Only take an initially held block: instruction memory is write-only, so an
+/// already released owner's program cannot be saved. Linux PIO must be disabled.
+/// LOCAL 16..31; PIO1 magic is published after cleanup, status is word 31.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 fn lib_probes() {
-    const GATE: usize = 0xf800_0008;
-    const EVENTS: usize = 0x4000_8008;
-    const ISER1: usize = 0xe000_e104;
-    const ISPR1: usize = 0xe000_e204;
-    const ICPR1: usize = 0xe000_e284;
-    const IRQ57: u32 = 1 << 25;
-    let gate = read(GATE);
-    let events = read(EVENTS);
-    let enabled = read(ISER1);
-    let pending = read(ISPR1);
-    lput(16, gate);
-    lput(17, events);
-    lput(18, enabled);
-    lput(19, pending);
-    let refused = (enabled & IRQ57) | ((pending & IRQ57) >> 1) | (events & 2);
-    lput(31, refused);
-    if refused == 0 {
-        for trial in 0..2 {
-            let slot = 20 + trial * 5;
-            write(GATE, if trial == 0 { gate | 2 } else { gate & !2 });
-            barrier();
-            lput(slot, read(GATE));
-            write(EVENTS + 0x2000, 2); // SET alias, as Linux kicks
-            barrier();
-            lput(slot + 1, read(EVENTS));
-            lput(slot + 2, read(ISPR1));
-            write(EVENTS + 0x3000, 2); // CLR alias, as C0 acks kicks
-            barrier();
-            write(ICPR1, IRQ57);
-            barrier();
-            lput(slot + 3, read(EVENTS));
-            lput(slot + 4, read(ISPR1));
-            write(GATE, gate);
-            barrier();
+    const RESET: usize = 0x4001_4000;
+    const BIT: u32 = 1 << 27; // PIO_APBS; relation to local PIO is still a hypothesis.
+    const PIO: usize = 0xf000_0000;
+    const SM: usize = PIO + 0xcc; // RP1 Version-1 layout, NOT RP2040's +0xc8.
+    const LIMIT: u32 = 100_000;
+    let reset = read(RESET);
+    lput(16, reset);
+    lput(17, read(RESET + 0x18));
+    lput(26, u32::MAX); // Never confuse an unread FIFO with the expected 21.
+    let mut status = 1; // Refused: reset was already released.
+    if reset & BIT != 0 {
+        write(RESET + 0x3000, BIT);
+        barrier();
+        status = 2; // Reset DONE timeout: no PIO access on this path.
+        for _ in 0..LIMIT {
+            if read(RESET + 0x18) & BIT != 0 { status = 3; break; }
         }
+        lput(18, read(RESET + 0x18));
+        if status == 3 {
+            let ctrl = read(PIO);
+            let fstat = read(PIO + 4);
+            let level = read(PIO + 0xc);
+            lput(19, ctrl);
+            lput(20, fstat);
+            lput(21, level);
+            // Refuse any running/restarting SM or queued data, including other SMs.
+            if ctrl & 0xfff == 0 && level == 0 && fstat == 0x0f00_0f00 {
+                let div = read(SM);
+                let exec = read(SM + 4);
+                let shift = read(SM + 8);
+                let addr = read(SM + 0xc);
+                let pins = read(SM + 0x14);
+                write(SM + 0x14, 0); // SIDESET_COUNT=0; program has no OUT/SET pins.
+                write(SM, 1 << 16); // INT=1, FRAC=0: SM clock = clk_sys (official header).
+                write(SM + 4, 3 << 12); // wrap 0..3; last instruction is a self-jump.
+                write(SM + 8, 0); // No autopush/autopull or FIFO joining.
+                write(PIO + 0x4c, 0xe035); // set x,21
+                write(PIO + 0x50, 0xa0c1); // mov isr,x
+                write(PIO + 0x54, 0x8020); // push block
+                write(PIO + 0x58, 0x0003); // jmp 3: only one FIFO result
+                write(PIO, 0x110); // Restart SM0 and its divider, keep all SMs disabled.
+                write(SM + 0x10, 0); // Inject jmp 0 while disabled.
+                barrier();
+                lput(22, read(SM));
+                status = 4; // Configuration readback mismatch; never enable.
+                if read(SM) == 1 << 16 && read(SM + 4) == 3 << 12
+                    && read(SM + 8) == 0 && read(SM + 0x14) == 0 && read(SM + 0xc) == 0 {
+                    write(PIO, 1); // SM0 only; no processor IRQ enable is touched.
+                    barrier();
+                    status = 5; // RX FIFO timeout.
+                    for _ in 0..LIMIT {
+                        if read(PIO + 4) & (1 << 8) == 0 { status = 6; break; }
+                    }
+                    write(PIO, 0);
+                    barrier();
+                    lput(23, read(PIO + 4));
+                    lput(24, read(PIO + 0xc));
+                    lput(25, read(SM + 0xc));
+                    if status == 6 {
+                        let value = read(PIO + 0x24); // Pop only after RXEMPTY cleared.
+                        lput(26, value);
+                        lput(27, read(PIO + 4));
+                        if value == 21 && lget(24) == 0x10 && lget(25) == 3 { status = 0; }
+                    }
+                }
+                write(PIO, 0);
+                write(SM + 0x10, 0xe020); // Restore X=0 in the initially reset SM.
+                write(PIO, 0x110); // Clear ISR/counters/stall and divider phase.
+                write(SM + 8, 1 << 31); // Flush only SM0's FIFOs, including a timed-out run.
+                write(SM + 8, shift);
+                write(SM, div);
+                write(SM + 4, exec);
+                write(SM + 0x10, addr); // jmp saved PC (0..31), no pin effects.
+                write(SM + 0x14, pins);
+                for i in 0..4 { write(PIO + 0x4c + i * 4, 0); }
+                barrier();
+                if read(PIO) != ctrl || read(SM) != div || read(SM + 4) != exec
+                    || read(SM + 8) != shift || read(SM + 0xc) != addr
+                    || read(SM + 0x14) != pins || read(PIO + 0xc) != 0 {
+                    status |= 0x100; // Cleanup mismatch preserves the original failure code.
+                }
+            }
+        }
+        write(RESET + 0x2000, BIT); // Restore the original held bit only.
+        barrier();
     }
-    lput(30, u32::from_le_bytes(*b"LIB2"));
+    lput(28, read(RESET));
+    lput(29, read(RESET + 0x18));
+    if (lget(28) ^ reset) & BIT != 0 { status |= 0x200; }
+    lput(31, status);
+    barrier();
+    lput(30, u32::from_le_bytes(*b"PIO1"));
 }
 
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
