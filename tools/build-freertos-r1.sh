@@ -5,7 +5,15 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 out=$1
 feature=${RP1_RTOS_FEATURE:-freertos-r1}
 cargo_feature=$feature
-if [[ "$feature" == freertos-timesync || "$feature" == freertos-ddr || "$feature" == freertos-virtio-probe || "$feature" == freertos-openamp || "$feature" == freertos-openamp-rpmsg ]]; then feature=freertos-endpoint-config-once; fi
+amp_proc1=0
+if [[ "$cargo_feature" == freertos-amp-proc1 || "$cargo_feature" == freertos-amp-proc1-gpio-irq || "$cargo_feature" == freertos-amp-observation ]]; then amp_proc1=1; fi
+gpio_irq=0
+if [[ "$cargo_feature" == freertos-amp-proc1-gpio-irq || "$cargo_feature" == freertos-amp-observation ]]; then gpio_irq=1; fi
+if [[ "$feature" == freertos-amp-bulk-ddr-diagnostics ]]; then feature=freertos-amp-bulk; fi
+if [[ "$feature" == freertos-amp-control ]]; then feature=freertos-amp-bulk; fi
+if [[ "$amp_proc1" == 1 ]]; then feature=freertos-amp-bulk; fi
+if [[ "$feature" == freertos-r2-mixed-repeat-timing ]]; then feature=freertos-r2-mixed-repeat; fi
+if [[ "$feature" == freertos-timesync || "$feature" == freertos-ddr || "$feature" == freertos-virtio-probe || "$feature" == freertos-openamp || "$feature" == freertos-openamp-rpmsg || "$feature" == freertos-amp-bulk ]]; then feature=freertos-endpoint-config-once; fi
 check_feature=$feature
 scmi=0
 case "$feature" in
@@ -37,13 +45,22 @@ mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
 if [[ "$check_feature" == freertos-endpoint-uart || "$check_feature" == freertos-endpoint-config-once ]]; then
+    endpoint_test_cfg=()
+    if [[ "$cargo_feature" == freertos-amp-bulk* || "$cargo_feature" == freertos-amp-control || "$amp_proc1" == 1 ]]; then
+        endpoint_test_cfg+=(--cfg 'feature="freertos-amp-bulk"' --cfg 'feature="freertos-endpoint-config-once"')
+    fi
     rustc +stable --edition=2024 -C strip=debuginfo --test \
         --cfg 'feature="freertos-endpoint-uart"' \
+        "${endpoint_test_cfg[@]}" \
         examples/minimal/src/linux_clk_uart_ownership.rs -o "$out/endpoint-test"
     "$out/endpoint-test" > "$out/endpoint-host-test.txt"
     python3 -B tools/check-endpoint-uart.py --self-test > "$out/endpoint-parser-test.txt"
 fi
 if [[ "$check_feature" == freertos-endpoint-config-once ]]; then
+    if [[ "$cargo_feature" == freertos-amp-observation ]]; then
+        rustc +stable --edition=2024 --test examples/minimal/src/cold_irq_admission.rs -o "$out/cold-irq-test"
+        "$out/cold-irq-test" > "$out/cold-irq-host-test.txt"
+    fi
     rustc +stable --edition=2024 -C strip=debuginfo --test \
         examples/minimal/src/scmi_cold_clock.rs -o "$out/scmi-cold-test"
     "$out/scmi-cold-test" > "$out/scmi-cold-host-test.txt"
@@ -188,6 +205,11 @@ if [[ "$feature" == freertos-r2-mixed* ]]; then
     cp "$repo/examples/minimal/src/freertos_mixed.rs" "$out/freertos_mixed.rs"
     cp "$repo/examples/minimal/src/mixed_repeat.rs" "$out/mixed_repeat.rs"
 fi
+if [[ "$cargo_feature" == freertos-r2-mixed-repeat-timing ]]; then
+    cp "$repo/crates/rp1-freertos/src/spi_timing.rs" "$out/spi_timing.rs"
+    rustc +stable --edition=2024 --test "$out/spi_timing.rs" -o "$out/spi-timing-test"
+    RP1_SPI_TIMING_FIXTURE="$out/host-fixture.bin" "$out/spi-timing-test" > "$out/spi-timing-host-test.txt"
+fi
 if [[ "$feature" == freertos-r2-mixed-i2c-pair || "$feature" == freertos-r2-mixed-i2c-stream ]]; then
     cp "$repo/examples/minimal/src/mixed_i2c_pair.rs" "$out/mixed_i2c_pair.rs"
     cp "$repo/tools/test-i2c-mixed-pair.py" "$out/test-i2c-mixed-pair.py"
@@ -216,6 +238,14 @@ if [[ "$family_feature" == freertos-r3-watchdog-warm-combined || "$family_featur
     cargo_profile=(--config 'profile.release.package.rp1-freertos.opt-level="z"')
     printf 'rust_all_opt_level=z task_stack_pool_words=2304 sync_pool=2/4/1 newlib_memcpy=pinned cold_path_compiled_review=REQUIRED\n'
 fi
+if [[ "$cargo_feature" == freertos-amp-bulk* ]]; then
+    export RP1_AMP_GENERATOR=${RP1_AMP_GENERATOR:-${CM5_HACK_ROOT:-/opt/rpi-cm5-hack}/tools/amp-deployment.py}
+    export RP1_AMP_RECORD_DIR="$out/ownership"
+fi
+if [[ "$cargo_feature" == freertos-amp-control || "$amp_proc1" == 1 ]]; then
+    export RP1_AMP_GENERATOR=${RP1_AMP_GENERATOR:-${CM5_HACK_ROOT:-/opt/rpi-cm5-hack}/tools/amp-deployment.py}
+    export RP1_AMP_RECORD_DIR="$out/ownership"
+fi
 cargo +stable "${cargo_profile[@]}" rustc --offline --locked --release --target thumbv7m-none-eabi \
   -p rp1-example-minimal --no-default-features --features "$cargo_feature" -- -C "link-arg=-Map=$out/RP1.map"
 cp "${CARGO_TARGET_DIR:-$repo/target}/thumbv7m-none-eabi/release/rp1-example-minimal" "$out/RP1.elf"
@@ -225,6 +255,11 @@ arm-none-eabi-objdump -d "$out/RP1.elf" > "$out/disassembly.txt"
 arm-none-eabi-size "$out/RP1.elf"
 elf_args=()
 if [[ "$scmi" == 1 ]]; then elf_args+=(--require-scmi); fi
+if [[ "$cargo_feature" == freertos-amp-bulk-ddr-diagnostics ]]; then elf_args+=(--require-ddr-diagnostics); fi
+if [[ "$cargo_feature" == freertos-amp-control ]]; then elf_args+=(--amp-control --require-ddr-diagnostics); fi
+if [[ "$amp_proc1" == 1 ]]; then elf_args+=(--amp-control --amp-proc1 --require-ddr-diagnostics); fi
+if [[ "$gpio_irq" == 1 ]]; then elf_args+=(--amp-proc1-gpio-irq); fi
+if [[ "$cargo_feature" == freertos-amp-observation ]]; then elf_args+=(--amp-observation); fi
 if [[ "$local_stack" == 1 ]]; then
     elf_args+=(--local-monitor-stack)
     cc -std=c11 -Wall -Wextra -Werror "$repo/tools/test-static-stack.c" -o "$out/static-stack-test"
@@ -232,12 +267,42 @@ if [[ "$local_stack" == 1 ]]; then
     python3 -B "$repo/tools/test-local-monitor-elf.py" "$out/RP1.elf" > "$out/local-monitor-negative-test.json"
 fi
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" "${elf_args[@]}" > "$out/elf-validation.json"
+if [[ "$cargo_feature" == freertos-amp-observation ]]; then
+    : "${RP1_OPENAMP_SOURCE:?set the pinned OpenAMP source for callback/stack admission}"
+    python3 -B "$repo/tools/check-amp-worker-stack.py" "$out/RP1.elf" --openamp-source "$RP1_OPENAMP_SOURCE" > "$out/stack-admission.json"
+    python3 -B "$repo/tools/test-amp-worker-stack.py" "$out/RP1.elf" --openamp-source "$RP1_OPENAMP_SOURCE" > "$out/stack-negative-test.txt"
+    cp "$repo/tools/amp-observation-stack-review.json" "$out/stack-review.json"
+fi
 if [[ "$scmi" == 1 ]]; then
     python3 -B "$repo/tools/test_scmi_clock.py" > "$out/scmi-host-test.txt"
-    python3 -B "$repo/tools/test-freertos-elf.py" "$out/RP1.elf" > "$out/vector-negative-test.txt"
+    vector_args=()
+    if [[ "$cargo_feature" == freertos-amp-control ]]; then vector_args+=(--amp-control); fi
+    if [[ "$amp_proc1" == 1 ]]; then vector_args+=(--amp-control --amp-proc1); fi
+    if [[ "$gpio_irq" == 1 ]]; then vector_args+=(--amp-proc1-gpio-irq); fi
+    if [[ "$cargo_feature" == freertos-amp-observation ]]; then vector_args+=(--amp-observation); fi
+    python3 -B "$repo/tools/test-freertos-elf.py" "$out/RP1.elf" "${vector_args[@]}" > "$out/vector-negative-test.txt"
+    if [[ "$cargo_feature" == freertos-amp-control ]]; then
+        python3 -B "$repo/tools/test-amp-control-elf.py" "$out/RP1.elf" > "$out/amp-control-negative-test.txt"
+        python3 -B "$repo/tools/test-amp-ddr-diagnostics-elf.py" "$out/RP1.elf" --amp-control > "$out/ddr-diagnostic-negative-test.txt"
+    fi
+    if [[ "$amp_proc1" == 1 ]]; then
+        irq_test_args=()
+        if [[ "$gpio_irq" == 1 ]]; then irq_test_args+=(--amp-proc1-gpio-irq); fi
+        if [[ "$cargo_feature" == freertos-amp-observation ]]; then irq_test_args+=(--amp-observation); fi
+        python3 -B "$repo/tools/test-amp-proc1-elf.py" "$out/RP1.elf" "${irq_test_args[@]}" > "$out/amp-proc1-negative-test.txt"
+        python3 -B "$repo/tools/test-amp-ddr-diagnostics-elf.py" "$out/RP1.elf" --amp-control --amp-proc1 "${irq_test_args[@]}" > "$out/ddr-diagnostic-negative-test.txt"
+        rustc +stable --edition=2024 --test "$repo/examples/minimal/src/amp_proc1.rs" -o "$out/proc1-test"
+        "$out/proc1-test" > "$out/proc1-host-test.txt"
+    fi
     python3 -B "$repo/tools/scmi_elf_layout.py" "$out/RP1.elf" --output "$out/scmi-layout.json"
     sha256sum "$out/RP1.elf" > "$out/output.sha256"
-    printf 'SCMI_readonly_build=PASS candidate_IRQ57=UNPROVEN physical_holds=OPEN hardware_admission=REFUSED\n'
+    if [[ "$amp_proc1" == 1 ]]; then
+        printf 'AMP_proc1_build=PASS phase=1 probe_only hardware_admission=REFUSED\n'
+    elif [[ "$cargo_feature" == freertos-amp-control ]]; then
+        printf 'AMP_service_build=PASS tasks=2 phase=0 proc1_control=NOT_STARTED hardware_admission=REFUSED\n'
+    else
+        printf 'SCMI_readonly_build=PASS candidate_IRQ57=UNPROVEN physical_holds=OPEN hardware_admission=REFUSED\n'
+    fi
     exit 3
 fi
 if [[ "$cargo_feature" == freertos-r1-local-stack || "$cargo_feature" == freertos-r1-local-stack-fault ]]; then

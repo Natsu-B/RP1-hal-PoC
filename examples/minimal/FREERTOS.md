@@ -91,6 +91,12 @@ The nonzero DATA_SENTINEL and zero BSS_SENTINEL are checked before scheduling.
 | 2000fb00..2000fbff | Stack-independent exception record |
 | 2000fc00..2000ffff | Reserved legacy debug/official mailbox region, no R1 service |
 
+The opt-in AMP bulk DDR diagnostic uses the existing2304-word task pool, with
+the same eight individual task stack sizes. Its BSS ends at2000d250, clock
+profile occupies2000d250..2000d28f, and loaded diagnostic code occupies
+2000d290..2000d797. Fixed SCMI starts2000d7c0. Link assertions and executable
+ELF checks reject overlap; ordinary R1/AMP builds retain their original layout.
+
 VTOR[0]=2000f000, also the loader SP. SVC/PendSV/SysTick vectors point directly
 to the official naked port functions; no ABI wrapper. PRIGROUP=0, three
 implemented priority bits, kernel priority7/e0, max syscall priority5/a0.

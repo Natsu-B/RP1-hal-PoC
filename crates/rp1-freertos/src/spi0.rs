@@ -6,6 +6,10 @@ use crate::{self as os, Task};
 use core::{cell::UnsafeCell, ptr};
 use rp1_hal::spi::{Spi0Host, Spi0IrqTransfer, Spi0RxError, Spi0RxState};
 
+#[cfg(feature = "spi0-timing")]
+#[path = "spi_timing.rs"]
+mod timing;
+
 const BIT: u32 = 1 << 19;
 const ENABLE: *mut u32 = 0xe000_e100 as *mut u32;
 const DISABLE: *mut u32 = 0xe000_e180 as *mut u32;
@@ -21,6 +25,12 @@ static mut IRQ_ERROR: u32 = 0;
 static mut IRQ_END: u32 = 0;
 static mut IRQ_GENERATION: u32 = 0;
 static mut IRQ_MAX_US: u32 = 0;
+#[cfg(feature = "spi0-timing")]
+static mut IRQ_FIRST: u32 = 0;
+#[cfg(feature = "spi0-timing")]
+#[used]
+#[unsafe(no_mangle)]
+static mut RP1_SPI_TIMING: timing::Trace = timing::Trace::new();
 
 fn barrier() { unsafe { core::arch::asm!("dsb sy", "isb", options(nostack)); } }
 fn mask() { unsafe { DISABLE.write_volatile(BIT); } barrier(); }
@@ -98,6 +108,8 @@ impl Driver {
             ptr::addr_of_mut!(WAITER).write_volatile(waiter.0);
             ptr::addr_of_mut!(CANCEL).write_volatile(0);
             ptr::addr_of_mut!(IRQ_COUNT).write_volatile(0);
+            #[cfg(feature = "spi0-timing")]
+            ptr::addr_of_mut!(IRQ_FIRST).write_volatile(0);
             ptr::addr_of_mut!(IRQ_ERROR).write_volatile(0);
             ptr::addr_of_mut!(IRQ_END).write_volatile(0);
             ptr::addr_of_mut!(IRQ_GENERATION).write_volatile(0);
@@ -159,6 +171,10 @@ impl Driver {
             irq_body_max_us: unsafe { ptr::addr_of!(IRQ_MAX_US).read_volatile() },
             irq_end_to_task_us: wake_us.map_or(0, |t| t.wrapping_sub(unsafe { ptr::addr_of!(IRQ_END).read_volatile() })),
         };
+        // Successful state is serial-idle and HAL checked-cleanup complete.
+        // This observation is an upper bound, not the exact final wire edge.
+        #[cfg(feature = "spi0-timing")]
+        let completed = raw();
         unsafe {
             ptr::addr_of_mut!(GENERATION).write_volatile(0);
             ptr::addr_of_mut!(ACTIVE).write_volatile(ptr::null_mut());
@@ -175,6 +191,11 @@ impl Driver {
         // completion/cancellation count escape this receive's reserved channel.
         unsafe { os::notification_take(true, 0).unwrap(); }
         self.last = Some(receipt);
+        #[cfg(feature = "spi0-timing")]
+        unsafe { (&mut *ptr::addr_of_mut!(RP1_SPI_TIMING)).push([
+            generation, started, ptr::addr_of!(IRQ_FIRST).read_volatile(),
+            ptr::addr_of!(IRQ_END).read_volatile(), completed, receipt.irq_entries,
+            u32::from(result.is_ok()), 0]); }
         result.map(|()| receipt)
     }
 }
@@ -205,6 +226,8 @@ pub unsafe fn on_interrupt() {
     if transfer.is_null() { mask(); return; }
     let count = unsafe { ptr::addr_of!(IRQ_COUNT).read_volatile() }.saturating_add(1);
     unsafe { ptr::addr_of_mut!(IRQ_COUNT).write_volatile(count); }
+    #[cfg(feature = "spi0-timing")]
+    if count == 1 { unsafe { ptr::addr_of_mut!(IRQ_FIRST).write_volatile(started); } }
     let terminal = if count > unsafe { ptr::addr_of!(IRQ_LIMIT).read_volatile() } {
         mask();
         unsafe { ptr::addr_of_mut!(IRQ_ERROR).write_volatile(1); }
@@ -226,4 +249,17 @@ pub unsafe fn on_interrupt() {
         let old = ptr::addr_of!(IRQ_MAX_US).read_volatile();
         ptr::addr_of_mut!(IRQ_MAX_US).write_volatile(old.max(ended.wrapping_sub(started)));
     }
+}
+
+/// Freeze only after this finite SPI owner has finished and will issue no more
+/// requests. Does not stop SPI/DMA or authorize any other owner.
+/// # Safety
+/// Same proc0 owner as `Driver::receive`, after its final returned request.
+#[cfg(feature = "spi0-timing")]
+pub unsafe fn freeze_timing() {
+    assert!(unsafe { ptr::addr_of!(ACTIVE).read_volatile() }.is_null());
+    assert_eq!(unsafe { ptr::addr_of!(GENERATION).read_volatile() }, 0);
+    barrier();
+    unsafe { (&mut *ptr::addr_of_mut!(RP1_SPI_TIMING)).freeze(); }
+    barrier();
 }

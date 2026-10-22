@@ -218,7 +218,7 @@ fn calibrate_cpu_hz() -> u32 {
     ((total / 5 + 500) / 1000 * 1000) as u32
 }
 
-pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
+pub fn run(marker: ConfiguredPin<22, Output>) -> ! { #[cfg(feature = "freertos-amp-control")] return amp_control::run(marker);
     for n in 0..256 { put(n, 0); } // Clear stale exception record as well.
     #[cfg(any(feature = "freertos-r3-watchdog-warm-uart", feature = "freertos-r3-watchdog-warm-spi", feature = "freertos-r3-watchdog-warm-i2c", feature = "freertos-r3-watchdog-warm-combined"))]
     if kernel_restart::is_warm() { warm_uart_prepare::publish(); }
@@ -260,8 +260,7 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
     unsafe { rp1_hal::openamp::prepare(timesync::boot_epoch()); }
     unsafe {
         // A valid unused slot isolates the capacity guard from slot/occupied errors.
-        assert!(U32Queue::create(0, 0).is_err());
-        assert!(U32Queue::create(0, 17).is_err());
+        assert!(U32Queue::create(0, 0).is_err() && U32Queue::create(0, 17).is_err(), "queue");
         ptr::addr_of_mut!(QUEUE).write(Some(U32Queue::create(0, 4).unwrap()));
         ptr::addr_of_mut!(CHECK_QUEUE).write(Some(U32Queue::create(1, 1).unwrap()));
         #[cfg(feature = "freertos-r2-mixed-i2c-pair")]
@@ -278,6 +277,8 @@ pub fn run(marker: ConfiguredPin<22, Output>) -> ! {
             (producer, c"producer", 2, 256), (mutex_low, c"mutex-low", 1, 256),
             (mutex_high, c"mutex-high", 3, 256),
         ];
+        #[cfg(feature = "freertos-amp-bulk-ddr-diagnostics")]
+        assert!(entries.iter().map(|e| e.3).sum::<u32>() + 512 == 2304);
         #[cfg(feature = "freertos-r2-mixed")]
         let entries: [(os::TaskEntry, &core::ffi::CStr, u32, u32); 8] = [
             // 2560 stack words exactly: no pool growth or reserved-memory change.
@@ -449,12 +450,23 @@ unsafe extern "C" fn monitor(_: *mut c_void) {
     #[cfg(feature = "freertos-r2-i2c-peer")]
     let mut marker:Option<ConfiguredPin<22,Output>>=None;
     let q = unsafe { ptr::addr_of!(CHECK_QUEUE).read().unwrap() };
+    #[cfg(not(feature = "freertos-amp-bulk"))]
     unsafe {
         assert_eq!(q.receive(2).unwrap(), None); // real block/timeout
         assert!(q.send(0x1234_abcd, 0).unwrap());
         assert!(!q.send(1, 0).unwrap()); // full queue
         assert_eq!(q.receive(0).unwrap(), Some(0x1234_abcd));
         assert_eq!(q.receive(0).unwrap(), None);
+    }
+    // Same operations and acceptance, one diagnostic to fit the fixed image.
+    // No PASS marker is emitted unless all queue operations actually succeeded.
+    #[cfg(feature = "freertos-amp-bulk")]
+    unsafe {
+        assert!(matches!(q.receive(2), Ok(None))
+            && matches!(q.send(0x1234_abcd, 0), Ok(true))
+            && matches!(q.send(1, 0), Ok(false))
+            && matches!(q.receive(0), Ok(Some(0x1234_abcd)))
+            && matches!(q.receive(0), Ok(None)), "queue");
     }
     put(39, 1); put(2, 4);
     let mut previous = [0; 4];
@@ -1135,3 +1147,7 @@ fn endpoint_config_finish(once: &mut crate::endpoint_config::commissioning::Once
         rp1_freertos_fault_hook(if mask_fault { 0x4346_474d } else { 0x4346_4746 }, r.status as u32);
     });
 }
+
+#[cfg(feature = "freertos-amp-control")]
+#[path = "amp_control.rs"]
+mod amp_control;

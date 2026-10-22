@@ -10,7 +10,10 @@ fn main() {
     let out=PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let flags=["-mcpu=cortex-m3","-mthumb","-mfloat-abi=soft"];
     let source=PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../../openamp/rp1.c");
-    run(Command::new("arm-none-eabi-gcc").args(flags).args(["-Os","-Wall","-Wextra","-Werror","-ffunction-sections","-fdata-sections","-DVIRTIO_DEVICE_SUPPORT=1","-DVIRTIO_DRIVER_SUPPORT=0","-DVIRTIO_USE_DCACHE","-I"]).arg(prefix.join("include")).arg("-c").arg(source).arg("-o").arg(out.join("rp1.o")));
+    let mut cc=Command::new("arm-none-eabi-gcc");
+    cc.args(flags).args(["-Os","-Wall","-Wextra","-Werror","-ffunction-sections","-fdata-sections","-DVIRTIO_DEVICE_SUPPORT=1","-DVIRTIO_DRIVER_SUPPORT=0","-DVIRTIO_USE_DCACHE","-I"]).arg(prefix.join("include")).arg("-c").arg(source).arg("-o").arg(out.join("rp1.o"));
+    if env::var_os("CARGO_FEATURE_AMP_BULK").is_some() { cc.arg("-DRP1_AMP_BULK=1"); }
+    run(&mut cc);
     run(Command::new("arm-none-eabi-ar").arg("rcs").arg(out.join("librp1_openamp.a")).arg(out.join("rp1.o")));
     for name in ["libopen_amp.a","libmetal.a"] {
         let path=prefix.join("lib").join(name);

@@ -1,10 +1,13 @@
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_BULK").is_some() {
+        generate_amp_resources();
+    }
     if std::env::var_os("CARGO_FEATURE_FREERTOS_ENDPOINT_CONFIG_ONCE").is_some() {
         // Exact local closure only. Dependency feature unions still need sealed-build review.
         const ALLOWED: &[&str] = &["BAR2_READONLY_HANDSHAKE", "DEBUG_MAILBOX_LAYOUT",
             "DEBUG_STACK_LOW", "ENDPOINT_CLOCK_ONLY", "ENDPOINT_CONFIG_FOUNDATION",
-            "FREERTOS_ENDPOINT_CONFIG_ONCE", "FREERTOS_ENDPOINT_UART", "FREERTOS_R1", "FREERTOS_TIMESYNC", "FREERTOS_DDR", "FREERTOS_VIRTIO_PROBE", "FREERTOS_OPENAMP", "FREERTOS_OPENAMP_RPMSG",
-            "FREERTOS_SCMI_READONLY", "PLL_SYS_CORE_LOCK_ONLY", "STATE3_COMPOSITE_BOUNDARY",
+            "FREERTOS_ENDPOINT_CONFIG_ONCE", "FREERTOS_ENDPOINT_UART", "FREERTOS_R1", "FREERTOS_TIMESYNC", "FREERTOS_DDR", "FREERTOS_VIRTIO_PROBE", "FREERTOS_OPENAMP", "FREERTOS_OPENAMP_RPMSG", "FREERTOS_AMP_BULK", "FREERTOS_AMP_BULK_DDR_DIAGNOSTICS", "FREERTOS_AMP_CONTROL", "FREERTOS_AMP_PROC1",
+            "FREERTOS_AMP_PROC1_GPIO_IRQ", "FREERTOS_AMP_OBSERVATION", "FREERTOS_SCMI_READONLY", "PLL_SYS_CORE_LOCK_ONLY", "STATE3_COMPOSITE_BOUNDARY",
             "STATE5_COMPOSITE_BOUNDARY", "UART0_FUNCTIONAL_CLOCK_BEFORE_RESET_DONE", "UART0_RESET_ONLY"];
         for (name, _) in std::env::vars_os() {
             if let Some(feature) = name.to_str().and_then(|v| v.strip_prefix("CARGO_FEATURE_")) {
@@ -69,9 +72,130 @@ ASSERT(__app_limit <= _stack_start - 4096, "OpenAMP overlaps MSP")
 "#).unwrap();
         println!("cargo:rustc-link-arg=-T{}", path.display());
     }
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_BULK").is_some() {
+        let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("amp-bulk.x");
+        std::fs::write(&path, r#"
+ASSERT(DEFINED(rp1_bulk_receive), "bulk endpoint not linked")
+ASSERT(SIZEOF(.openamp_state) <= 0x480, "bulk and OpenAMP exceed shared SRAM reservation")
+"#).unwrap();
+        println!("cargo:rustc-link-arg=-T{}", path.display());
+    }
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_BULK_DDR_DIAGNOSTICS").is_some() || std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_CONTROL").is_some() {
+        // Reuse the existing 2304-word pool; each of the eight task stacks is unchanged.
+        let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("amp-ddr-diagnostics.x");
+        std::fs::write(&path, r#"
+SECTIONS {
+ .ddr_diagnostics_text 0x2000d290 : { KEEP(*(.ddr_diagnostics_text)); } > RP1_APP_SRAM
+} INSERT AFTER .rp1_clock_profile;
+ASSERT(__ebss <= ADDR(.rp1_clock_profile), "diagnostics overlap task storage")
+ASSERT(ADDR(.rp1_clock_profile) + SIZEOF(.rp1_clock_profile) <= ADDR(.ddr_diagnostics_text), "diagnostics overlap clock profile")
+ASSERT(SIZEOF(.ddr_diagnostics_text) > 0, "diagnostics missing")
+ASSERT(ADDR(.ddr_diagnostics_text) + SIZEOF(.ddr_diagnostics_text) <= 0x2000d7c0, "diagnostics overlap SCMI")
+ASSERT(__app_limit <= _stack_start - 4096, "diagnostics overlap MSP")
+"#).unwrap();
+        println!("cargo:rustc-link-arg=-T{}", path.display());
+    }
     rp1_build::generate().expect("generate RP1 note");
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_CONTROL").is_some() {
+        assert!(std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_BULK_DDR_DIAGNOSTICS").is_none(),
+            "AMP control owns a separate two-task pool; R1 diagnostic stacks are not compatible");
+        let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("amp-control.x");
+        std::fs::write(&path, "SECTIONS { .amp_control_contract : { KEEP(*(.amp_control_contract)); } > RP1_APP_SRAM } INSERT AFTER .rp1_clock_profile;\nASSERT(SIZEOF(.amp_control_contract) == 24, \"AMP control contract size\")\nASSERT(ADDR(.amp_control_contract) + SIZEOF(.amp_control_contract) <= 0x2000d7c0, \"AMP control overlaps SCMI\")\n").unwrap();
+        println!("cargo:rustc-link-arg=-T{}", path.display());
+    }
     if std::env::var_os("CARGO_FEATURE_FREERTOS_R1_CRITICAL_TIMING").is_some() {
         println!("cargo:rustc-link-arg=--wrap=vPortEnterCritical");
         println!("cargo:rustc-link-arg=--wrap=vPortExitCritical");
+    }
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1").is_some() {
+        let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("amp-proc1.x");
+        std::fs::write(&path, r#"
+SECTIONS {
+ .amp_proc1_storage 0x2000ba00 (NOLOAD) : { KEEP(*(.amp_proc1.storage)); } > RP1_APP_SRAM
+ .amp_proc1_vectors 0x2000be00 : { __amp_proc1_vectors = .; KEEP(*(.amp_proc1.vectors)); } > RP1_APP_SRAM
+ .amp_proc1_stack 0x2000bf40 (NOLOAD) : {
+  __amp_proc1_guard_low = .;
+  __amp_proc1_stack_low = . + 8; __amp_proc1_stack_top = __amp_proc1_stack_low + 2048;
+  __amp_proc1_guard_high = __amp_proc1_stack_top;
+  KEEP(*(.amp_proc1.stack));
+ } > RP1_APP_SRAM
+} INSERT AFTER .amp_control_contract;
+ASSERT(ADDR(.amp_control_contract) + SIZEOF(.amp_control_contract) <= 0x2000ba00, "proc1 overlaps proc0/clock contract")
+ASSERT(SIZEOF(.amp_proc1_storage) <= 0x400, "proc1 storage exceeds owned local SRAM")
+ASSERT(SIZEOF(.amp_proc1_vectors) == 320, "proc1 vector table size")
+ASSERT(ADDR(.amp_proc1_vectors) % 512 == 0, "proc1 VTOR alignment")
+ASSERT(ADDR(.amp_proc1_stack) + SIZEOF(.amp_proc1_stack) <= ADDR(.ddr_diagnostics_text), "proc1 overlaps DDR diagnostics")
+ASSERT(DEFINED(rp1_control_session) && DEFINED(rp1_control_retire), "proc1 handoff hooks missing")
+ASSERT(DEFINED(AmpProc1Body) && DEFINED(AmpProc1Entry), "proc1 runtime missing")
+"#).unwrap();
+        if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1_GPIO_IRQ").is_some() {
+            use std::io::Write;
+            std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(br#"
+SECTIONS {
+ .amp_proc1_irq_storage 0x2000c750 (NOLOAD) : {
+  KEEP(*(.amp_proc1.irq_status)); KEEP(*(.amp_proc1.irq_handle));
+ } > RP1_APP_SRAM
+ .amp_proc1_irq_text 0x2000c7e0 : {
+  KEEP(*(.amp_proc1.irq_text)); KEEP(*(.amp_proc1.irq_contract));
+ } > RP1_APP_SRAM
+} INSERT AFTER .amp_proc1_stack;
+ASSERT(SIZEOF(.amp_proc1_irq_storage) >= 128 && SIZEOF(.amp_proc1_irq_storage) <= 0x90, "GPIO IRQ local status/handle budget")
+ASSERT(ADDR(.amp_proc1_irq_storage) >= ADDR(.amp_proc1_stack) + SIZEOF(.amp_proc1_stack), "GPIO IRQ overlaps C1 stack")
+ASSERT(ADDR(.amp_proc1_irq_text) + SIZEOF(.amp_proc1_irq_text) <= ADDR(.ddr_diagnostics_text), "GPIO IRQ overlaps diagnostics")
+ASSERT(DEFINED(AmpProc1GpioIrq), "GPIO IRQ vector missing")
+"#).unwrap();
+        }
+        println!("cargo:rustc-link-arg=-T{}", path.display());
+    }
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_OBSERVATION").is_some() {
+        assert!(std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1_GPIO_IRQ").is_some());
+        let path=std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("amp-observation.x");
+        std::fs::write(&path,r#"
+SECTIONS {
+ .amp_observation_state 0x2000ce00 (NOLOAD) : { KEEP(*(.amp_observation_state)); } > RP1_APP_SRAM
+ .amp_observation_text ALIGN(ADDR(.amp_observation_state) + SIZEOF(.amp_observation_state), 4) : { KEEP(*(.amp_observation_text)); } > RP1_APP_SRAM
+} INSERT AFTER .amp_proc1_irq_text;
+SECTIONS {
+ .amp_observation_codec ALIGN(ADDR(.openamp_state) + SIZEOF(.openamp_state), 4) : { KEEP(*(.amp_observation_codec)); } > RP1_APP_SRAM
+} INSERT AFTER .openamp_state;
+ASSERT(ADDR(.amp_proc1_irq_text) + SIZEOF(.amp_proc1_irq_text) <= ADDR(.amp_observation_state), "collector overlaps C1 IRQ code")
+ASSERT(SIZEOF(.amp_observation_state) > 0 && SIZEOF(.amp_observation_state) <= 0x490, "collector state budget")
+ASSERT(ADDR(.amp_observation_state) + SIZEOF(.amp_observation_state) <= ADDR(.ddr_diagnostics_text), "collector overlaps DDR diagnostics")
+ASSERT(ADDR(.amp_observation_text) >= ADDR(.amp_observation_state) + SIZEOF(.amp_observation_state), "collector code overlaps state")
+ASSERT(SIZEOF(.amp_observation_text) > 0 && ADDR(.amp_observation_text) + SIZEOF(.amp_observation_text) <= ADDR(.ddr_diagnostics_text), "collector code exceeds local gap")
+ASSERT(DEFINED(rp1_control_take_trace), "collector consumer handoff missing")
+ASSERT(SIZEOF(.amp_observation_codec) > 0 && ADDR(.amp_observation_codec) + SIZEOF(.amp_observation_codec) <= __app_limit, "collector codec exceeds OpenAMP tail")
+"#).unwrap();
+        println!("cargo:rustc-link-arg=-T{}",path.display());
+    }
+}
+
+fn generate_amp_resources() {
+    use std::{env, fs, path::PathBuf, process::Command};
+    println!("cargo:rerun-if-env-changed=RP1_AMP_GENERATOR");
+    println!("cargo:rerun-if-env-changed=RP1_AMP_RECORD_DIR");
+    let generator = PathBuf::from(env::var_os("RP1_AMP_GENERATOR")
+        .expect("freertos-amp-bulk requires RP1_AMP_GENERATOR (amp-deployment.py)"))
+        .canonicalize().expect("AMP generator path");
+    let profiles = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("../../profiles").canonicalize().unwrap();
+    let profile = profiles.join("amp-deployment.json");
+    println!("cargo:rerun-if-changed={}", generator.display());
+    println!("cargo:rerun-if-changed={}", profiles.display());
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("amp-policy");
+    // This directory contains only this build script's disposable products.
+    if out.exists() { fs::remove_dir_all(&out).unwrap(); }
+    let status = Command::new("python3").arg("-B").arg(&generator).arg(&profile)
+        .arg("--output").arg(&out).status().expect("run AMP generator");
+    assert!(status.success(), "AMP policy rejected");
+    if let Some(record) = env::var_os("RP1_AMP_RECORD_DIR") {
+        let record = PathBuf::from(record);
+        fs::create_dir(&record).expect("new AMP evidence directory");
+        for entry in fs::read_dir(&out).unwrap() {
+            let path = entry.unwrap().path();
+            fs::copy(&path, record.join(path.file_name().unwrap())).unwrap();
+        }
+        fs::copy(profile, record.join("amp-deployment.json")).unwrap();
+        fs::copy(generator, record.join("generator.py")).unwrap();
     }
 }

@@ -13,6 +13,12 @@
 extern void rp1_openamp_complete(void);
 extern void rp1_openamp_notify(unsigned int queue);
 extern void rp1_openamp_delay(unsigned int usec);
+#ifdef RP1_AMP_BULK
+extern void rp1_bulk_cold_reset(void);
+extern void rp1_bulk_quiesce(void);
+extern size_t rp1_bulk_receive(void *data, size_t len, uint32_t src);
+extern void rp1_bulk_poll(void);
+#endif
 struct metal_state _metal STATE;
 struct pending { void *data; uint32_t src; uint32_t len; };
 static struct {
@@ -31,6 +37,9 @@ _Static_assert(sizeof(state)+sizeof(_metal)<=0x480, "OpenAMP SRAM reservation");
 
 static void barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }
 static __attribute__((noreturn)) void fail(unsigned int code) {
+#ifdef RP1_AMP_BULK
+    rp1_bulk_quiesce();
+#endif
     CONTROL[5]=0x80000000u|code; barrier();
     for (;;) rp1_openamp_delay(1000);
 }
@@ -59,21 +68,37 @@ static uint8_t status(struct virtio_device *v) { (void)v; barrier(); return TABL
 static uint32_t features(struct virtio_device *v) { (void)v; return TABLE[9]; }
 static void notify(struct virtqueue *vq) { rp1_openamp_notify(vq->vq_queue_index); }
 static const struct virtio_dispatch dispatch = {.get_status=status,.get_features=features,.notify=notify};
-void rp1_openamp_cold_reset(void) { memset(&state,0,sizeof(state)); }
-void rp1_openamp_quiesce(void) {
+void rp1_openamp_cold_reset(void) {
+    memset(&state,0,sizeof(state));
+#ifdef RP1_AMP_BULK
+    rp1_bulk_cold_reset();
+#endif
+}
+static void clear_transport(void) {
     uint32_t sequence=state.last_sequence;
     memset(&state,0,sizeof(state)); state.last_sequence=sequence;
 }
+void rp1_openamp_quiesce(void) {
+#ifdef RP1_AMP_BULK
+    rp1_bulk_quiesce();
+#endif
+    clear_transport();
+}
+#ifndef RP1_AMP_BULK
 static uint32_t checksum(const unsigned char *p, size_t n) {
     uint32_t sum=2166136261u;
     while (n--) sum=(sum^*p++)*16777619u;
     return sum;
 }
 static uint32_t word(const void *p) { uint32_t v; memcpy(&v,p,4); return v; }
+#endif
 static int received(struct rpmsg_endpoint *ept, void *data, size_t len, uint32_t src, void *priv) {
     (void)priv;
-    unsigned char *p=data;
     TELE[0]++;
+#ifdef RP1_AMP_BULK
+    if (rp1_bulk_receive(data,len,src)!=len || len!=128) { TELE[2]++; return 0; }
+#else
+    unsigned char *p=data;
     if (len<28 || len>496 || word(p)!=0x31504d52 || word(p+4)!=1 || word(p+20)!=len) { TELE[2]++; return 0; }
     if (word(p+8)!=CONTROL[12] || word(p+12)!=CONTROL[13]) { TELE[3]++; return 0; }
     if (word(p+len-4)!=checksum(p,len-4)) { TELE[4]++; return 0; }
@@ -81,6 +106,7 @@ static int received(struct rpmsg_endpoint *ept, void *data, size_t len, uint32_t
     if (sequence<=state.last_sequence) { TELE[5]++; return 0; }
     if (state.last_sequence && sequence!=state.last_sequence+1) { TELE[6]++; return 0; }
     state.last_sequence=sequence;
+#endif
     int rc=rpmsg_trysendto(ept,data,len,src);
     if (rc==(int)len) { TELE[1]++; return 0; }
     if (rc!=RPMSG_ERR_NO_BUFF) { fail(4); }
@@ -121,7 +147,9 @@ int rp1_openamp_start(uint32_t buffer_dma) {
     if (state.online) return -2;
     if (status(NULL)!=7 || features(NULL)!=1 || TABLE[12]!=0x82000000 || TABLE[17]!=0x82004000 ||
         TABLE[13]!=16 || TABLE[14]!=16 || TABLE[18]!=16 || TABLE[19]!=16) return -3;
-    rp1_openamp_quiesce(); memset(&_metal,0,sizeof(_metal));
+    /* First attach clears queue state without retiring the fresh bulk session.
+     * After a real quiesce, the bulk retirement remains permanent. */
+    clear_transport(); memset(&_metal,0,sizeof(_metal));
     if (CONTROL[15]==0) for (unsigned i=0;i<10;i++) TELE[i]=0;
     state.phys=buffer_dma;
     if (!validate_queue(0,0) || !validate_queue(1,0)) return -4;
@@ -163,6 +191,9 @@ int rp1_openamp_poll(void) {
     }
     virtqueue_notification(&state.queue[0]);
     virtqueue_notification(&state.queue[1]);
+#ifdef RP1_AMP_BULK
+    rp1_bulk_poll();
+#endif
     TELE[8]++;
     return 0;
 }

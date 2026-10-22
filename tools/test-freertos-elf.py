@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """Mutate vector bytes in temporary ELF copies; never alter the selected image."""
+import argparse
 import importlib.util
 from pathlib import Path
 import struct
-import sys
 import tempfile
 
 spec = importlib.util.spec_from_file_location('validator', Path(__file__).with_name('check-freertos-elf.py'))
 v = importlib.util.module_from_spec(spec); spec.loader.exec_module(v)
-source = Path(sys.argv[1]); result = v.check(source)
+ap = argparse.ArgumentParser(description=__doc__)
+ap.add_argument('elf', type=Path)
+ap.add_argument('--amp-control', action='store_true')
+ap.add_argument('--amp-proc1', action='store_true')
+ap.add_argument('--amp-proc1-gpio-irq', action='store_true')
+ap.add_argument('--amp-observation', action='store_true')
+args = ap.parse_args()
+source = args.elf
+kwargs = dict(amp_control=args.amp_control,amp_proc1=args.amp_proc1,amp_proc1_gpio_irq=args.amp_proc1_gpio_irq,amp_observation=args.amp_observation)
+result = v.check(source, **kwargs)
 data = source.read_bytes()
 header = struct.unpack_from('<16sHHIIIIIHHHHHH', data)
 phoff, phsize, phcount = header[5], header[9], header[10]
@@ -28,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='rp1-rtos-elf-negative-') as directory:
     for offset in offsets:
         bad = bytearray(data); struct.pack_into('<I',bad,offset,0)
         mutated.write_bytes(bad)
-        try: v.check(mutated)
+        try: v.check(mutated, **kwargs)
         except AssertionError: pass
         else: raise AssertionError(f'accepted corrupted ELF at {offset}')
 print(f"BUILD host check: positive1, negative{len(offsets)}; no hardware")

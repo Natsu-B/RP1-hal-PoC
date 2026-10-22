@@ -10549,9 +10549,14 @@ fn emit_readback_frames(pin: &mut ConfiguredPin<22, Output>, uart0: &Uart0Tx) {
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "freertos-amp-bulk"))]
+mod amp_resources { include!(concat!(env!("OUT_DIR"), "/amp-policy/resources.rs")); }
+
 #[cfg(target_arch = "arm")]
 #[rp1_hal::main]
 fn main(mut p: Peripherals) -> ! {
+    #[cfg(feature = "freertos-amp-bulk")]
+    let (p, linux_handoff) = amp_resources::Resources::partition(p);
     // Sole cold R1 prerequisite, before even GPIO's PROC_MISC reset release.
     // R2 retains its existing 0x77010 contract, not an implicit APB rate change.
     #[cfg(all(feature = "freertos-scmi-readonly", not(any(feature = "freertos-r2-spi", feature = "freertos-r2-i2c-nack", feature = "freertos-r2-uart", feature = "freertos-r2-mixed"))))]
@@ -10560,7 +10565,10 @@ fn main(mut p: Peripherals) -> ! {
     #[cfg(any(feature = "i2c1-wrapper-readonly-proof", feature = "i2c1-wrapper-stop-irq-proof", feature = "i2c1-read1-irq-proof"))]
     i2c1_wrapper_readonly_proof::invalidate();
 
+    #[cfg(not(feature = "freertos-amp-bulk"))]
     let mut gpio22 = p.gpio.pin::<22>().into_output();
+    #[cfg(feature = "freertos-amp-bulk")]
+    let mut gpio22 = p.gpio22.into_output();
     pulse_group(&mut gpio22, 1);
     pulse_group(&mut gpio22, 2);
 
@@ -10624,14 +10632,34 @@ fn main(mut p: Peripherals) -> ! {
             if state5.decision == State5Decision::LinkUp {
                 // Retain the existing ESP peer's idle wiring contract even though
                 // R1 does not transfer SPI/I2C data. ESP32 MISO stays released.
+                #[cfg(not(feature = "freertos-amp-bulk"))]
                 let _miso = p.gpio.pin::<9>().into_input_pull_up();
+                #[cfg(feature = "freertos-amp-bulk")]
+                let _miso = p.gpio9.into_input_pull_up();
+                #[cfg(feature = "freertos-amp-proc1-gpio-irq")]
+                amp_proc1::handoff_input(_miso,p.gpio9_irq);
+                #[cfg(not(feature = "freertos-amp-bulk"))]
                 let _sda = p.gpio.pin::<2>().into_input_pull_up();
+                #[cfg(feature = "freertos-amp-bulk")]
+                let _sda = p.gpio2.into_input_pull_up();
+                #[cfg(not(feature = "freertos-amp-bulk"))]
                 let _scl = p.gpio.pin::<3>().into_input_pull_up();
+                #[cfg(feature = "freertos-amp-bulk")]
+                let _scl = p.gpio3.into_input_pull_up();
+                #[cfg(not(feature = "freertos-amp-bulk"))]
                 let mut cs0 = p.gpio.pin::<8>().into_output();
+                #[cfg(feature = "freertos-amp-bulk")]
+                let mut cs0 = p.gpio8.into_output();
                 cs0.set_high();
+                #[cfg(not(feature = "freertos-amp-bulk"))]
                 let mut cs1 = p.gpio.pin::<7>().into_output();
+                #[cfg(feature = "freertos-amp-bulk")]
+                let mut cs1 = p.gpio7.into_output();
                 cs1.set_high();
+                #[cfg(not(feature = "freertos-amp-bulk"))]
                 let mut sclk = p.gpio.pin::<11>().into_output();
+                #[cfg(feature = "freertos-amp-bulk")]
+                let mut sclk = p.gpio11.into_output();
                 sclk.set_low();
                 #[cfg(feature = "freertos-r2-spi")]
                 {
@@ -10639,8 +10667,8 @@ fn main(mut p: Peripherals) -> ! {
                     assert_eq!(pll_sys_core_lock_transition().decision, PllSysCoreLockDecision::Locked);
                     assert!(enable_pll_sys_pri_ph_bit4().is_ok());
                     assert!(release_spi0_reset_bank1_bit10().is_ok());
-                    let host = p.spi0.into_host_mode0_100khz(p.gpio.pin::<8>(),
-                        p.gpio.pin::<9>(), p.gpio.pin::<10>(), p.gpio.pin::<11>()).unwrap();
+                    let host = p.spi0.into_host_mode0_100khz(cs0.into_pin(),
+                        _miso.into_pin(), p.gpio.pin::<10>(), sclk.into_pin()).unwrap();
                     let pad = spi0_miso_input_observation::apply_guarded_bias().unwrap();
                     assert_eq!(pad & 0xff, 0xfb);
                     freertos_r1::spi::set_host(host);
@@ -10652,7 +10680,7 @@ fn main(mut p: Peripherals) -> ! {
                     assert_eq!(pll_sys_core_lock_transition().decision, PllSysCoreLockDecision::Locked);
                     assert!(enable_pll_sys_pri_ph_bit4().is_ok());
                     assert!(release_i2c1_reset_bank0_bit8().is_ok());
-                    let host = p.i2c1.into_host_100khz(p.gpio.pin::<2>(), p.gpio.pin::<3>()).unwrap();
+                    let host = p.i2c1.into_host_100khz(_sda.into_pin(), _scl.into_pin()).unwrap();
                     freertos_r1::i2c::set_host(host);
                 }
                 #[cfg(feature = "freertos-r2-uart")]
@@ -10671,11 +10699,11 @@ fn main(mut p: Peripherals) -> ! {
                     assert!(pll_sys_core_lock_transition().decision == PllSysCoreLockDecision::Locked);
                     assert!(enable_pll_sys_pri_ph_bit4().is_ok());
                     assert!(release_spi0_reset_bank1_bit10().is_ok());
-                    let spi = p.spi0.into_host_mode0_100khz(p.gpio.pin::<8>(),
-                        p.gpio.pin::<9>(), p.gpio.pin::<10>(), p.gpio.pin::<11>()).unwrap();
+                    let spi = p.spi0.into_host_mode0_100khz(cs0.into_pin(),
+                        _miso.into_pin(), p.gpio.pin::<10>(), sclk.into_pin()).unwrap();
                     assert!(spi0_miso_input_observation::apply_guarded_bias().unwrap() & 0xff == 0xfb);
                     assert!(release_i2c1_reset_bank0_bit8().is_ok());
-                    let i2c = p.i2c1.into_host_100khz(p.gpio.pin::<2>(), p.gpio.pin::<3>()).unwrap();
+                    let i2c = p.i2c1.into_host_100khz(_sda.into_pin(), _scl.into_pin()).unwrap();
                     assert!(release_uart0_reset_bank1_bit26().is_ok());
                     let uart = p.uart0.init_tx_rx_115200_clock_ready();
                     freertos_r1::mixed::set_hosts(spi, i2c, uart);
@@ -10686,9 +10714,11 @@ fn main(mut p: Peripherals) -> ! {
                     .expect("endpoint observer UART clock mismatch"));
                 // PL011 AXI has no reset-control hook. Release only UART1 before
                 // Linux owns its registers/pins; retain the shared clock tuple.
-                #[cfg(feature = "freertos-endpoint-config-once")]
+                #[cfg(all(feature = "freertos-endpoint-config-once", not(feature = "freertos-amp-bulk")))]
                 p.resets.deassert_uart_clock_ready(rp1_hal::reset::UartReset::Uart1, 100_000)
                     .expect("Linux UART1 reset release failed");
+                #[cfg(feature = "freertos-amp-bulk")]
+                linux_handoff.release().expect("Linux UART1 reset release failed");
                 freertos_r1::run(gpio22);
             }
             #[cfg(all(
@@ -11777,3 +11807,6 @@ fn main() {}
 
 #[cfg(feature = "endpoint-config-foundation")]
 mod endpoint_config;
+
+#[cfg(all(target_arch = "arm", feature = "freertos-amp-proc1"))]
+mod amp_proc1;

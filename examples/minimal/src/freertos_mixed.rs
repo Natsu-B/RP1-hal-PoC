@@ -119,6 +119,8 @@ pub unsafe extern "C" fn spi_worker(_: *mut c_void) { unsafe {
         wait_miso(true, 3000); os::delay(100).unwrap();
     }
     if REPEATED {SPI_DONE.store(REQUESTS,Ordering::Release);}
+    #[cfg(feature = "freertos-r2-mixed-repeat-timing")]
+    os::spi0::freeze_timing();
     complete(B)
 } }
 

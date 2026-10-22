@@ -1,7 +1,10 @@
 //! Bounded commissioning RPC; selector observations run on proc0 with IRQs masked.
 //! No other task can access DBI until its original selector is restored.
 use core::ptr;
-use rp1_hal::pcie_outbound::{ReservedDdrWindow, REGION0};
+use rp1_hal::pcie_outbound::REGION0;
+use rp1_hal::ddr_test;
+#[cfg(any(not(feature = "freertos-amp-bulk"), feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"))]
+use rp1_hal::pcie_outbound::{ReservedDdrWindow, validate_request};
 const MAGIC: u32 = u32::from_le_bytes(*b"DDR1");
 const SELECTOR: usize = 0x4010_8000;
 const DBI: usize = 0x4010_9000;
@@ -16,11 +19,13 @@ fn read(a: usize) -> u32 { unsafe { (a as *const u32).read_volatile() } }
 fn write(a: usize, v: u32) { unsafe { (a as *mut u32).write_volatile(v); } }
 fn barrier() { unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); } }
 fn allowed_selector(s: u32) -> bool { matches!(s, 0x23 | 0x63 | 0x03 | 0x43 | 0x83 | 0xc3) }
+#[cfg_attr(any(feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"), inline(never))]
 fn region() -> [u32; 8] { OFFSETS.map(|off| read(DBI + off)) }
 fn desired(candidate: u32) -> Option<[u32; 8]> {
     // Candidate 1 was rejected by the real read; never execute it again.
     if candidate == 2 { Some(REGION0) } else { None }
 }
+#[cfg_attr(any(feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"), inline(never))]
 fn program(values: [u32; 8]) {
     write(DBI + 4, 0); barrier();
     for i in [2, 3, 4, 5, 6, 0] { write(DBI + OFFSETS[i], values[i]); }
@@ -28,15 +33,41 @@ fn program(values: [u32; 8]) {
 }
 pub unsafe fn prepare() {
     for i in 0..64 { put(i, 0); }
-    put(1, 2); barrier(); put(0, MAGIC); barrier();
+    put(1, 2);
+    put(56, if cfg!(feature = "freertos-amp-bulk") { u32::from_le_bytes(*b"BKB1") } else { ddr_test::CAPABILITY });
+    #[cfg(any(feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"))]
+    put(59, u32::from_le_bytes(*b"SWP1"));
+    barrier(); put(0, MAGIC); barrier();
 }
+#[cfg_attr(any(feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"), inline(never))]
+#[cfg_attr(any(feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"), unsafe(link_section = ".ddr_diagnostics_text"))]
 pub unsafe fn service() {
     let seq = get(2);
     if seq == 0 || seq == get(3) || get(0) != MAGIC { return; }
     barrier();
     let (op, candidate) = (get(4), get(5));
     put(6, 1);
-    if (op == 1 && allowed_selector(candidate)) || (op == 2 && desired(candidate).is_some()) || matches!(op, 3 | 4 | 5) {
+    // Optional scratch diagnostics exist only before the unique bulk claim.
+    // A successful claim retires every diagnostic RPC for this entire boot.
+    #[cfg(feature = "freertos-amp-bulk")]
+    if !ddr_test::bulk_operation_allowed(op,get(63)!=0,cfg!(any(feature="freertos-amp-bulk-ddr-diagnostics",feature="freertos-amp-control"))) {
+        put(6,0x100); put(57,get(57).saturating_add(1));
+        barrier(); put(3,seq); barrier(); return;
+    }
+    // Read all request metadata BEFORE any DDR access. Generation is the actual
+    // boot epoch, not a caller-supplied physical address. Linux owns the payload
+    // until it publishes this request; it must not reuse it before response.
+    #[cfg(any(not(feature = "freertos-amp-bulk"), feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"))]
+    let args = [get(32),get(33),get(34),get(35),get(36),get(37)];
+    #[cfg(any(not(feature = "freertos-amp-bulk"), feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"))]
+    if matches!(op,6|7) && (args[1] == 0 || args[1] as usize > ddr_test::MAX_BYTES ||
+        validate_request(args[0] as usize,args[1] as usize,4).is_err() ||
+        ddr_test::pattern(args[2],args[3],args[0]).is_none() ||
+        (u64::from(args[4]) | (u64::from(args[5])<<32)) != super::timesync::boot_epoch()) {
+        put(6,0x100); put(57,get(57).saturating_add(1));
+        barrier(); put(3,seq); barrier(); return;
+    }
+    if (op == 1 && !cfg!(any(feature="freertos-amp-bulk-ddr-diagnostics",feature="freertos-amp-control")) && allowed_selector(candidate)) || (op == 2 && desired(candidate).is_some()) || matches!(op, 3 | 4 | 5 | 6 | 7) {
         // Op1: REVERSIBLE_SELECTOR_OBSERVATION. Op2/5: region programming/restore.
         // proc1 is held by this build; the DBI monitor is a proc0 task.
         let mask: u32;
@@ -44,7 +75,7 @@ pub unsafe fn service() {
         let saved = read(SELECTOR);
         put(7, saved);
         if saved == 0 {
-            if op == 1 {
+            if op == 1 && !cfg!(any(feature="freertos-amp-bulk-ddr-diagnostics",feature="freertos-amp-control")) {
                 write(SELECTOR, candidate); barrier();
                 put(8, read(SELECTOR));
                 for (view, base) in [DBI, DBI + 0x100].into_iter().enumerate() {
@@ -55,7 +86,8 @@ pub unsafe fn service() {
                 let mut others_disabled = true;
                 for s in [0x43, 0x83, 0xc3] {
                     write(SELECTOR, s); barrier();
-                    others_disabled &= read(SELECTOR) == s && read(DBI + 4) & 0x8000_0000 == 0;
+                    others_disabled &= read(SELECTOR) == s &&
+                        ddr_test::peer_region_allowed(op,s,region(),cfg!(feature="freertos-openamp"));
                 }
                 write(SELECTOR, 3); barrier(); put(8, read(SELECTOR));
                 let before = region();
@@ -69,7 +101,7 @@ pub unsafe fn service() {
                         for (i, v) in after.into_iter().enumerate() { put(16 + i, v); }
                         if after == values { put(10, candidate); put(6, 0); }
                         else { program(before); put(6, if region() == before { 3 } else { 5 }); }
-                    } else if matches!(op, 3 | 4) && Some(before) == desired(get(10)) {
+                    } else if matches!(op, 3 | 4 | 6 | 7) && Some(before) == desired(get(10)) {
                         put(6, 0); // Data load happens after selector/IRQ restoration.
                     } else if op == 5 && Some(before) == desired(get(10)) {
                         let original = core::array::from_fn(|i| get(48 + i));
@@ -84,6 +116,24 @@ pub unsafe fn service() {
         }
         unsafe { core::arch::asm!("msr PRIMASK, {0}", in(reg) mask, options(nostack)); }
     }
+    #[cfg(any(not(feature = "freertos-amp-bulk"), feature = "freertos-amp-bulk-ddr-diagnostics", feature = "freertos-amp-control"))]
+    if matches!(op,6|7) && get(6) == 0 {
+        let mut window=unsafe { ReservedDdrWindow::from_verified_region0() };
+        let mut sum=0u32;
+        let mut mismatches=0u32;
+        put(11,seq); barrier();
+        for offset in (args[0] as usize..(args[0]+args[1]) as usize).step_by(4) {
+            let expected=ddr_test::pattern(args[2],args[3],offset as u32).unwrap();
+            let value=if op==7 { window.write32(offset,expected).unwrap(); expected }
+                      else { window.read32(offset).unwrap() };
+            mismatches+=u32::from(value!=expected);sum=sum.wrapping_add(value);
+        }
+        if op==7 { put(14,window.complete_posted_write().unwrap()); }
+        put(12,sum); put(15,mismatches);put(58,get(58).saturating_add(args[1]/4));
+        if mismatches!=0 { put(6,0x101); }
+        put(13,seq); barrier();
+    }
+    #[cfg(not(feature = "freertos-amp-bulk"))]
     if matches!(op, 3 | 4) && get(6) == 0 {
         let mut window = unsafe { ReservedDdrWindow::from_verified_region0() };
         put(11, seq); barrier(); // externally visible before the potentially stalled load
@@ -109,6 +159,34 @@ pub unsafe fn service() {
         put(13, seq); barrier();
     }
     barrier(); put(3, seq); barrier();
+}
+
+/// Called by the sole OpenAMP worker after validated HELLO. Linux has already
+/// admitted the fixed reservations before bootstrap/attach; no RAM is exposed
+/// or iATU programmed by this function. It permanently closes the old RPC.
+#[cfg(feature = "freertos-amp-bulk")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn rp1_bulk_claim_window() -> bool {
+    if get(10) != 2 || get(63) != 0 || get(2) != get(3) { return false; }
+    let mask: u32;
+    unsafe { core::arch::asm!("mrs {0}, PRIMASK", "cpsid i", out(reg) mask, options(nostack)); }
+    let saved = read(SELECTOR);
+    let mut valid = saved == 0;
+    if valid {
+        for s in [3,0x43,0x83,0xc3] {
+            write(SELECTOR,s); barrier();
+            let v = region();
+            valid &= read(SELECTOR) == s && match s {
+                3 => v == REGION0,
+                0x43 => v == rp1_hal::pcie_outbound::OPENAMP_REGION1,
+                _ => v[1] & 0x80000000 == 0,
+            };
+        }
+        write(SELECTOR,saved); barrier(); valid &= read(SELECTOR) == saved;
+    }
+    if valid { put(63,1); barrier(); }
+    unsafe { core::arch::asm!("msr PRIMASK, {0}", in(reg) mask, options(nostack)); }
+    valid
 }
 #[cfg(test)]
 mod tests {

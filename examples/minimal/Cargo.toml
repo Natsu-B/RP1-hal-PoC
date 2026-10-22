@@ -8,6 +8,7 @@ build = "build.rs"
 rp1-hal = { path = "../../crates/rp1-hal" }
 rp1-rt = { path = "../../crates/rp1-rt" }
 rp1-freertos = { path = "../../crates/rp1-freertos", optional = true }
+rp1-abi = { path = "../../crates/rp1-abi", optional = true }
 
 [build-dependencies]
 rp1-build = { path = "../../crates/rp1-build" }
@@ -27,6 +28,12 @@ freertos-ddr = ["freertos-timesync"]
 freertos-virtio-probe = ["freertos-ddr", "rp1-hal/virtio-probe"]
 freertos-openamp = ["freertos-ddr", "rp1-hal/openamp"]
 freertos-openamp-rpmsg = ["freertos-openamp", "rp1-hal/openamp-rpmsg"]
+freertos-amp-bulk = ["freertos-openamp-rpmsg", "rp1-hal/amp-bulk"]
+freertos-amp-bulk-ddr-diagnostics = ["freertos-amp-bulk", "rp1-freertos/task-pool-2304"]
+freertos-amp-control = ["freertos-amp-bulk", "rp1-freertos/task-pool-1024", "rp1-freertos/sync-pool-r1"]
+freertos-amp-proc1 = ["freertos-amp-control", "rp1-hal/amp-proc1-probe", "dep:rp1-abi"]
+freertos-amp-proc1-gpio-irq = ["freertos-amp-proc1"]
+freertos-amp-observation = ["freertos-amp-proc1-gpio-irq", "rp1-hal/amp-observation"]
 freertos-r1-local-stack = ["freertos-r1", "rp1-rt/freertos-local-monitor-stack", "rp1-freertos/local-monitor-stack"]
 freertos-r1-local-stack-fault = ["freertos-r1-local-stack", "freertos-r1-fault"]
 freertos-r3-proc1-worker = ["freertos-r1", "rp1-rt/freertos-proc1-worker"]
@@ -64,6 +71,7 @@ freertos-r2-uart-lifecycle = ["freertos-r2-uart"]
 freertos-r2-uart-overflow = ["freertos-r2-uart"]
 freertos-r2-mixed = ["freertos-r1", "spi0-miso-guarded-input-bias", "i2c1-reset-only", "uart0-functional-clock-before-reset-done", "rp1-rt/spi0-local-irq", "rp1-rt/i2c1-local-irq", "rp1-rt/uart0-rx-irq", "rp1-freertos/spi0-irq", "rp1-freertos/i2c1-irq", "rp1-freertos/uart0-irq"]
 freertos-r2-mixed-repeat = ["freertos-r2-mixed"]
+freertos-r2-mixed-repeat-timing = ["freertos-r2-mixed-repeat", "rp1-freertos/spi0-timing"]
 freertos-r2-mixed-i2c-pair = ["freertos-r2-mixed-repeat"]
 freertos-r2-mixed-i2c-stream = ["freertos-r2-mixed-i2c-pair"]
 gpio22-start-proof = []

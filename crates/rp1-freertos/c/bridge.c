@@ -13,7 +13,12 @@ enum { QUEUES = 2, QUEUE_WORDS = 4, SEMAPHORES = 1 };
 #else
 enum { QUEUES = 4, QUEUE_WORDS = 16, SEMAPHORES = 4 };
 #endif
-#ifdef RP1_FREERTOS_LOCAL_MONITOR_STACK
+#if defined(RP1_FREERTOS_TASK_POOL_1024)
+#if defined(RP1_FREERTOS_TASK_POOL_2304) || defined(RP1_FREERTOS_LOCAL_MONITOR_STACK)
+#error "The two-task AMP pool cannot be combined with R1/local-monitor pools"
+#endif
+enum { TASK_STACK_POOL_WORDS = 1024 };
+#elif defined(RP1_FREERTOS_LOCAL_MONITOR_STACK)
 enum { TASK_STACK_POOL_WORDS = 1792 };
 /* NOLOAD/PT_NULL: xTaskCreateStatic fills all bytes before first use, on
  * every cold/warm kernel start. Never read this as zero-initialized data. */

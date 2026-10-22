@@ -4,6 +4,10 @@ use core::ptr;
 use rp1_hal::{clock_adopt::ReadOnlyUartApb, clock_profile_generated::CLOCKS,
     scmi_clock::{ClockHardware, Server}, scmi_mailbox::{self, Counters, MailboxIo, Rp1Mailbox}};
 
+#[cfg(feature = "freertos-amp-observation")]
+#[path = "cold_irq_admission.rs"]
+mod cold_irq_admission;
+
 const IRQ: usize = rp1_rt::SCMI_CANDIDATE_IRQ;
 const BIT: u32 = 1 << (IRQ - 32);
 const IPSR: u32 = rp1_rt::SCMI_CANDIDATE_VECTOR as u32;
@@ -43,7 +47,11 @@ pub unsafe fn prepare() -> Result<(), &'static str> {
     let vtor = read(0xe000_ed08);
     if vtor != ptr::addr_of!(rp1_rt::VECTOR_TABLE) as u32 { return Err("VTOR owner"); }
     let vector = read(vtor as usize + IPSR as usize * 4);
-    if primask != 1 || read(0xe000_e104) & BIT != 0 || read(0xe000_e304) & BIT != 0
+    #[cfg(feature = "freertos-amp-observation")]
+    let nvic_held = unsafe { cold_irq_admission::check() };
+    #[cfg(not(feature = "freertos-amp-observation"))]
+    let nvic_held = read(0xe000_e104) & BIT == 0 && read(0xe000_e304) & BIT == 0;
+    if primask != 1 || !nvic_held
         || read(0x4000_8008) != 0 || vector != RP1_SCMI_IRQHandler as *const () as u32 {
         return Err("active source/vector/interrupt owner");
     }

@@ -8,7 +8,7 @@ const TABLE: usize = LOCAL + 0xc000;
 const SELECTOR: usize = 0x4010_8000;
 const DBI: usize = 0x4010_9000;
 const OFFSETS: [usize; 8] = [0,4,8,12,16,20,24,32];
-const REGION1: [u32; 8] = [0,0x8000_0000,0x0200_0000,0x80,0x0200_ffff,0x2110_0000,0x10,0];
+const REGION1: [u32; 8] = crate::pcie_outbound::OPENAMP_REGION1;
 #[used]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".openamp_control")]
@@ -53,7 +53,11 @@ pub unsafe fn service() {
     #[cfg(feature = "openamp-rpmsg")]
     if matches!(get(11),1|3) {
         let rc=unsafe { rp1_openamp_poll() };
-        if rc!=0 { put(11,0); put(5,rc as u32); }
+        if rc!=0 {
+            #[cfg(feature = "amp-bulk")]
+            unsafe { rp1_bulk_quiesce(); }
+            put(11,0); put(5,rc as u32);
+        }
     }
     let command = get(3);
     if command == 0 || command == get(4) { return; }
@@ -118,6 +122,8 @@ pub unsafe fn service() {
 
 #[cfg(feature = "openamp-rpmsg")]
 unsafe extern "C" {
+    #[cfg(feature = "amp-bulk")]
+    fn rp1_bulk_quiesce();
     fn rp1_openamp_cold_reset();
     fn rp1_openamp_quiesce();
     fn rp1_openamp_start(buffer_dma: u32) -> i32;

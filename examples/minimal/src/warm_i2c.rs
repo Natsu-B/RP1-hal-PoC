@@ -97,7 +97,7 @@ mod target {
         let mut sclk = gpio.pin::<11>().into_output(); sclk.set_low(); barrier();
         let pre = input(); save(17,pre[2]);
         if !input_admitted(pre) || !pin.is_high() || pre[4] & 0xc != 0xc { return Err(0x74); }
-        let host = i2c.into_host_100khz(gpio.pin::<2>(),gpio.pin::<3>()).map_err(|_| 0x75u32)?;
+        let host = i2c.into_host_100khz(_sda.into_pin(),_scl.into_pin()).map_err(|_| 0x75u32)?;
         let b = rp1_hal::addr::I2C1_BASE;
         if !clean() || read(b) != 0x63 || read(b+0x14) != 781 || read(b+0x18) != 1186
             || read(b+0x7c) != 593 || read(b+0x108) != 0 { return Err(0x76); }
@@ -105,13 +105,18 @@ mod target {
             if ptr::addr_of!(HOST).read().is_some() || ptr::addr_of!(PIN).read().is_some() { return Err(0x77); }
             ptr::addr_of_mut!(HOST).write(Some(host)); ptr::addr_of_mut!(PIN).write(Some(pin));
         }
+        // Leave electrical levels intact, return only idle fixture ownership.
+        gpio.return_pin(cs0.into_pin()).map_err(|_| 0x77u32)?;
+        gpio.return_pin(cs1.into_pin()).map_err(|_| 0x77u32)?;
+        gpio.return_pin(sclk.into_pin()).map_err(|_| 0x77u32)?;
         Ok(())
     }
     #[cfg(feature = "freertos-r3-watchdog-warm-combined")]
-    pub fn take_host() -> Option<I2c1Host> {
+    pub fn take_host(gpio: &mut Gpio) -> Option<I2c1Host> {
         unsafe {
             // End the READYACK-era input handle lifetime before SPI MISO owns9.
-            let _pin = ptr::addr_of_mut!(PIN).replace(None)?;
+            let pin = ptr::addr_of_mut!(PIN).replace(None)?;
+            gpio.return_pin(pin.into_pin()).ok()?;
             ptr::addr_of_mut!(HOST).replace(None)
         }
     }

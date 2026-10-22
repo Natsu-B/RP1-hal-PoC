@@ -192,7 +192,7 @@ mod target {
                 // I2C establishes the common clock once and the idle wiring.
                 // Discard its GPIO9 input handle before SPI takes the same pin.
                 if let Err(code) = freertos_r1::warm_i2c::prepare(p.i2c1, &mut p.gpio) { i2c_failure(code); }
-                let Some(i2c) = freertos_r1::warm_i2c::take_host() else { i2c_failure(0x77); };
+                let Some(i2c) = freertos_r1::warm_i2c::take_host(&mut p.gpio) else { i2c_failure(0x77); };
                 if let Err(code) = freertos_r1::warm_spi::prepare(p.spi0, &mut p.gpio) { i2c_failure(code); }
                 let Some(spi) = freertos_r1::warm_spi::take_host() else { i2c_failure(0x77); };
                 // Keep RX disabled until the sole owner arms its UART exchange.

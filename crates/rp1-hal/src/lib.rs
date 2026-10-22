@@ -17,6 +17,10 @@ pub mod mailbox;
 pub mod mmio;
 pub mod owner;
 pub mod pcie_outbound;
+pub mod bulk;
+pub mod local_control;
+pub mod local_queue;
+pub mod ddr_test;
 #[cfg(feature = "virtio-probe")]
 pub mod virtio_probe;
 #[cfg(feature = "openamp")]

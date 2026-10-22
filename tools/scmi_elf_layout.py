@@ -63,8 +63,12 @@ def read_layout(elf):
 
 
 def sram_mapping(tree):
+    # OpenAMP retains this SRAM as a simple bus, keeping the Linux mmio-sram
+    # allocator away from firmware-owned bytes. Both forms must pass the same
+    # exact reg, cell-width and full-range translation checks below.
     matches = [p for p, n in tree.nodes.items() if tree.enabled[p] and tree.rp1(p)
-               and "mmio-sram" in n.get("compatible", [])]
+               and ("mmio-sram" in n.get("compatible", []) or
+                    (n.get("compatible") == ["simple-bus"] and p.rsplit('/',1)[-1] == 'sram@400000'))]
     if len(matches) != 1:
         raise ValueError("expected exactly one enabled RP1 SRAM")
     path = matches[0]

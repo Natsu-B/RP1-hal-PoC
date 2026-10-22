@@ -1,0 +1,24 @@
+{
+  "schema": 2,
+  "name": "amp-minimal-uart-bulk-v2",
+  "clock_profile": "rp1-clock-profile.toml",
+  "clock_authority": "rp1",
+  "default_owner": "deny",
+  "gpio_interrupts": {"gpio9": "proc1"},
+  "boot_releases": ["uart1"],
+  "linux_perst_hold_ms": 20,
+  "bulk": {"base": 553648128, "size": 65536},
+  "transport": {"base": 554696704, "size": 65536},
+  "resources": {
+    "uart0": {"owner": "rp1", "pins": [14, 15], "clocks": ["uart", "uart_apb"], "reset": "bank1:26", "irq": 25, "dma": [], "shared": ["uart_clock", "bar1_64k_page3"], "failsafe": "hold"},
+    "uart1": {"owner": "linux", "pins": [0, 1], "clocks": ["uart", "uart_apb"], "reset": "bank1:27", "irq": 42, "dma": [], "shared": ["uart_clock", "bar1_64k_page3"], "failsafe": "hold"},
+    "gpio2": {"owner": "rp1", "pins": [2], "clocks": [], "reset": null, "irq": null, "dma": [], "shared": ["rio_bank0", "pads_bank0"], "failsafe": "hold"},
+    "gpio3": {"owner": "rp1", "pins": [3], "clocks": [], "reset": null, "irq": null, "dma": [], "shared": ["rio_bank0", "pads_bank0"], "failsafe": "hold"},
+    "gpio7": {"owner": "rp1", "pins": [7], "clocks": [], "reset": null, "irq": null, "dma": [], "shared": ["rio_bank0", "pads_bank0"], "failsafe": "hold"},
+    "gpio8": {"owner": "rp1", "pins": [8], "clocks": [], "reset": null, "irq": null, "dma": [], "shared": ["rio_bank0", "pads_bank0"], "failsafe": "hold"},
+    "gpio9": {"owner": "rp1", "pins": [9], "clocks": [], "reset": null, "irq": null, "dma": [], "shared": ["rio_bank0", "pads_bank0"], "failsafe": "hold"},
+    "gpio11": {"owner": "rp1", "pins": [11], "clocks": [], "reset": null, "irq": null, "dma": [], "shared": ["rio_bank0", "pads_bank0"], "failsafe": "hold"},
+    "gpio22": {"owner": "rp1", "pins": [22], "clocks": [], "reset": null, "irq": null, "dma": [], "shared": ["rio_bank0", "pads_bank0"], "failsafe": "safe-output", "safe_level": 0},
+    "timer": {"owner": "rp1", "pins": [], "clocks": [], "reset": null, "irq": null, "dma": [], "shared": [], "failsafe": "hold"}
+  }
+}

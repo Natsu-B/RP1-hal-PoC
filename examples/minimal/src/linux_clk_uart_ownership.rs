@@ -266,8 +266,14 @@ pub(crate) mod endpoint_gate {
     pub(crate) fn sample(monitor: &mut DbiMonitor, gate: &mut Gate, elapsed_us: u64,
         read32: impl FnMut(usize) -> u32, clock: impl FnMut() -> u32, mut emit: impl FnMut(&[u8]), #[cfg(feature = "freertos-endpoint-config-once")] mut candidate: impl FnMut(u32, u32) -> bool) {
         if gate.done {
+            // The bulk image retains the admission gate, full config receipt,
+            // heartbeat and fault checks; the post-gate DBI event dump is only
+            // a commissioning trace and is omitted to fit the fixed code SRAM.
+            #[cfg(not(feature = "freertos-amp-bulk"))]
+            {
             let s = read_dbi_sample(read32); // Reset-aware even after the one-shot gate terminates.
             if let Some(event) = monitor.observe(s) { emit(&dbi_line(event, elapsed_us, s)); }
+            }
             return;
         }
         let s = read(read32, clock);
@@ -284,6 +290,7 @@ pub(crate) mod endpoint_gate {
             }
             emit(&line);
         }
+        #[cfg(not(feature = "freertos-amp-bulk"))]
         if let Some(event) = monitor.observe(s.dbi) {
             emit(&dbi_line(event, elapsed_us, s.dbi));
         }
@@ -414,6 +421,9 @@ pub(crate) mod endpoint_gate {
                 lines.push(line.to_vec()); time.set(10_000);
             }, #[cfg(feature = "freertos-endpoint-config-once")] |_, _| true);
             assert_eq!(g.low, Some(300));
+            // Bulk omits the DBI UART trace, so inject the same elapsed time
+            // explicitly; the admission deadline must still reject this gap.
+            time.set(10_000);
             sample(&mut m, &mut g, 10_000, |addr| match addr {
                 a if a == PCIE_APBS_READS[0] => PERSTN | CORE_ALIVE,
                 a if a == PCIE_DBI_WINDOW => 0x0001_1de4,
@@ -421,7 +431,7 @@ pub(crate) mod endpoint_gate {
                 _ => 0,
             }, || time.get(), |line| lines.push(line.to_vec()), #[cfg(feature = "freertos-endpoint-config-once")] |_, _| true);
             assert!(g.done);
-            let line = &lines[1];
+            let line = &lines[if cfg!(feature = "freertos-amp-bulk") {0} else {1}];
             assert_eq!(line, b"RP1GATE code=0x00000003 before=0x00002710 after=0x00002710 low=0x0000012c high=0x00002710 gap=0x000025e4 reads=0x0000ffff ro=0x00000000 sel=0x00000000 mon0=0x00030000 mon1=0x00030000 budget=0x00001388 maxgap=0x000009c4\r\n");
             for levels in [0, PERSTN, CORE_ALIVE, DBI_READY] {
                 let mut reads = Vec::new();
@@ -432,9 +442,10 @@ pub(crate) mod endpoint_gate {
                     }
                     if addr == PCIE_APBS_READS[0] { levels } else { 0 }
                 }, || panic!("terminal gate must not sample time or rearm"), |_| (), #[cfg(feature = "freertos-endpoint-config-once")] |_, _| true);
-                assert_eq!(reads.len(), if levels == DBI_READY { 13 } else { 6 });
+                assert_eq!(reads.len(), if cfg!(feature = "freertos-amp-bulk") {0} else if levels == DBI_READY {13} else {6});
                 assert!(!reads.contains(&RO_WR));
-                assert_eq!(m.last.unwrap().valid, levels == DBI_READY);
+                if cfg!(feature = "freertos-amp-bulk") { assert!(m.last.is_none()); }
+                else { assert_eq!(m.last.unwrap().valid, levels == DBI_READY); }
             }
         }
 
@@ -447,7 +458,8 @@ pub(crate) mod endpoint_gate {
                 assert!(!(PCIE_DBI_WINDOW..PCIE_DBI_WINDOW + 0x1000).contains(&addr)); 0
             }, || 100, |line| lines.push(line.to_vec()), #[cfg(feature = "freertos-endpoint-config-once")] |_, _| true);
             assert_eq!(g.low, Some(100));
-            assert!(!m.last.unwrap().valid);
+            if cfg!(feature = "freertos-amp-bulk") { assert!(m.last.is_none()); }
+            else { assert!(!m.last.unwrap().valid); }
             sample(&mut m, &mut g, 1000, |addr| match addr {
                 a if a == PCIE_APBS_READS[0] => DBI_READY,
                 a if a == PCIE_DBI_WINDOW => 0x0001_1de4,
@@ -456,8 +468,9 @@ pub(crate) mod endpoint_gate {
             }, || 1100, |line| lines.push(line.to_vec()), #[cfg(feature = "freertos-endpoint-config-once")] |_, _| true);
             assert!(g.done);
             assert_eq!((g.low, g.high), (Some(100), Some(1100)));
-            assert!(lines[1].starts_with(b"RP1GATE code=0x00000001 "));
-            assert!(m.last.unwrap().valid);
+            assert!(lines[if cfg!(feature = "freertos-amp-bulk") {0} else {1}].starts_with(b"RP1GATE code=0x00000001 "));
+            if cfg!(feature = "freertos-amp-bulk") { assert!(m.last.is_none()); }
+            else { assert!(m.last.unwrap().valid); }
 
             let mut monitors = 0;
             let s = read(|addr| {

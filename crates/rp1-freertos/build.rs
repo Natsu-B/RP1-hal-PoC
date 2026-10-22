@@ -120,6 +120,8 @@ fn main() {
                     .map(|_| "-DRP1_FREERTOS_ASSERT_PROBE=1"))
                 .args(env::var_os("CARGO_FEATURE_TASK_POOL_2304")
                     .map(|_| "-DRP1_FREERTOS_TASK_POOL_2304=1"))
+                .args(env::var_os("CARGO_FEATURE_TASK_POOL_1024")
+                    .map(|_| "-DRP1_FREERTOS_TASK_POOL_1024=1"))
                 .args(env::var_os("CARGO_FEATURE_LOCAL_MONITOR_STACK")
                     .filter(|_| source.ends_with("c/bridge.c"))
                     .map(|_| "-DRP1_FREERTOS_LOCAL_MONITOR_STACK=1"))

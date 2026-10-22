@@ -141,7 +141,7 @@ mod target {
         let mut cs1 = gpio.pin::<7>().into_output(); cs1.set_high();
         let mut sclk = gpio.pin::<11>().into_output(); sclk.set_low();
         if !_miso.is_high() || !wires_idle() { return Err(0x63); }
-        let host = spi.into_host_mode0_100khz(gpio.pin::<8>(),gpio.pin::<9>(),gpio.pin::<10>(),gpio.pin::<11>())
+        let host = spi.into_host_mode0_100khz(cs0.into_pin(),_miso.into_pin(),gpio.pin::<10>(),sclk.into_pin())
             .map_err(|_| 0x63u32)?;
         let pad = crate::spi0_miso_input_observation::apply_guarded_bias().map_err(|_| 0x64u32)?;
         let pins = miso();

@@ -6,6 +6,8 @@ use core::{marker::PhantomData, ptr};
 pub const SIZE: usize = 0x10000;
 pub const REGION0: [u32; 8] = [0, 0x8000_0000, 0x0100_0000, 0x80,
     0x0100_ffff, 0x2100_0000, 0x10, 0];
+pub const OPENAMP_REGION1: [u32; 8] = [0, 0x8000_0000, 0x0200_0000, 0x80,
+    0x0200_ffff, 0x2110_0000, 0x10, 0];
 const LOCAL: usize = 0x8100_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +19,13 @@ fn address(offset: usize, words: usize) -> Result<usize, Error> {
     let end = offset.checked_add(bytes).ok_or(Error::Overflow)?;
     if offset > SIZE || end > SIZE { return Err(Error::Bounds); }
     LOCAL.checked_add(offset).ok_or(Error::Overflow)
+}
+
+/// Validate a request without issuing any MMIO/PCIe access. Byte accesses and
+/// misaligned requests are deliberately unsupported by the proved u32 path.
+pub fn validate_request(offset: usize, length: usize, width: usize) -> Result<(), Error> {
+    if width != 4 || length & 3 != 0 { return Err(Error::Alignment); }
+    address(offset, length / 4).map(|_| ())
 }
 pub fn barrier() {
     #[cfg(target_arch = "arm")]
@@ -58,14 +67,33 @@ impl ReservedDdrWindow {
     /// only drains the M3/AXI side; the returned read completion is essential.
     /// The caller must publish BAR2 response only after this method returns.
     pub fn complete_posted_write(&mut self) -> Result<u32, Error> {
+        self.complete_posted_write_at(0)
+    }
+    /// Complete via a word owned by this producer. Duplex users must not read
+    /// a peer's unpublished buffer merely to drain their own posted writes.
+    pub fn complete_posted_write_at(&mut self, offset: usize) -> Result<u32, Error> {
+        address(offset, 1)?;
         barrier();
-        let value = self.read32(0)?;
+        let value = self.read32(offset)?;
         barrier(); Ok(value)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test] fn invalid_requests_issue_no_transaction() {
+        use super::*;
+        // These methods would fault on a host if they touched the RP1 aperture.
+        let mut w = unsafe { ReservedDdrWindow::from_verified_region0() };
+        assert_eq!(w.write32(SIZE, 1), Err(Error::Bounds));
+        assert_eq!(w.read32(2), Err(Error::Alignment));
+        assert_eq!(w.write_words(SIZE - 4, &[1,2]), Err(Error::Bounds));
+        assert_eq!(w.read_words(usize::MAX - 3, &mut [0]), Err(Error::Overflow));
+        for offset in (0..SIZE).step_by(4) { assert!(validate_request(offset,4,4).is_ok()); }
+        for page in [4096,16384] { assert!(validate_request(page-4,8,4).is_ok()); }
+        assert!(validate_request(0,4,1).is_err());
+        assert!(validate_request(0,3,4).is_err());
+    }
     #[test] fn fixed_window_bounds() {
         use super::*;
         assert_eq!(address(0, 1), Ok(LOCAL));
