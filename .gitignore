@@ -6,3 +6,4 @@
 *.log
 *.sha256
 .env
+/tools/__pycache__/

@@ -7,6 +7,241 @@ build = "build.rs"
 [dependencies]
 rp1-hal = { path = "../../crates/rp1-hal" }
 rp1-rt = { path = "../../crates/rp1-rt" }
+rp1-freertos = { path = "../../crates/rp1-freertos", optional = true }
+rp1-abi = { path = "../../crates/rp1-abi", optional = true }
 
 [build-dependencies]
 rp1-build = { path = "../../crates/rp1-build" }
+
+[features]
+default = []
+freertos-r1 = ["state5-composite-boundary", "rp1-rt/freertos", "dep:rp1-freertos"]
+freertos-scmi-readonly = ["freertos-r1", "rp1-hal/scmi-clock", "rp1-rt/scmi-irq57-candidate", "uart0-functional-clock-before-reset-done"]
+freertos-scmi-readonly-mixed = ["freertos-scmi-readonly", "freertos-r2-mixed"]
+freertos-endpoint-uart = ["freertos-scmi-readonly"]
+# Compile-only foundation: no startup/observer caller or hardware admission.
+endpoint-config-foundation = []
+# Conditional cold commissioning only; never inherited by normal/observer builds.
+freertos-endpoint-config-once = ["freertos-endpoint-uart", "endpoint-config-foundation"]
+freertos-timesync = ["freertos-endpoint-config-once"]
+freertos-ddr = ["freertos-timesync"]
+freertos-virtio-probe = ["freertos-ddr", "rp1-hal/virtio-probe"]
+freertos-openamp = ["freertos-ddr", "rp1-hal/openamp"]
+freertos-openamp-rpmsg = ["freertos-openamp", "rp1-hal/openamp-rpmsg"]
+freertos-amp-bulk = ["freertos-openamp-rpmsg", "rp1-hal/amp-bulk"]
+freertos-amp-bulk-ddr-diagnostics = ["freertos-amp-bulk", "rp1-freertos/task-pool-2304"]
+freertos-amp-control = ["freertos-amp-bulk", "rp1-freertos/task-pool-1024", "rp1-freertos/sync-pool-r1"]
+freertos-amp-proc1 = ["freertos-amp-control", "rp1-hal/amp-proc1-probe", "dep:rp1-abi"]
+freertos-amp-proc1-gpio-irq = ["freertos-amp-proc1"]
+freertos-amp-observation = ["freertos-amp-proc1-gpio-irq", "rp1-hal/amp-observation"]
+# Opt-in C1 loop profiler (SysTick cycles, raw SRAM 0x2000f600); diagnostic only.
+freertos-amp-proc1-profile = ["freertos-amp-observation"]
+# Diagnostic: C1 stack in its proc-local DSRAM (0x10002000..0x10002800) instead of shared SRAM.
+freertos-amp-proc1-local-stack = ["freertos-amp-proc1-profile"]
+# Diagnostic: keep the pre-READY probe, compile out the per-iteration hooks.
+freertos-amp-proc1-no-hooks = ["freertos-amp-proc1-profile"]
+freertos-r1-local-stack = ["freertos-r1", "rp1-rt/freertos-local-monitor-stack", "rp1-freertos/local-monitor-stack"]
+freertos-r1-local-stack-fault = ["freertos-r1-local-stack", "freertos-r1-fault"]
+freertos-r3-proc1-worker = ["freertos-r1", "rp1-rt/freertos-proc1-worker"]
+freertos-r3-watchdog-arm-receipt = ["freertos-r1"]
+freertos-r3-watchdog-refresh = ["freertos-r3-watchdog-arm-receipt", "rp1-freertos/task-pool-2304", "rp1-freertos/sync-pool-r1"]
+freertos-r3-watchdog-quiescence = ["freertos-r3-watchdog-arm-receipt"]
+freertos-r3-watchdog-postack = ["freertos-r3-watchdog-quiescence"]
+freertos-r3-watchdog-late-disable = ["freertos-r3-watchdog-postack"]
+freertos-r3-reset-entry-selftest = ["freertos-r3-watchdog-quiescence", "rp1-rt/freertos-reset-entry"]
+freertos-r3-watchdog-expiry-entry = ["freertos-r3-watchdog-postack", "rp1-rt/freertos-reset-entry"]
+freertos-r3-watchdog-kernel-restart = ["freertos-r3-watchdog-expiry-entry", "rp1-rt/freertos-warm-data"]
+freertos-r3-watchdog-warm-guard = ["freertos-r3-watchdog-kernel-restart", "rp1-rt/freertos-warm-diagnostics"]
+freertos-r3-watchdog-kernel-restart-masked = ["freertos-r3-watchdog-warm-guard"]
+freertos-r3-watchdog-warm-uart = ["freertos-r3-watchdog-kernel-restart-masked", "uart0-functional-clock-before-reset-done", "rp1-rt/uart0-rx-irq", "rp1-freertos/uart0-irq"]
+freertos-r3-watchdog-warm-spi = ["freertos-r3-watchdog-kernel-restart-masked", "uart0-functional-clock-before-reset-done", "spi0-reset-only", "rp1-rt/spi0-local-irq", "rp1-freertos/spi0-irq"]
+freertos-r3-watchdog-warm-i2c = ["freertos-r3-watchdog-kernel-restart-masked", "uart0-functional-clock-before-reset-done", "i2c1-reset-only", "rp1-rt/i2c1-local-irq", "rp1-freertos/i2c1-irq", "rp1-freertos/task-pool-2304"]
+freertos-r3-watchdog-warm-combined = ["freertos-r3-watchdog-kernel-restart-masked", "uart0-functional-clock-before-reset-done", "spi0-reset-only", "i2c1-reset-only", "rp1-rt/spi0-local-irq", "rp1-rt/i2c1-local-irq", "rp1-rt/uart0-rx-irq", "rp1-freertos/spi0-irq", "rp1-freertos/i2c1-irq", "rp1-freertos/uart0-irq", "rp1-freertos/task-pool-2304", "rp1-freertos/sync-pool-r1", "rp1-freertos/newlib-memcpy"]
+freertos-r3-watchdog-warm-persistent = ["freertos-r3-watchdog-warm-combined", "rp1-freertos/newlib-memset"]
+freertos-r3-health-shadow = ["freertos-r3-watchdog-warm-persistent"]
+freertos-r3-health-local-stack = ["freertos-r3-health-shadow", "freertos-r1-local-stack"]
+freertos-r1-critical-timing = ["freertos-r1", "rp1-freertos/critical-timing"]
+freertos-r1-fault = ["freertos-r1"]
+freertos-r1-panic = ["freertos-r1"]
+freertos-r1-assert = ["freertos-r1", "rp1-freertos/assert-probe"]
+freertos-r1-timer-irq = ["freertos-r1", "rp1-rt/timer0-alarm0-irq26-candidate"]
+freertos-r1-periodic-200us = ["freertos-r1-timer-irq"]
+freertos-r2-spi = ["freertos-r1", "spi0-miso-guarded-input-bias", "rp1-rt/spi0-local-irq", "rp1-freertos/spi0-irq"]
+freertos-r2-spi-lifecycle = ["freertos-r2-spi"]
+freertos-r2-spi-cancel-window = ["freertos-r2-spi-lifecycle", "rp1-freertos/spi0-cancel-window-probe"]
+freertos-r2-i2c-nack = ["freertos-r1", "i2c1-reset-only", "rp1-rt/i2c1-local-irq", "rp1-freertos/i2c1-irq"]
+freertos-r2-i2c-peer = ["freertos-r2-i2c-nack"]
+freertos-r2-i2c-cancel-window = ["freertos-r2-i2c-peer", "rp1-freertos/i2c1-cancel-window-probe"]
+freertos-r2-uart = ["freertos-r1", "uart0-functional-clock-before-reset-done", "rp1-rt/uart0-rx-irq", "rp1-freertos/uart0-irq"]
+freertos-r2-uart-lifecycle = ["freertos-r2-uart"]
+freertos-r2-uart-overflow = ["freertos-r2-uart"]
+freertos-r2-mixed = ["freertos-r1", "spi0-miso-guarded-input-bias", "i2c1-reset-only", "uart0-functional-clock-before-reset-done", "rp1-rt/spi0-local-irq", "rp1-rt/i2c1-local-irq", "rp1-rt/uart0-rx-irq", "rp1-freertos/spi0-irq", "rp1-freertos/i2c1-irq", "rp1-freertos/uart0-irq"]
+freertos-r2-mixed-repeat = ["freertos-r2-mixed"]
+freertos-r2-mixed-repeat-timing = ["freertos-r2-mixed-repeat", "rp1-freertos/spi0-timing"]
+freertos-r2-mixed-i2c-pair = ["freertos-r2-mixed-repeat"]
+freertos-r2-mixed-i2c-stream = ["freertos-r2-mixed-i2c-pair"]
+gpio22-start-proof = []
+endpoint-clock-only = []
+state3-composite-boundary = ["endpoint-clock-only"]
+state5-composite-boundary = ["state3-composite-boundary"]
+bar2-readonly-handshake = ["state5-composite-boundary", "debug-mailbox-layout"]
+inbound-monitor-block-proof = ["bar2-readonly-handshake"]
+rp1-axishim-focused-sampling-proof = ["inbound-monitor-block-proof"]
+rp1-pcie-4k-protection-proof = ["inbound-monitor-block-proof"]
+rp1-pcie-64k-hole-proof = ["rp1-pcie-4k-protection-proof"]
+rp1-iatu-second-spare-programming-proof = ["rp1-pcie-4k-protection-proof"]
+rp1-iatu-64k-address-mask-characterization = ["rp1-iatu-second-spare-programming-proof"]
+rp1-bar1-interior-64k-hole-proof = ["rp1-pcie-4k-protection-proof"]
+rp1-bar1-second-interior-64k-page-proof = ["rp1-bar1-interior-64k-hole-proof"]
+rp1-bar1-hole-write-effect-proof = [
+    "rp1-bar1-interior-64k-hole-proof",
+    "uart0-functional-clock-before-reset-done",
+]
+cortex-m3-option-proof = ["bar2-readonly-handshake"]
+boot-rom-readonly-proof = ["bar2-readonly-handshake"]
+boot-rom-dump-proof = ["boot-rom-readonly-proof"]
+boot-rom-boundary-proof = ["bar2-readonly-handshake"]
+proc1-boot-rom-proof = ["bar2-readonly-handshake"]
+dual-core-memory-proof = ["bar2-readonly-handshake"]
+proc-local-memory-proof = ["bar2-readonly-handshake"]
+expected-fault-recovery-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-identity-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-reset-state-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-active-identity-proof = [
+    "pll-sys-core-lock-only",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-internal-reset-identity-proof = [
+    "pll-sys-core-lock-only",
+    "rp1-rt/expected-fault-recovery",
+]
+rp1-axi-dmac-global-enable-identity-proof = [
+    "pll-sys-core-lock-only",
+    "rp1-rt/expected-fault-recovery",
+]
+shared-sram-bitband-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+internal-memory-boundary-read-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+shared-sram-64k-mirror-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+shared-sram-alias-window-extent-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+shared-sram-system-region-alias-readonly-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+mpu-fault-enforcement-proof = [
+    "bar2-readonly-handshake",
+    "rp1-rt/expected-fault-recovery",
+]
+raw-timer-proof = ["bar2-readonly-handshake"]
+watchdog-proof = ["bar2-readonly-handshake"]
+watchdog-scratch-proof = ["bar2-readonly-handshake"]
+watchdog-expiry-reason-proof = ["bar2-readonly-handshake"]
+rp1-adc-one-shot-proof = ["bar2-readonly-handshake"]
+rp1-i2s-readonly-prerequisite-snapshot = ["bar2-readonly-handshake"]
+timer-register-proof = ["bar2-readonly-handshake"]
+timer-writable-time-proof = ["bar2-readonly-handshake"]
+timer0-inte-ints-proof = ["bar2-readonly-handshake"]
+timer0-alarm0-local-irq26-candidate = [
+    "bar2-readonly-handshake",
+    "rp1-rt/timer0-alarm0-irq26-candidate",
+]
+uart-reset-irq-map-proof = ["pll-sys-core-lock-only"]
+uart1-local-nvic42-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart1-local-irq"]
+uart2-local-nvic43-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart2-local-irq"]
+uart3-local-nvic44-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart3-local-irq"]
+uart4-local-nvic45-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart4-local-irq"]
+uart5-local-nvic46-delivery = ["pll-sys-core-lock-only", "rp1-rt/uart5-local-irq"]
+pll-sys-core-lock-only = ["bar2-readonly-handshake"]
+uart0-reset-only = ["pll-sys-core-lock-only"]
+uart0-functional-clock-before-reset-done = ["uart0-reset-only"]
+rp1-clock-independence-proof = ["uart0-functional-clock-before-reset-done", "spi0-reset-only"]
+rp1-linux-clk-uart-ownership-conflict = ["uart0-functional-clock-before-reset-done"]
+rp1-linux-pcie-dbi-transition-monitor = ["rp1-linux-clk-uart-ownership-conflict"]
+uart0-tx-polling-only = ["uart0-functional-clock-before-reset-done"]
+uart0-polled-rx = ["uart0-tx-polling-only"]
+uart0-rx-irq = ["uart0-polled-rx", "rp1-rt/uart0-rx-irq"]
+pwm-gpio12-proof = ["pll-sys-core-lock-only"]
+pwm0-local-irq-proof = ["pwm-gpio12-proof", "rp1-rt/pwm0-local-irq"]
+spi0-local-irq-proof = ["spi0-reset-only", "rp1-rt/spi0-local-irq"]
+spi0-rxfi-passive-scout = ["spi0-local-irq-bank1-passive-scout"]
+spi0-rxfi-wrapper-readonly = ["spi0-rxfi-passive-scout"]
+spi0-rxfi-wrapper-or-once = ["spi0-rxfi-wrapper-readonly"]
+spi0-irq19-one-entry-rx-proof = ["spi0-rxfi-wrapper-or-once", "rp1-rt/spi0-local-irq"]
+spi0-miso-input-observation = ["spi0-irq19-one-entry-rx-proof"]
+spi0-miso-configured-hold = ["spi0-reset-only"]
+spi0-miso-guarded-input-bias = ["spi0-reset-only"]
+spi0-timed-peer-zero-irq-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-low-high-irq-rearm-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-fifo-capacity-irq-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-varied-peer-irq-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-retained-rx-ser-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-rx-overflow-irq-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-caller-deadline-abort-proof = ["spi0-irq19-one-entry-rx-proof"]
+spi0-nvic53-latch-scout = ["spi0-local-irq-bank1-passive-scout"]
+spi0-local-irq-bank1-passive-scout = [
+    "spi0-reset-only",
+    "rp1-rt/spi0-local-irq-bank1-passive-scout",
+]
+i2c1-local-irq-proof = ["i2c1-reset-only", "rp1-rt/i2c1-local-irq"]
+i2c1-local-irq-bank1-passive-scout = [
+    "i2c1-reset-only",
+    "rp1-rt/i2c1-local-irq-bank1-passive-scout",
+]
+i2c1-wrapper-readonly-proof = [
+    "i2c1-reset-only",
+    "rp1-rt/i2c1-local-irq-bank1-passive-scout",
+]
+i2c1-wrapper-stop-irq-proof = ["i2c1-reset-only", "rp1-rt/i2c1-local-irq"]
+i2c1-read1-irq-proof = ["i2c1-reset-only", "rp1-rt/i2c1-local-irq"]
+i2c1-read1-irq-expect-5a = ["i2c1-read1-irq-proof"]
+pcie-ep-init = ["rp1-hal/pcie-ep-init", "rp1-rt/pcie-ep-init"]
+debug-stack-low = ["rp1-hal/debug-stack-low", "rp1-rt/debug-stack-low"]
+debug-snapshot = ["debug-stack-low", "rp1-hal/debug-snapshot", "rp1-rt/debug-snapshot"]
+debug-mailbox-layout = [
+    "debug-stack-low",
+    "rp1-hal/debug-mailbox-layout",
+    "rp1-rt/debug-mailbox-layout",
+]
+debug-mailbox-layout-v1 = [
+    "debug-mailbox-layout",
+    "rp1-hal/debug-mailbox-layout-v1",
+    "rp1-rt/debug-mailbox-layout-v1",
+]
+debug-mailbox-init = [
+    "debug-mailbox-layout",
+    "rp1-hal/debug-mailbox-init",
+    "rp1-rt/debug-mailbox-init",
+]
+debug-mailbox-ping = ["state5-composite-boundary", "debug-mailbox-init"]
+gpio-wiring-proof = ["state5-composite-boundary"]
+i2c1-reset-only = ["pll-sys-core-lock-only"]
+i2c1-host-proof = ["i2c1-reset-only"]
+spi0-reset-only = ["pll-sys-core-lock-only"]
+spi0-host-proof = ["spi0-reset-only"]
+debug-stub = [
+    "pcie-ep-init",
+    "debug-snapshot",
+    "debug-mailbox-init",
+    "rp1-hal/debug-stub",
+    "rp1-rt/debug-stub",
+]

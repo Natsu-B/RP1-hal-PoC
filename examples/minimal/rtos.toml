@@ -1,0 +1,18 @@
+[firmware]
+name = "freertos-r1"
+
+[linux]
+mailbox = false
+pio = false
+
+[owner]
+gpio = "rp1"
+uart0 = "disabled"
+uart1 = "disabled"
+i2c0 = "disabled"
+i2c1 = "disabled"
+spi0 = "disabled"
+pio0 = "disabled"
+pio1 = "disabled"
+dma = "disabled"
+timer = "rp1"

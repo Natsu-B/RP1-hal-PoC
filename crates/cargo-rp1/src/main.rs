@@ -28,6 +28,10 @@ enum CommandKind {
 struct BuildArgs {
     #[arg(long)]
     example: String,
+    #[arg(long)]
+    no_default_features: bool,
+    #[arg(long, value_delimiter = ',')]
+    features: Vec<String>,
 }
 
 struct ElfCheck {
@@ -53,7 +57,9 @@ fn build(args: BuildArgs) -> Result<()> {
 
     let root = std::env::current_dir().context("read current directory")?;
     let example_dir = root.join("examples").join("minimal");
-    let config_path = example_dir.join("rp1.toml");
+    let config_path = std::env::var_os("RP1_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| example_dir.join("rp1.toml"));
     let config = rp1_build::parse_config(&config_path)
         .map_err(|err| anyhow::anyhow!("parse {}: {err}", config_path.display()))?;
     let package = "rp1-example-minimal";
@@ -66,13 +72,21 @@ fn build(args: BuildArgs) -> Result<()> {
     let output_elf = output_dir.join("RP1.elf");
 
     println!("[RP1] building example {}", args.example);
-    run(Command::new("cargo")
+    let mut cargo = Command::new("cargo");
+    cargo
         .arg("build")
         .arg("-p")
         .arg(package)
         .arg("--release")
         .arg("--target")
-        .arg(TARGET))?;
+        .arg(TARGET);
+    if args.no_default_features {
+        cargo.arg("--no-default-features");
+    }
+    if !args.features.is_empty() {
+        cargo.arg("--features").arg(args.features.join(","));
+    }
+    run(&mut cargo)?;
 
     let note_bin = find_latest_note_bin(&root, package)?;
     fs::create_dir_all(&output_dir).context("create target/rp1/release")?;

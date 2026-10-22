@@ -7,5 +7,6 @@ members = [
     "crates/rp1-hal",
     "crates/rp1-macros",
     "crates/rp1-rt",
+    "crates/rp1-freertos",
     "examples/minimal",
 ]
