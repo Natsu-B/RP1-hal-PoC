@@ -1,4 +1,4 @@
-//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v2.
+//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3.
 //!
 //! The RP1 Cortex-M3 has no DWT cycle counter (DWT NOCYCCNT=1), so C1's own
 //! SysTick is used as a free-running core-clock down counter with TICKINT=0.
@@ -16,21 +16,23 @@ const LOCAL: usize = 0x2000_f600; // 32 words: C1 scratch 0..15, published sums 
 const SYST_CSR: usize = 0xe000_e010;
 const SYST_RVR: usize = 0xe000_e014;
 const SYST_CVR: usize = 0xe000_e018;
-const SYST_CALIB: usize = 0xe000_e01c;
 const RAW_LOW: usize = 0x400a_c028;
-const SHARED_SRAM: usize = 0x2000_ba00; // RP1_AMP_PROC1_STATUS word 0 (read only here)
+const ISRAM: usize = 0x1000_0000; // C1's own proc-local ISRAM instance (unused by this firmware)
+const DSRAM: usize = 0x1000_2000; // C1's own proc-local DSRAM instance (read only here)
+const SNIPPET: usize = 0x2000_f680; // free shared SRAM after LOCAL, before BASE
+const NOP2: u32 = 0xbf00_bf00; // two Thumb NOPs
+const BX_LR2: u32 = 0x4770_4770; // bx lr
 const MASK: u32 = 0x00ff_ffff;
 const SAMPLE_EVERY: u32 = 64;
 pub(super) const SEGMENTS: usize = 11;
 
 // Published words at BASE (u32). Probes are (min, max) over PROBE_N samples.
 const MAGIC: usize = 0; // "PRF1" written last
-const VERSION: usize = 1; // 2
+const VERSION: usize = 1; // 3
 const STATE: usize = 2; // 1 probing, 2 loop live, 0xbad0 SysTick not idle
 const CSR_BEFORE: usize = 3;
 const RVR_BEFORE: usize = 4;
 const CSR_AFTER: usize = 5;
-const CALIB: usize = 6;
 const CYCLES_10MS: usize = 7;
 const CYCLES_PER_US: usize = 8;
 const PROBES: usize = 9; // 8 probes x 2 words = 9..24
@@ -102,13 +104,13 @@ fn measure(slot: usize, f: impl Fn()) {
     put(slot + 1, max);
 }
 
-/// Runs once on C1 before READY. Bounded: ~10 ms rate check + 5x64 samples.
+/// Runs once on C1 before READY. Bounded: ~10 ms rate check + 6x64 samples.
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 pub(super) fn probe() -> bool {
     for i in 0..WORDS { put(i, 0); }
     for i in 0..LOCAL_WORDS { lput(i, 0); }
-    put(VERSION, 2);
+    put(VERSION, 3);
     put(STATE, 1);
     let (csr, rvr) = (read(SYST_CSR), read(SYST_RVR));
     put(CSR_BEFORE, csr);
@@ -124,7 +126,7 @@ pub(super) fn probe() -> bool {
     write(SYST_CSR, 0b101); // ENABLE | CLKSOURCE=processor, TICKINT=0
     unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags)); }
     put(CSR_AFTER, read(SYST_CSR));
-    put(CALIB, read(SYST_CALIB));
+    // CALIB (word 6) is 0x1387 in v1/v2; not re-read in v3 (space).
     let t0 = read(RAW_LOW);
     let c0 = cycles();
     let mut guard = 0u32;
@@ -135,14 +137,22 @@ pub(super) fn probe() -> bool {
     let c10 = elapsed(c0, cycles());
     put(CYCLES_10MS, c10);
     put(CYCLES_PER_US, (c10 / 10_000).max(1));
+    // v3 memory probes. The same 16-NOP + `bx lr` snippet is written to C1's
+    // proc-local ISRAM (Code region, 0x10000000) and to free shared SRAM
+    // (0x2000f680, System region) and timed through the same indirect call.
+    for i in 0..9 {
+        let op = if i < 8 { NOP2 } else { BX_LR2 };
+        write(ISRAM + 4 * i, op);
+        write(SNIPPET + 4 * i, op);
+    }
+    unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags)); }
+    let isram: extern "C" fn() = unsafe { core::mem::transmute(ISRAM | 1) };
+    let shared: extern "C" fn() = unsafe { core::mem::transmute(SNIPPET | 1) };
     measure(PROBES, || {});
-    // Probe slots 1 (RawTimer low), 2 (now() hi/lo/hi) and 3 (GPIO read) stay 0 in v2: measured in v1.
-    measure(PROBES + 8, || { let _ = read(SHARED_SRAM); });
-    measure(PROBES + 10, || { let _ = lget(SAMPLES); }); // C1 scratch SRAM read
-    measure(PROBES + 12, || {
-        lput(PREV, 1);
-        unsafe { core::arch::asm!("dmb sy", options(nostack, preserves_flags)); }
-    });
+    measure(PROBES + 2, || isram());
+    measure(PROBES + 4, || shared());
+    measure(PROBES + 6, || { let _ = read(DSRAM); });
+    // Shared SRAM read (slot 4) was 34 cycles in v1 and v2; dropped for space.
     // Unsampled hook (SAMPLE=0): call + flag test, as paid 10x per iteration.
     measure(PROBES + 14, || mark(0));
     put(SLACK_MIN, u32::MAX);

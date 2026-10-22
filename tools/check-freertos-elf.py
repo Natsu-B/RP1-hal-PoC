@@ -181,7 +181,12 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         # Opt-in profiler: its hooks change the reviewed body; pin is replaced by the recorded hash.
         profiled=profile and (name=='AmpProc1Body' or 'amp_proc17profile' in name)
         assert allowed or timer or outline or gate or gpio or irq or profiled, 'proc1 calls unadmitted service/driver '+name
-        assert not re.search(r'\bblx\b',body), 'proc1 indirect call'
+        # Profile-only exception: probe() times one fixed NOP snippet in proc-local ISRAM and
+        # the same snippet in free shared SRAM; no other indirect call is admitted.
+        snippet_call=(profile and 'amp_proc17profile5probe' in name
+            and {'10000001','2000f680'} <= set(re.findall(r'\.word\s+0x([0-9a-f]+)',body))
+            and all(op.strip() in ('r0','r1','r2','r3','r4','r5','r6','r8','r9','r10','r11') for op in re.findall(r'\bblx\s+([^\n@]+)',body)))
+        assert snippet_call or not re.search(r'\bblx\b',body), 'proc1 indirect call'
         if irq and not profiled and profile:
             # Profile build: Rust symbol hashes differ with the feature set, so compare the
             # reviewed IRQ helpers with the sealed X image instead of the pinned hashes.
@@ -445,7 +450,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             # Profiler scratch 0x2000f600 and results 0x2000f700 follow the code, below the RTOS record.
             assert profile_loads==[(0x2000f000,0x2000f000+amp_sections[b'.amp_proc1_profile_text'][5])], 'profile segment/section mismatch'
             prof = amp_sections[b'.amp_proc1_profile_text']
-            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == 'dfb0b788762b08b72fc801c5bd08fff1952f55985a8662f5afa34bbb092e20c1', 'profile SysTick instructions changed; review again'
+            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == 'd5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328', 'profile SysTick instructions changed; review again'
         assert control_contract[0][3]+24<=0x2000ba00, 'proc1 overlaps clock/proc0 contract'
         assert 0x2000c750<=diagnostic[0][3], 'proc1 stack overlaps DDR code'
         for name,value in [('__amp_proc1_vectors',0x2000be00),('__amp_proc1_guard_low',0x2000bf40),
