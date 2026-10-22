@@ -1,4 +1,4 @@
-//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3/v6.
+//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3/v7.
 //!
 //! The RP1 Cortex-M3 has no DWT cycle counter (DWT NOCYCCNT=1), so C1's own
 //! SysTick is used as a free-running core-clock down counter with TICKINT=0.
@@ -28,7 +28,7 @@ pub(super) const SEGMENTS: usize = 11;
 
 // Published words at BASE (u32). Probes are (min, max) over PROBE_N samples.
 const MAGIC: usize = 0; // "PRF1" written last
-const VERSION: usize = 1; // 3, or 6 for the no-hooks EXAC probe
+const VERSION: usize = 1; // 3, or 7 for the no-hooks EXAC interleaving probe
 const STATE: usize = 2; // 1 probing, 2 loop live, 0xbad0 SysTick not idle
 const CSR_BEFORE: usize = 3;
 const RVR_BEFORE: usize = 4;
@@ -110,7 +110,7 @@ fn measure(slot: usize, f: impl Fn()) {
 pub(super) fn probe() -> bool {
     for i in 0..WORDS { put(i, 0); }
     for i in 0..LOCAL_WORDS { lput(i, 0); }
-    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 6 } else { 3 });
+    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 7 } else { 3 });
     put(STATE, 1);
     let (csr, rvr) = (read(SYST_CSR), read(SYST_RVR));
     put(CSR_BEFORE, csr);
@@ -232,68 +232,58 @@ pub(super) fn end(cycle: u32) {
     lput(END, cycles());
 }
 
-// No-hooks v6 reuses the unused snippet area for a single-writer mailbox/results.
+// No-hooks v7: mailbox command/ack, then three 8-word interleaving records.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 const EXAC: usize = 0x4040_0380; // word 7; no other user in this replacement firmware
-
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
-#[inline(always)]
-fn exclusive_read() -> u32 {
-    let value;
-    unsafe { core::arch::asm!("ldrex {v}, [{p}]", "clrex", p = in(reg) EXAC,
-        v = out(reg) value, options(nostack, preserves_flags)); }
-    value
-}
-
-#[cfg(feature = "freertos-amp-proc1-no-hooks")]
-#[inline(always)]
-fn attempt(owner: u32) -> (u32, u32) {
-    let (value, status);
-    unsafe { core::arch::asm!("ldrex {v}, [{p}]", "strex {s}, {owner}, [{p}]", "dmb sy",
-        p = in(reg) EXAC, owner = in(reg) owner, v = out(reg) value,
-        s = out(reg) status, options(nostack, preserves_flags)); }
-    (value, status)
-}
+const EXAC_CONTROL: usize = 0x4040_0300; // word 6 only; different-word control
 
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 pub(super) fn lib_probes_init() {
-    for i in 0..13 { write(SNIPPET + i * 4, 0); }
+    for i in 0..32 { write(SNIPPET + i * 4, 0); }
     barrier();
 }
 
 /// Called once per C0 launch poll, only before C1 READY. No loop or waiting.
-/// C0 clears the mailbox while C1 is held; thereafter C1 owns command (word 0)
-/// and C0 owns acknowledgement (word 1) and results 8..12. Command is published
-/// only after C1 has observed DONE bit6 and acquired the otherwise unused word.
+/// C1 owns command and row offsets 0/16/20/28; C0 owns ack and 4/8/12/24.
+/// Commands 1/2/3 mean same-word store, same-word pair, different-word store.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 pub(super) fn lib_probes_c0() {
-    if read(SNIPPET) != 1 || read(SNIPPET + 4) != 0 { return; }
+    let trial = read(SNIPPET);
+    if trial.wrapping_sub(1) >= 3 || read(SNIPPET + 4) >= trial { return; }
     unsafe { core::arch::asm!("dmb sy", options(nostack, preserves_flags)); }
+    let target = if trial == 3 { EXAC_CONTROL } else { EXAC };
+    let row = SNIPPET + 8 + (trial as usize - 1) * 32;
     let start = read(RAW_LOW);
     let (value, status, mask): (u32, u32, u32);
+    if trial == 2 {
     unsafe { core::arch::asm!("mrs {mask}, PRIMASK", "cpsid i",
         "ldrex {v}, [{p}]", "strex {s}, {owner}, [{p}]", "dmb sy", "msr PRIMASK, {mask}",
-        p = in(reg) EXAC, owner = in(reg) 0u32, v = out(reg) value,
+        p = in(reg) target, owner = in(reg) 0u32, v = out(reg) value,
         s = out(reg) status, mask = out(reg) mask, options(nostack, preserves_flags)); }
-    let normal = read(EXAC);
-    let after = exclusive_read();
-    // If the challenger stole the word, release it even if C1 has timed out.
-    if after == 0 { write(EXAC, 15); }
-    write(SNIPPET + 32, value);
-    write(SNIPPET + 36, status);
-    write(SNIPPET + 40, normal);
-    write(SNIPPET + 44, after);
-    write(SNIPPET + 48, read(RAW_LOW).wrapping_sub(start));
+    } else {
+        status = u32::MAX; // plain store: no STREX status
+        unsafe { core::arch::asm!("mrs {mask}, PRIMASK", "cpsid i",
+            "ldr {v}, [{p}]", "str {owner}, [{p}]", "dmb sy", "msr PRIMASK, {mask}",
+            p = in(reg) target, owner = in(reg) 0u32, v = out(reg) value,
+            mask = out(reg) mask, options(nostack, preserves_flags)); }
+    }
+    write(row + 4, value);
+    write(row + 8, status);
+    write(row + 12, read(target));
+    write(row + 24, read(RAW_LOW).wrapping_sub(start));
+    // A C0 access delayed past C1's withdrawal must also release its word.
+    if read(SNIPPET) != trial { write(target, 15); }
     barrier();
-    write(SNIPPET + 4, 1);
+    write(SNIPPET + 4, trial);
 }
 
-/// v6: DONE-gated single-core semantics, then C1-owner/C0-challenger trial.
-/// C1 waits at most 10ms/100000 polls; C0 performs one attempt and never waits.
+/// v7: keep C1's LDREX reservation open across each acknowledged C0 access.
+/// Each wait has a raw-timer bound and an independent iteration bound.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
@@ -305,63 +295,73 @@ fn lib_probes() {
         write(0x4001_7000, 64); // only hypothesized EXAC reset bit6, CLR alias
         barrier();
     }
+    let reset_start = read(RAW_LOW);
     for _ in 0..1024 {
         if read(DONE) & 64 != 0 { break; }
+        if read(RAW_LOW).wrapping_sub(reset_start) >= 10_000 { break; }
     }
     lput(17, read(DONE));
     lput(31, 1); // DONE failure: no EXAC access
     if lget(17) & 64 != 0 {
         lput(19, read(EXAC));
-        lput(20, exclusive_read());
-        let original = lget(20);
+        lput(20, read(EXAC_CONTROL));
         lput(31, 2); // unexpected owner encoding: no EXAC writes
-        if original <= 15 {
-            // Word7 has no firmware user; reset need not initialize it to free.
+        if lget(19) <= 15 && lget(20) <= 15 {
             write(EXAC, 15);
+            write(EXAC_CONTROL, 15);
             barrier();
-            let (_, status) = attempt(1);
-            lput(21, status);
-            lput(22, read(EXAC));
-            lput(23, exclusive_read());
-            let status;
-            unsafe { core::arch::asm!("clrex", "strex {s}, {owner}, [{p}]", "dmb sy",
-                p = in(reg) EXAC, owner = in(reg) 0u32, s = out(reg) status,
+            let (value, status);
+            unsafe { core::arch::asm!("ldrex {v}, [{p}]", "strex {s}, {owner}, [{p}]", "dmb sy",
+                p = in(reg) EXAC, owner = in(reg) 1u32, v = out(reg) value, s = out(reg) status,
                 options(nostack, preserves_flags)); }
-            lput(24, status);
-            lput(25, read(EXAC));
-            lput(26, exclusive_read());
-            write(EXAC, 15);
-            barrier();
-            lput(27, read(EXAC));
-            lput(28, exclusive_read());
-            let (value, status) = attempt(1);
-            write(SNIPPET + 8, value);
-            write(SNIPPET + 12, status);
-            write(SNIPPET + 16, read(EXAC));
-            let held = exclusive_read();
-            write(SNIPPET + 20, held);
-            lput(31, 3); // could not establish C1 ownership
-            if held == 1 {
-                barrier();
-                write(SNIPPET, 1);
-                let start = read(RAW_LOW);
-                for _ in 0..100_000 {
-                    if read(SNIPPET + 4) == 1 { break; }
-                    if read(RAW_LOW).wrapping_sub(start) >= 10_000 { break; }
+            lput(21, value);
+            lput(22, status);
+            lput(23, read(EXAC));
+            lput(31, 3); // baseline pair failed; do not interpret interleaving
+            if value == 15 && status == 0 && lget(23) == 1 {
+                lput(31, 0);
+                for trial in 1..=3 {
+                    write(EXAC, 15);
+                    barrier();
+                    let row = SNIPPET + 8 + (trial as usize - 1) * 32;
+                    let start = read(RAW_LOW);
+                    let loaded;
+                    unsafe { core::arch::asm!("ldrex {v}, [{p}]", p = in(reg) EXAC,
+                        v = out(reg) loaded, options(nostack, preserves_flags)); }
+                    write(row, loaded);
+                    unsafe { core::arch::asm!("dmb sy", options(nostack, preserves_flags)); }
+                    write(SNIPPET, trial);
+                    for _ in 0..100_000 {
+                        if read(SNIPPET + 4) == trial { break; }
+                        if read(RAW_LOW).wrapping_sub(start) >= 10_000 { break; }
+                    }
+                    write(row + 28, read(RAW_LOW).wrapping_sub(start));
+                    if read(SNIPPET + 4) != trial {
+                        lput(27, trial);
+                        lput(31, 4);
+                        break;
+                    }
+                    let status;
+                    unsafe { core::arch::asm!("dmb sy", "strex {s}, {owner}, [{p}]", "dmb sy",
+                        p = in(reg) EXAC, owner = in(reg) 1u32, s = out(reg) status,
+                        options(nostack, preserves_flags)); }
+                    write(row + 16, status);
+                    write(row + 20, read(EXAC));
+                    lput(24, lget(24) | (1 << (trial - 1)));
                 }
-                unsafe { core::arch::asm!("dmb sy", options(nostack, preserves_flags)); }
-                lput(31, if read(SNIPPET + 4) == 1 { 0 } else { 4 });
-                write(SNIPPET, 0); // withdraw even on timeout; C0 cleans a late steal
-                write(SNIPPET + 24, read(EXAC));
-                write(SNIPPET + 28, exclusive_read());
             }
-            write(EXAC, original);
+            write(SNIPPET, 0);
             barrier();
-            lput(29, exclusive_read());
+            unsafe { core::arch::asm!("clrex", options(nostack, preserves_flags)); }
+            write(EXAC, 15);
+            write(EXAC_CONTROL, 15);
+            barrier();
+            lput(25, read(EXAC));
+            lput(26, read(EXAC_CONTROL));
         }
     }
     barrier();
-    lput(30, u32::from_le_bytes(*b"EXA6"));
+    lput(30, u32::from_le_bytes(*b"EXA7"));
 }
 
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
