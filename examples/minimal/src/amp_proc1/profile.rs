@@ -110,7 +110,7 @@ fn measure(slot: usize, f: impl Fn()) {
 pub(super) fn probe() -> bool {
     for i in 0..WORDS { put(i, 0); }
     for i in 0..LOCAL_WORDS { lput(i, 0); }
-    put(VERSION, 3);
+    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 4 } else { 3 });
     put(STATE, 1);
     let (csr, rvr) = (read(SYST_CSR), read(SYST_RVR));
     put(CSR_BEFORE, csr);
@@ -155,6 +155,8 @@ pub(super) fn probe() -> bool {
     // Shared SRAM read (slot 4) was 34 cycles in v1 and v2; dropped for space.
     // Unsampled hook (SAMPLE=0): call + flag test, as paid 10x per iteration.
     measure(PROBES + 14, || mark(0));
+    #[cfg(feature = "freertos-amp-proc1-no-hooks")]
+    lib_probes();
     put(SLACK_MIN, u32::MAX);
     lput(END, cycles());
     put(STATE, 2);
@@ -225,4 +227,56 @@ pub(super) fn end(cycle: u32) {
     add(LATE_SUM_US, late);
     add(ITERATIONS, 1);
     lput(END, cycles());
+}
+
+/// v4 (no-hooks diagnostic only): library knowledge probes, results in LOCAL 16..30.
+/// G3: does a non-GPIO peripheral line reach proc1's NVIC? TIMER INTF bit3 (alarm3,
+/// IRQ29, unused by this firmware and by Linux) is forced, proc1 ISPR read, then
+/// INTF restored and the latched pending bit cleared (IRQ29 stays disabled here).
+/// G2: one LDREX/STREX pair on proc-local DSRAM (0x10003800, above the C1 stack),
+/// ISRAM (0x10000100, after the v3 snippet) and shared SRAM (0x2000f6c0).
+#[cfg(feature = "freertos-amp-proc1-no-hooks")]
+#[inline(never)]
+#[unsafe(link_section = ".amp_proc1.profile_text")]
+fn lib_probes() {
+    const NVIC_ISER0: usize = 0xe000_e100;
+    const NVIC_ISPR0: usize = 0xe000_e200;
+    const NVIC_ICPR0: usize = 0xe000_e280;
+    const TIMER_INTF: usize = 0x400a_c03c;
+    const TIMER_INTS: usize = 0x400a_c040;
+    const BIT29: u32 = 1 << 29;
+    lput(16, read(NVIC_ISER0));
+    lput(17, read(NVIC_ISER0 + 4));
+    lput(18, read(NVIC_ISPR0));
+    lput(19, read(NVIC_ISPR0 + 4));
+    let intf = read(TIMER_INTF);
+    lput(20, intf);
+    write(TIMER_INTF, intf | 1 << 3);
+    unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags)); }
+    lput(21, read(NVIC_ISPR0));
+    lput(23, read(TIMER_INTS));
+    write(TIMER_INTF, intf);
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    write(NVIC_ICPR0, BIT29);
+    unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags)); }
+    lput(22, read(NVIC_ISPR0));
+    excl(24, 0x1000_3800);
+    excl(26, 0x1000_0100);
+    excl(28, 0x2000_f6c0);
+    lput(30, u32::from_le_bytes(*b"LIB1"));
+}
+
+/// One LDREX/STREX pair at `addr` after seeding it; publishes status and final value.
+#[cfg(feature = "freertos-amp-proc1-no-hooks")]
+#[inline(always)]
+fn excl(slot: usize, addr: usize) {
+    write(addr, 0x1111_1111);
+    let status: u32;
+    unsafe {
+        core::arch::asm!("ldrex {v}, [{a}]", "strex {s}, {n}, [{a}]",
+            a = in(reg) addr, n = in(reg) 0x2222_2222u32, v = out(reg) _, s = out(reg) status,
+            options(nostack, preserves_flags));
+    }
+    lput(slot, status);
+    lput(slot + 1, read(addr));
 }
