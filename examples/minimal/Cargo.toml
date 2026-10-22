@@ -34,6 +34,8 @@ freertos-amp-control = ["freertos-amp-bulk", "rp1-freertos/task-pool-1024", "rp1
 freertos-amp-proc1 = ["freertos-amp-control", "rp1-hal/amp-proc1-probe", "dep:rp1-abi"]
 freertos-amp-proc1-gpio-irq = ["freertos-amp-proc1"]
 freertos-amp-observation = ["freertos-amp-proc1-gpio-irq", "rp1-hal/amp-observation"]
+# Opt-in C1 loop profiler (SysTick cycles, raw SRAM 0x2000f600); diagnostic only.
+freertos-amp-proc1-profile = ["freertos-amp-observation"]
 freertos-r1-local-stack = ["freertos-r1", "rp1-rt/freertos-local-monitor-stack", "rp1-freertos/local-monitor-stack"]
 freertos-r1-local-stack-fault = ["freertos-r1-local-stack", "freertos-r1-fault"]
 freertos-r3-proc1-worker = ["freertos-r1", "rp1-rt/freertos-proc1-worker"]

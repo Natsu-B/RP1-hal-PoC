@@ -10,10 +10,11 @@ from unittest.mock import patch
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('elf', type=Path)
 p.add_argument('--openamp-source', type=Path, required=True)
+p.add_argument('--review', type=Path, default=Path(__file__).with_name('amp-observation-stack-review.json'))
 a = p.parse_args()
 spec = importlib.util.spec_from_file_location('stack_gate', Path(__file__).with_name('check-amp-worker-stack.py'))
 gate = importlib.util.module_from_spec(spec); spec.loader.exec_module(gate)
-proof = json.loads(Path(__file__).with_name('amp-observation-stack-review.json').read_text())
+proof = json.loads(a.review.read_text())
 positive = gate.audit(a.elf, proof, a.openamp_source)
 assert positive['roots']['worker']['remaining_bytes'] == 260
 assert positive['roots']['service']['remaining_bytes'] == 524

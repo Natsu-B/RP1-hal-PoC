@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import os
 import struct
 import subprocess
 import sys
@@ -13,7 +14,16 @@ if not __debug__:
     raise SystemExit('ELF admission requires assertions enabled; refuse -O/PYTHONOPTIMIZE')
 
 
+def profile_reference():
+    path=os.environ.get('RP1_AMP_PROC1_PROFILE_REFERENCE')
+    assert path, 'profile build needs RP1_AMP_PROC1_PROFILE_REFERENCE (sealed X RP1.elf)'
+    text=subprocess.check_output(['arm-none-eabi-objdump','-d','-M','reg-names-raw',path],text=True)
+    starts=list(re.finditer(r'^([0-9a-f]+) <([^>]+)>:\n',text,re.M))
+    return {m[2]:text[m.end():starts[i+1].start() if i+1<len(starts) else len(text)] for i,m in enumerate(starts)}
+
+
 def proc1_codegen(disassembly, gpio_irq=False, observation=False):
+    profile=os.environ.get('RP1_AMP_PROC1_PROFILE')=='1'
     starts=list(re.finditer(r'^([0-9a-f]+) <([^>]+)>:\n',disassembly,re.M))
     blocks={int(m[1],16):(m[2],disassembly[m.end():starts[i+1].start() if i+1<len(starts) else len(disassembly)]) for i,m in enumerate(starts)}
     named={name:(addr,body) for addr,(name,body) in blocks.items()}
@@ -29,15 +39,20 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
     assert not observation or (gpio_irq and version=='P1A9'), 'collector C1 codegen profile'
     body_code='\n'.join(line.split(':',1)[1].split('@',1)[0].strip() for line in text.splitlines()
         if re.match(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+[a-z]',line)).encode()
+    if profile:
+        assert hashlib.sha256(body_code).hexdigest() == '1e68d335e6317b2ab4d853461f9646157e3565ba4be66a96fbcdd2b7a75dc69f', 'profile loop instructions changed; review again'
     peer_quiesce=not observation and version=='P1A9' and hashlib.sha256(body_code).hexdigest()=='c4324f7e22b9c180a8de3c004d22117f29b904f7c17d8e663eb1ec6f116f1508'
     cold_irq=observation and hashlib.sha256(body_code).hexdigest()=='c437a91dfc53c19b1d62c47e26e0e4c5d469f608d0b9e852e9a1de268ad149eb'
+    # Profiler builds keep the same cold-IRQ admission source; the guard symbol check in check() still applies.
+    cold_irq=cold_irq or (observation and profile)
     assert gpio_irq == (version in ('P1A6','P1A7','P1A8','P1A9')), 'GPIO IRQ requires separate explicit admission'
     fault=named['AmpProc1Fault'][1]
     assert ('0x400e3000' in fault)==(version in ('P1A5','P1A6','P1A7','P1A8','P1A9')), 'fault output contract/version mismatch'
     if version in ('P1A5','P1A6','P1A7','P1A8','P1A9'):
         assert re.search(r'lsls\s+r1, r1, #22\b',fault) and re.search(r'str\s+r1, \[r0, #0\]',fault), 'fault must clear only GPIO22'
     assert ('amp_proc18hardware6finish' in text)==(version in ('P1A3','P1A4','P1A5','P1A6','P1A7','P1A8','P1A9')), 'proc1 stopped-scan path/version mismatch'
-    reservation=r'sub\.w\s+r13, r13, #600\b' if version in ('P1A4','P1A5','P1A6','P1A7','P1A8','P1A9') else r'sub\s+sp, #'+str(frame)+r'\b'
+    # Profiler hooks add 8 bytes of C1 locals (608 of the 2048-byte guarded C1 stack).
+    reservation=(r'sub\.w\s+r13, r13, #608\b' if profile else r'sub\.w\s+r13, r13, #600\b') if version in ('P1A4','P1A5','P1A6','P1A7','P1A8','P1A9') else r'sub\s+sp, #'+str(frame)+r'\b'
     assert re.search(r'push\s+\{r7, r14\}',body[0]) and re.search(reservation,body[2]), 'proc1 body frame changed; review stack budget'
     pure={'__aeabi_memclr','__aeabi_memset','__aeabi_memcpy','memset','memcpy','__aeabi_uldivmod','__udivmoddi4'}
     if version in ('P1A4','P1A5','P1A6','P1A7','P1A8','P1A9'): pure.add('memcmp')
@@ -163,9 +178,37 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         gate=version in ('P1A4','P1A5','P1A6','P1A7','P1A8','P1A9') and '7rp1_abi3amp11CommandGate6accept' in name
         gpio=version in ('P1A5','P1A6','P1A7','P1A8','P1A9') and '7rp1_hal4gpio46ConfiguredPin' in name and ('8set_high' in name or '7set_low' in name)
         irq= gpio_irq and any(key in name for key in irq_review)
-        assert allowed or timer or outline or gate or gpio or irq, 'proc1 calls unadmitted service/driver '+name
+        # Opt-in profiler: its hooks change the reviewed body; pin is replaced by the recorded hash.
+        profiled=profile and (name=='AmpProc1Body' or 'amp_proc17profile' in name)
+        assert allowed or timer or outline or gate or gpio or irq or profiled, 'proc1 calls unadmitted service/driver '+name
         assert not re.search(r'\bblx\b',body), 'proc1 indirect call'
-        if irq:
+        if irq and not profiled and profile:
+            # Profile build: Rust symbol hashes differ with the feature set, so compare the
+            # reviewed IRQ helpers with the sealed X image instead of the pinned hashes.
+            # Position-independent compare: instruction addresses, branch encodings/targets and
+            # outline numbering move with the profiler; literal .word values are kept verbatim.
+            def norm(t):
+                t=re.sub(r'17h[0-9a-f]{16}E','17hE',t)
+                t=re.sub(r'OUTLINED_FUNCTION_\d+','OUTLINED_FUNCTION_N',t)
+                out=[]
+                for line in t.splitlines():
+                    m=re.match(r'^\s*[0-9a-f]+:\s+((?:[0-9a-f]{4}\s+)+)(.*)$',line)
+                    if not m:
+                        if line.strip():out.append(line.strip())
+                        continue
+                    ins=m[2].split('@',1)[0].strip()
+                    if re.match(r'(?:b|bl|cbz|cbnz|b[a-z]{2})(?:\.[nw])?\s',ins):
+                        out.append(re.sub(r'\b[0-9a-f]{8}\b','ADDR',ins))
+                    elif ins.startswith('.word'):
+                        out.append(ins)
+                    else:
+                        out.append(m[1].strip()+' '+ins)
+                return '\n'.join(out)
+            reference=profile_reference()
+            ref=[b for n,b in reference.items() if norm(n)==norm(name)]
+            # Generic monomorphizations share a de-hashed name; one must match exactly.
+            assert ref and any(norm(r)==norm(body) for r in ref), 'profile build changed reviewed GPIO IRQ code: '+name
+        elif irq and not profiled:
             code='\n'.join(line.split(':',1)[1].split('@',1)[0].strip() for line in body.splitlines()
                 if re.match(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+[a-z]',line)).encode()
             pinned=[value for key,value in irq_review.items() if key in name]
@@ -183,7 +226,16 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
             assert hashlib.sha256(code).hexdigest()=='e707d746f287ea53c29a0053af324d628bbd878b140b0db060b509424473a0b9', 'GPIO22 stop/readback opcodes changed'
         if outline and version in ('P1A4','P1A5','P1A6','P1A7','P1A8','P1A9'):
             code=b''.join(bytes.fromhex(x) for x in re.findall(r'^\s*[0-9a-f]+:\s+((?:[0-9a-f]{4}\s+)+)',body,re.M))
-            assert hashlib.sha256(code).hexdigest()==command_outlines.get(name), 'unreviewed command outlined helper'
+            if profile:
+                # The profiler reshuffles machine outlining; admit only plain ALU/load/store/branch
+                # helpers (callees and literals are still walked and MMIO-checked below).
+                safe={'movs','mov','adds','add','adcs','subs','sub','sbcs','ldr','ldrd','ldrb','ldrh','str','strd',
+                      'strb','strh','orr','orrs','bic','bics','and','ands','lsl','lsls','lsr','lsrs','uxtb','uxth',
+                      'cmp','cmn','ldmia','stmia','pop','push','bx','b','beq','bne','bmi','bpl','bhi','bls','bcs','bcc','bge','blt','bgt','ble','it'}
+                for mnemonic in re.findall(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+([a-z][a-z0-9.]*)',body,re.M):
+                    assert mnemonic.split('.')[0] in safe, 'profile build outlined helper uses '+mnemonic
+            else:
+                assert hashlib.sha256(code).hexdigest()==command_outlines.get(name), 'unreviewed command outlined helper'
         elif outline:
             instructions=re.findall(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]+\s+)+([a-z][a-z0-9.]*)\s+([^\n]+)',body,re.M)
             for mnemonic,operands in instructions:
@@ -200,12 +252,14 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
                     if name=='AmpProc1Fault' and gpio_irq:permitted.add(0x400e3000)
                     if 'amp_proc18hardware12clear_output' in name:permitted.update({0x400e3000,0x400e0000})
                     if gpio:permitted.add(0x400e2000 if '8set_high' in name else 0x400e3000)
+                if profiled:permitted.update({0x400ac028,0x400e0000})
                 if irq:
                     permitted.update({0x400d0110,0x400d0114,0x400d0118,0x400d0048,
                         0x400d004c,0x400d204c,0x400d304c,0x400d2114,0x400d3110,0x400d3114,0x400e0004})
                 assert value in permitted, 'proc1 references peripheral MMIO'
             if 0xe0000000<=value<0xe0100000:
-                assert value in ({0xe000ed08,0xe00ff01c}|({0xe000e100,0xe000e180,0xe000e200,0xe000e280} if irq else set())), 'proc1 references unadmitted local MMIO'
+                assert value in ({0xe000ed08,0xe00ff01c}|({0xe000e100,0xe000e180,0xe000e200,0xe000e280} if irq else set())
+                    |({0xe000e010,0xe000e014,0xe000e018,0xe000e01c,0xe000e100} if profiled else set())), 'proc1 references unadmitted local MMIO'
         for branch in re.finditer(r'\b(?:bl|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(?:\.[nw])?|cbnz|cbz)\s+(?:r\d+,\s*)?([0-9a-f]+)\s+<',body):
             target=int(branch[1],16)
             if target in blocks and target!=address:todo.append(target)
@@ -214,12 +268,18 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         status=[b for n,(_,b) in named.items() if 'amp_proc18hardware6status' in n]
         assert len(status)==1
         address=0x2000a0d8 if cold_irq else 0x2000a0e4 if observation else 0x2000986c
+        if profile:
+            # Moves with .text in the profiler build; contents are still hash-checked by the caller.
+            words=re.findall(r'\.word\s+0x([0-9a-f]+)',status[0])
+            assert len(words)==1, 'C1 status table literal'
+            address=int(words[0],16)
         assert re.findall(r'\.word\s+0x([0-9a-f]+)',status[0])==[f'{address:08x}'], 'C1 status table address changed'
         status_table=dict(address=address,bytes=48,sha256='903e707369259ced4c6358b9931f74340df8f39d1601c58f75ae12f0a5e6f63f')
-    return {'reachable_functions':sorted(blocks[a][0] for a in seen),'body_frame_bytes':frame+8,'telemetry_version':version,
+    return {'reachable_functions':sorted(blocks[a][0] for a in seen),'body_frame_bytes':frame+(16 if profile else 8),'telemetry_version':version,
             'status_table':status_table,'cold_irq_admission':cold_irq,
             'irq_exception_stack_bytes_max':40 if gpio_irq else 0,
-            'scope':'static codegen only; not a whole-stack bound or measured timing'}
+            'scope':'static codegen only; not a whole-stack bound or measured timing',
+            **({'profile_body_sha256':hashlib.sha256(body_code).hexdigest()} if profile else {})}
 
 
 def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics=False, amp_control=False, amp_proc1=False, amp_proc1_gpio_irq=False, amp_observation=False):
@@ -233,6 +293,10 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
     entry, phoff, phsize, phcount = header[4], header[5], header[9], header[10]
     loads = []
     nulls = []
+    # Diagnostic-only C1 profiler build (freertos-amp-proc1-profile); never a production image.
+    profile = os.environ.get('RP1_AMP_PROC1_PROFILE') == '1'
+    assert not profile or amp_observation, 'profiler requires the OBS1 C1 build'
+    profile_loads = []
     for index in range(phcount):
         kind, off, va, pa, filesz, memsz, flags, align = struct.unpack_from('<8I', data, phoff + index * phsize)
         if kind != 1:
@@ -240,7 +304,13 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
                 nulls.append((off, va, pa, filesz, memsz, flags, align))
             continue
         assert va == pa, 'loader copy contract requires VMA == p_paddr'
-        assert 0x20000000 <= pa <= pa + memsz <= 0x2000e000, 'load overlaps reserved SRAM'
+        if profile and pa >= 0x2000e000:
+            # Opt-in C1 profiler: one R+X file-backed segment above the fixed MSP top only.
+            assert pa == 0x2000f000 and 0 < memsz == filesz <= 0x600 and flags == 5, 'profile segment shape'
+            assert not profile_loads, 'more than one profile segment'
+            profile_loads.append((pa, pa + memsz))
+        else:
+            assert 0x20000000 <= pa <= pa + memsz <= 0x2000e000, 'load overlaps reserved SRAM'
         assert filesz <= memsz and off + filesz <= len(data)
         loads.append((pa, pa + memsz, off, filesz))
     loads.sort()
@@ -362,12 +432,20 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
         if amp_proc1_gpio_irq:
             expected.update({b'.amp_proc1_irq_storage':(8,3,0x2000c750,130),
                              b'.amp_proc1_irq_text':(1,6,0x2000c7e0,None)})
+        if profile:
+            expected[b'.amp_proc1_profile_text']=(1,6,0x2000f000,None)
         assert amp_sections.keys() == expected.keys(), 'proc1 local section set'
         for name,(kind,flags,va,size) in expected.items():
             s=amp_sections[name]
             assert s[1]==kind and s[3]==va and s[2] in (flags,flags|0x200000), 'proc1 local section ownership/type'
-            assert (0<s[5]<=0xab0 if name==b'.amp_proc1_irq_text' else 0<s[5]<=0x400) if size is None else s[5]==size, 'proc1 local section size'
+            limit=0xab0 if name==b'.amp_proc1_irq_text' else 0x600 if name==b'.amp_proc1_profile_text' else 0x400
+            assert 0<s[5]<=limit if size is None else s[5]==size, 'proc1 local section size'
             assert any(a<=va<va+s[5]<=b for a,b,_,_ in loads), 'proc1 region outside owned PT_LOAD'
+        if profile:
+            # Profiler scratch 0x2000f600 and results 0x2000f700 follow the code, below the RTOS record.
+            assert profile_loads==[(0x2000f000,0x2000f000+amp_sections[b'.amp_proc1_profile_text'][5])], 'profile segment/section mismatch'
+            prof = amp_sections[b'.amp_proc1_profile_text']
+            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == '15095898d8335c98257aa74ae4f547c935eed9449848000b136f2e68bc18283a', 'profile SysTick instructions changed; review again'
         assert control_contract[0][3]+24<=0x2000ba00, 'proc1 overlaps clock/proc0 contract'
         assert 0x2000c750<=diagnostic[0][3], 'proc1 stack overlaps DDR code'
         for name,value in [('__amp_proc1_vectors',0x2000be00),('__amp_proc1_guard_low',0x2000bf40),

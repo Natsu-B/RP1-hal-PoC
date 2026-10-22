@@ -72,6 +72,7 @@ if [[ "$check_feature" == freertos-endpoint-config-once ]]; then
 fi
 date --iso-8601=seconds
 printf 'selected_feature=%s\n' "$cargo_feature"
+printf 'extra_features=%s\n' "${RP1_EXTRA_FEATURES:-}"
 git branch --show-current
 git rev-parse HEAD
 git diff --binary > "$out/source.diff"
@@ -150,6 +151,7 @@ if [[ "$feature" == freertos-r3-proc1-worker ]]; then
     "$out/proc1-test" > "$out/proc1-host-test.txt"
 fi
 export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
+if [[ " ${RP1_EXTRA_FEATURES:-} " == *" freertos-amp-proc1-profile "* ]]; then export RP1_AMP_PROC1_PROFILE=1; fi
 if [[ ( "$feature" == freertos-r3-watchdog-warm-guard || "$feature" == freertos-r3-watchdog-kernel-restart ) || "$feature" == freertos-r3-watchdog-expiry-entry || "$feature" == freertos-r3-reset-entry-selftest || "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
     cp "$repo/examples/minimal/src/freertos_watchdog.rs" "$out/freertos_watchdog.rs"
     model_flags=()
@@ -247,7 +249,7 @@ if [[ "$cargo_feature" == freertos-amp-control || "$amp_proc1" == 1 ]]; then
     export RP1_AMP_RECORD_DIR="$out/ownership"
 fi
 cargo +stable "${cargo_profile[@]}" rustc --offline --locked --release --target thumbv7m-none-eabi \
-  -p rp1-example-minimal --no-default-features --features "$cargo_feature" -- -C "link-arg=-Map=$out/RP1.map"
+  -p rp1-example-minimal --no-default-features --features "$cargo_feature${RP1_EXTRA_FEATURES:+ $RP1_EXTRA_FEATURES}" -- -C "link-arg=-Map=$out/RP1.map"
 cp "${CARGO_TARGET_DIR:-$repo/target}/thumbv7m-none-eabi/release/rp1-example-minimal" "$out/RP1.elf"
 arm-none-eabi-readelf -lSW "$out/RP1.elf" > "$out/readelf.txt"
 arm-none-eabi-nm -n "$out/RP1.elf" > "$out/symbols.txt"
@@ -269,9 +271,18 @@ fi
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" "${elf_args[@]}" > "$out/elf-validation.json"
 if [[ "$cargo_feature" == freertos-amp-observation ]]; then
     : "${RP1_OPENAMP_SOURCE:?set the pinned OpenAMP source for callback/stack admission}"
-    python3 -B "$repo/tools/check-amp-worker-stack.py" "$out/RP1.elf" --openamp-source "$RP1_OPENAMP_SOURCE" > "$out/stack-admission.json"
-    python3 -B "$repo/tools/test-amp-worker-stack.py" "$out/RP1.elf" --openamp-source "$RP1_OPENAMP_SOURCE" > "$out/stack-negative-test.txt"
-    cp "$repo/tools/amp-observation-stack-review.json" "$out/stack-review.json"
+    if [[ "${RP1_AMP_PROC1_PROFILE:-}" == 1 ]]; then
+        python3 -B "$repo/tools/remap-amp-stack-review.py" \
+          --reference-elf "$RP1_AMP_PROC1_PROFILE_REFERENCE" --candidate-elf "$out/RP1.elf" \
+          --review "$repo/tools/amp-observation-stack-review.json" --hal "$repo" \
+          --openamp-source "$RP1_OPENAMP_SOURCE" \
+          --output "$out/stack-review.json" > "$out/stack-review-remap.json"
+        python3 -B "$repo/tools/test-remap-amp-stack-review.py" > "$out/stack-remap-negative-test.txt"
+    else
+        cp "$repo/tools/amp-observation-stack-review.json" "$out/stack-review.json"
+    fi
+    python3 -B "$repo/tools/check-amp-worker-stack.py" "$out/RP1.elf" --review "$out/stack-review.json" --openamp-source "$RP1_OPENAMP_SOURCE" > "$out/stack-admission.json"
+    python3 -B "$repo/tools/test-amp-worker-stack.py" "$out/RP1.elf" --review "$out/stack-review.json" --openamp-source "$RP1_OPENAMP_SOURCE" > "$out/stack-negative-test.txt"
 fi
 if [[ "$scmi" == 1 ]]; then
     python3 -B "$repo/tools/test_scmi_clock.py" > "$out/scmi-host-test.txt"

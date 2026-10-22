@@ -18,7 +18,7 @@
     "hal/crates/rp1-rt/src/freertos.rs": "7986a2a91b7100a041b560d7f994fe7b31635f856bad27163e4f72a9df3579d4",
     "hal/crates/rp1-macros/src/lib.rs": "cc49c96e594d2064c9d20b78279acf4049aa4b1d9f675a13182f81d3798c2975",
     "hal/examples/minimal/src/main.rs": "691c12886eb7e77d6c9e8c06779f6b3b0562dcc7d5856b181ee2ffccfc664213",
-    "hal/examples/minimal/src/freertos_r1.rs": "e6b4f1c5f63e49f16a53ad4ecaeb777fe4a6703eb7a6ee46660ad195f1ded914",
+  "hal/examples/minimal/src/freertos_r1.rs": "59591e55a5d362897f9dde9971741a7d6c44a38f7d1c368fb8b1defd8fcf935c",
     "hal/examples/minimal/src/cold_irq_admission.rs": "1c80ac42bbde95d246cb59755f7c689ae7aaf6d5df38d4afd7e2a8132f643d9e"
   },
   "indirect_targets": {

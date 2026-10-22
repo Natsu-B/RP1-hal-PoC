@@ -1134,6 +1134,8 @@ unsafe extern "C" fn spin(_: *mut c_void) {
 // panic source locations and the sealed observer ELF byte identity.
 #[cfg(feature = "freertos-endpoint-config-once")]
 #[inline(never)]
+// Profile builds move this boot-only C0 routine out of .text to pay for C1 hooks.
+#[cfg_attr(feature = "freertos-amp-proc1-profile", unsafe(link_section = ".amp_proc1.profile_text"))]
 fn endpoint_config_finish(once: &mut crate::endpoint_config::commissioning::Once,
     uart: &mut rp1_hal::uart::Uart0Tx) {
     once.finish(|line| { increment(if endpoint_line(uart, line) { 60 } else { 61 }); }, |r| {

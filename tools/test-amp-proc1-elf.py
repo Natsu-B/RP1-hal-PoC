@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mutate the actual phase1 ELF; never admit it as phase0 or legacy R1."""
 import importlib.util
+import os
 import argparse
 from pathlib import Path
 import struct
@@ -27,10 +28,20 @@ sections=[struct.unpack_from('<10I',raw,h[6]+i*h[11]) for i in range(h[12])]
 strings=sections[h[13]];names=raw[strings[4]:strings[4]+strings[5]]
 slots={names[s[0]:].split(b'\0',1)[0]:(i,s) for i,s in enumerate(sections)}
 mutations=[]
-for name in [b'.amp_proc1_storage',b'.amp_proc1_vectors',b'.amp_proc1_stack']+([b'.amp_proc1_irq_storage',b'.amp_proc1_irq_text'] if args.amp_proc1_gpio_irq else [])+([b'.amp_observation_state',b'.amp_observation_text',b'.amp_observation_codec'] if args.amp_observation else []):
+for name in [b'.amp_proc1_storage',b'.amp_proc1_vectors',b'.amp_proc1_stack']+([b'.amp_proc1_irq_storage',b'.amp_proc1_irq_text'] if args.amp_proc1_gpio_irq else [])+([b'.amp_observation_state',b'.amp_observation_text',b'.amp_observation_codec'] if args.amp_observation else [])+([b'.amp_proc1_profile_text'] if os.environ.get('RP1_AMP_PROC1_PROFILE') == '1' else []):
     i,s=slots[name]
     mutations += [(h[6]+i*h[11]+field*4,value) for field,value in [(1,0),(2,0),(3,s[3]+8),(5,0),(5,0x8000)]]
 i,s=slots[b'.amp_control_contract'];mutations.append((s[4]+20,0))
+# NOBITS still needs owned load memory; a zero file size does not waive coverage.
+for i in range(h[10]):
+    kind,off,address,pa,filesz,*_=struct.unpack_from('<8I',raw,h[5]+i*h[9])
+    if kind == 1 and pa == 0x2000ba00:
+        assert filesz == 0
+        mutations.append((h[5]+i*h[9]+20,0))
+        break
+else: raise AssertionError('proc1 storage PT_LOAD missing')
+if os.environ.get('RP1_AMP_PROC1_PROFILE') == '1':
+    i,s=slots[b'.amp_proc1_profile_text']; mutations.append((s[4],0))
 i,s=slots[b'.amp_proc1_vectors'];mutations += [(s[4]+j*4,0) for j in [0,1,2,79]+([16,17] if args.amp_proc1_gpio_irq else [])]
 table=result['amp_proc1_probe']['codegen'].get('status_table')
 if table:
@@ -81,7 +92,8 @@ for extra in ['2000aaaa: 4780 blx r0','2000aaaa: 81000000 .word 0x81000000','200
 tag=result['amp_proc1_probe']['codegen']['telemetry_version']
 if tag=='P1A9':
     found=re.search(r'(^[0-9a-f]+ <AmpProc1Body>:\n)(.*?)(?=^[0-9a-f]+ <|\Z)',dis,re.M|re.S)
-    for pattern,replacement in [(r'subs\.w\s+r2, r0, #200\b','subs.w r2, r0, #201'),
+    due_registers = 'r0, r4' if os.environ.get('RP1_AMP_PROC1_PROFILE') == '1' else 'r2, r0'
+    for pattern,replacement in [(r'subs\.w\s+'+due_registers+r', #200\b','subs.w '+due_registers+', #201'),
             (r'(subs\s+r0, )#1(\s*\n[^\n]*it\s+eq\s*\n[^\n]*moveq\.w\s+r0, #1000\b)',r'\g<1>#2\g<2>')]:
         assert found and len(re.findall(pattern,found[2]))==1,'period/countdown instruction missing'
         changed=found[1]+re.sub(pattern,replacement,found[2],count=1)

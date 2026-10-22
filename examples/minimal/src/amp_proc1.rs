@@ -45,6 +45,16 @@ pub(crate) use hardware::handoff_marker;
 
 #[cfg(all(target_arch = "arm", feature = "freertos-amp-proc1-gpio-irq"))]
 mod gpio_irq;
+#[cfg(all(target_arch = "arm", feature = "freertos-amp-proc1-profile"))]
+mod profile;
+
+/// Profiling hook; expands to nothing unless `freertos-amp-proc1-profile`.
+macro_rules! prof {
+    ($($call:tt)*) => {
+        #[cfg(feature = "freertos-amp-proc1-profile")]
+        super::profile::$($call)*;
+    };
+}
 #[cfg(all(target_arch = "arm", feature = "freertos-amp-proc1-gpio-irq"))]
 pub(crate) use gpio_irq::handoff_input;
 
@@ -332,22 +342,27 @@ mod hardware {
         let (mut command_sequence,mut command_result,mut previous)=(0u64,0u32,None);
         #[cfg(feature="freertos-amp-proc1-gpio-irq")]
         if !super::gpio_irq::start(generation) {park(4);}
+        prof!(probe());
         put(10,u32::MAX);put(1,1);barrier();put(0,READY);
         loop {
             if STOP.load(Ordering::Acquire)!=0 {control.retire();finish(2);}
             let Some(t)=now() else {control.retire();park(4)};
             if t<last {control.retire();park(4);}
             if t<next {core::hint::spin_loop();continue;}
+            prof!(begin((t-next).min(u64::from(u32::MAX)) as u32));
             let Some((following,skipped))=due(next,t) else {control.retire();park(4)};
             next=following;sequence=match sequence.checked_add(skipped+1) {Some(s)=>s,None=>park(4)};
             missed=missed.saturating_add(skipped);cycles+=1;
             put(31,get(31).wrapping_add(1));barrier();
+            prof!(mark(0));
             let update=commands.pop();
             if let Some(update)=update {
                 command_sequence=update.sequence();
                 command_result=control.offer_update(update,t).err().map_or(0,status);
             }
+            prof!(mark(1));
             let decision=control.step(t,SampleStamp{boot:generation.boot,sequence,acquired_us:t});
+            prof!(mark(2));
             let high=match decision {Decision::Active{parameters,..}=>output_high(true,parameters.0[0]),_=>false};
             if u32::from(high)!=get(30) {
                 if high {output.set_high();} else {output.set_low();}
@@ -356,11 +371,14 @@ mod hardware {
                 if (latch!=0)!=high {control.retire();park(4);}
                 put(29,get(29).saturating_add(1));put(30,u32::from(high));
             }
+            prof!(mark(3));
             if update.is_some() || previous!=Some(decision) {
                 command_receipt(&control,decision,command_sequence,command_result);previous=Some(decision);
             }
+            prof!(mark(4));
             let Some(calculation)=now() else {control.retire();park(4)};
             if calculation<t {control.retire();park(4);}
+            prof!(mark(5));
             // Unmeasured edge is zero; flags=0 never attests hardware e2e.
             let make_sample=|| Observation{generation,sequence,edge_us:0,irq_us:t,transfer_us:t,
                 calculation_us:calculation,actuator_us:calculation,sample_timestamp_rp1:t,
@@ -369,6 +387,7 @@ mod hardware {
             let _=producer.push_with(make_sample);
             #[cfg(not(feature="freertos-amp-proc1-gpio-irq"))]
             let _=producer.push(make_sample()); // Explicit drop-newest; first8 intact.
+            prof!(mark(6));
             let elapsed=t-last;last=t;
             // One C1 writer, seqlock epoch brackets each multiword telemetry update.
             put(7,cycles as u32);put(8,missed as u32);put(9,producer.drops());
@@ -376,15 +395,19 @@ mod hardware {
             put(11,get(11).max(elapsed.min(u64::from(u32::MAX)) as u32));
             put(12,sequence as u32);put(13,(sequence>>32) as u32);put(14,t as u32);put(15,(t>>32) as u32);
             put(22,u32::from(matches!(decision,Decision::Active{..})));put(23,control.counters().sample_sequence_gaps as u32);
+            prof!(mark(7));
             if guard_due(&mut guard_remaining) {
                 if !guards() || unsafe {ptr::addr_of!(__amp_proc1_stack_low).cast::<u32>().add(31).read_volatile()}!=FILL {
                     control.retire();park(4);
                 }
             }
+            prof!(mark(8));
             barrier();put(31,get(31).wrapping_add(1));
+            prof!(mark(9));
             if cycles>=CYCLES || t-start>=CYCLES*PERIOD_US {control.retire();finish(3);}
             #[cfg(feature="freertos-amp-proc1-gpio-irq")]
             if !super::gpio_irq::force() {control.retire();park(4);}
+            prof!(end(cycles as u32));
         }
     }
 }
