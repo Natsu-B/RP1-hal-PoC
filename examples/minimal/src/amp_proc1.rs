@@ -140,6 +140,15 @@ mod hardware {
         "ldr r1,=0xe00ff01c", "ldr r1,[r1]", "cmp r1,#1", "bne AmpProc1Fault",
         "mrs r1,IPSR", "cmp r1,#0", "bne AmpProc1Fault",
         "mrs r1,CONTROL", "cmp r1,#0", "bne AmpProc1Fault",
+        ".if {relaunch}",
+        "ldr r1,=0x2000f640", "ldr r2,=0x400ac028", "ldr r2,[r2]", "str r2,[r1,#60]",
+        "mrs r2,MSP", "str r2,[r1,#64]",
+        "ldr r2,=0xe000ed28", "ldr r3,[r2]", "str r3,[r1,#68]",
+        "ldr r3,[r2,#4]", "str r3,[r1,#72]",
+        "ldr r2,=0xe000ed04", "ldr r3,[r2]", "str r3,[r1,#76]",
+        "ldr r3,[r2,#4]", "str r3,[r1,#180]",
+        "dsb sy", "ldr r2,=0x324e5552", "str r2,[r1,#56]", "dsb sy",
+        ".endif",
         "ldr r1,=__amp_proc1_vectors", "ldr r2,=0xe000ed08", "str r1,[r2]",
         "dsb sy", "isb sy",
         ".if {local_stack}",
@@ -153,6 +162,10 @@ mod hardware {
         "b.w AmpProc1Body", ".size AmpProc1Entry,.-AmpProc1Entry",
         ".global AmpProc1Fault", ".type AmpProc1Fault,%function", ".thumb_func",
         "AmpProc1Fault:", "cpsid i",
+        ".if {relaunch}",
+        "ldr r0,=0x2000f6f8", "ldr r1,=0xe000ed28", "ldr r2,[r1]", "str r2,[r0]",
+        "ldr r2,[r1,#4]", "str r2,[r0,#4]", "dsb sy",
+        ".endif",
         ".if {gpio_irq_enabled}",
         "ldr r0,=0x400d3110", "mov.w r1,#512", "str r1,[r0]",
         "ldr r0,=0x400d3114", "str r1,[r0]",
@@ -165,6 +178,7 @@ mod hardware {
         gpio_vector = sym AmpGpioVector,
         gpio_irq_enabled = const (cfg!(feature="freertos-amp-proc1-gpio-irq")) as u32,
         local_stack = const (cfg!(feature="freertos-amp-proc1-local-stack")) as u32,
+        relaunch = const (cfg!(feature="freertos-amp-proc1-no-hooks")) as u32,
         fill = const FILL,
     );
     /// C1 stack actually in use: shared SRAM, or proc-local DSRAM in the diagnostic build.
@@ -225,7 +239,7 @@ mod hardware {
     }
 
     /// Called only by C0's sole OpenAMP worker after an admitted HELLO. This is
-    /// initial deassertion from held reset, never a reset/restart/remove path.
+    /// Initial deassertion from held reset; no-hooks also tests a ROM return/relaunch.
     #[unsafe(no_mangle)]
     #[inline(never)]
     #[cfg_attr(feature="freertos-amp-proc1-gpio-irq",unsafe(link_section=".amp_proc1.irq_text"))]
@@ -267,15 +281,22 @@ mod hardware {
             (0x4015_400c as *mut u32).write_volatile(0xb007_c0de);
             (0x4015_401c as *mut u32).write_volatile(ptr::addr_of!(__amp_proc1_stack_top) as u32);
             core::arch::asm!("dsb sy",options(nostack,preserves_flags));
-            (0x4015_4014 as *mut u32).write_volatile((AmpProc1Entry as *const () as u32|1)^0x4ff8_3f2d);
+            #[cfg(not(feature="freertos-amp-proc1-no-hooks"))]
+            let entry = AmpProc1Entry as *const () as u32;
+            #[cfg(feature="freertos-amp-proc1-no-hooks")]
+            let entry = super::profile::AmpProc1ReturnProbe as *const () as u32;
+            (0x4015_4014 as *mut u32).write_volatile((entry|1)^0x4ff8_3f2d);
             core::arch::asm!("dsb sy",options(nostack,preserves_flags));
             CTRL.write_volatile(ctrl&!(1<<31));
             core::arch::asm!("dsb sy","sev",options(nostack,preserves_flags));
         }
+        #[cfg(feature="freertos-amp-proc1-no-hooks")]
+        if !super::profile::relaunch_normal(AmpProc1Entry as *const () as u32,
+            ptr::addr_of!(__amp_proc1_stack_top) as u32) {
+            STOP.store(1,Ordering::Release);return 9;
+        }
         let Some(start)=now() else {STOP.store(1,Ordering::Release);return 9;};
         for _ in 0..100_000 {
-            #[cfg(feature="freertos-amp-proc1-no-hooks")]
-            super::profile::lib_probes_c0();
             if get(0)==READY && get(1)==1 {barrier();return 0;}
             if now().is_none_or(|t| t<start || t-start>=100_000) {break;}
         }

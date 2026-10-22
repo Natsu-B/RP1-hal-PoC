@@ -1,4 +1,4 @@
-//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3/v6.
+//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3/v7.
 //!
 //! The RP1 Cortex-M3 has no DWT cycle counter (DWT NOCYCCNT=1), so C1's own
 //! SysTick is used as a free-running core-clock down counter with TICKINT=0.
@@ -28,7 +28,7 @@ pub(super) const SEGMENTS: usize = 11;
 
 // Published words at BASE (u32). Probes are (min, max) over PROBE_N samples.
 const MAGIC: usize = 0; // "PRF1" written last
-const VERSION: usize = 1; // 3, or 6 for the no-hooks EXAC probe
+const VERSION: usize = 1; // 3, or 7 for the no-hooks return/relaunch probe
 const STATE: usize = 2; // 1 probing, 2 loop live, 0xbad0 SysTick not idle
 const CSR_BEFORE: usize = 3;
 const RVR_BEFORE: usize = 4;
@@ -109,8 +109,9 @@ fn measure(slot: usize, f: impl Fn()) {
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 pub(super) fn probe() -> bool {
     for i in 0..WORDS { put(i, 0); }
-    for i in 0..LOCAL_WORDS { lput(i, 0); }
-    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 6 } else { 3 });
+    // No-hooks keeps the C0/first-entry record at LOCAL words 16..31 and beyond.
+    for i in 0..if cfg!(feature = "freertos-amp-proc1-no-hooks") {16} else {LOCAL_WORDS} { lput(i, 0); }
+    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 7 } else { 3 });
     put(STATE, 1);
     let (csr, rvr) = (read(SYST_CSR), read(SYST_RVR));
     put(CSR_BEFORE, csr);
@@ -158,8 +159,6 @@ pub(super) fn probe() -> bool {
     // Unsampled hook (SAMPLE=0): call + flag test, as paid 10x per iteration.
     measure(PROBES + 14, || mark(0));
     }
-    #[cfg(feature = "freertos-amp-proc1-no-hooks")]
-    lib_probes();
     put(SLACK_MIN, u32::MAX);
     lput(END, cycles());
     put(STATE, 2);
@@ -232,136 +231,100 @@ pub(super) fn end(cycle: u32) {
     lput(END, cycles());
 }
 
-// No-hooks v6 reuses the unused snippet area for a single-writer mailbox/results.
+// v7 record: 48 words at 0x2000f640..0x2000f700. C0 owns phase, timestamps
+// 20..23 and tuple snapshots 24..43. C1 owns first 3..13/44, second 14..19/45,
+// and fault 46..47. No loop hooks or EXAC accesses in this diagnostic.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
-const EXAC: usize = 0x4040_0380; // word 7; no other user in this replacement firmware
+const RELAUNCH: usize = LOCAL + 16 * 4;
 
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
-#[inline(always)]
-fn exclusive_read() -> u32 {
-    let value;
-    unsafe { core::arch::asm!("ldrex {v}, [{p}]", "clrex", p = in(reg) EXAC,
-        v = out(reg) value, options(nostack, preserves_flags)); }
-    value
-}
+unsafe extern "C" { pub(super) fn AmpProc1ReturnProbe(); }
 
+// Leaf ABI: preserve LR, SP, r4..r11, VTOR and interrupt state. ROM's BLX
+// return path (0x260: SEV -> WFE service) remains intact even if C0 is early.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
-#[inline(always)]
-fn attempt(owner: u32) -> (u32, u32) {
-    let (value, status);
-    unsafe { core::arch::asm!("ldrex {v}, [{p}]", "strex {s}, {owner}, [{p}]", "dmb sy",
-        p = in(reg) EXAC, owner = in(reg) owner, v = out(reg) value,
-        s = out(reg) status, options(nostack, preserves_flags)); }
-    (value, status)
-}
+core::arch::global_asm!(
+    ".syntax unified", ".thumb", ".section .amp_proc1.profile_text,\"ax\",%progbits", ".balign 4",
+    ".global AmpProc1ReturnProbe", ".type AmpProc1ReturnProbe,%function", ".thumb_func",
+    "AmpProc1ReturnProbe:", "ldr r1,=0x2000f640",
+    "str r0,[r1,#52]", "mrs r2,MSP", "str r2,[r1,#20]",
+    "mrs r2,IPSR", "str r2,[r1,#24]", "mrs r2,CONTROL", "str r2,[r1,#28]",
+    "mrs r2,PRIMASK", "str r2,[r1,#32]", "str lr,[r1,#176]",
+    "ldr r2,=0xe000ed08", "ldr r3,[r2]", "str r3,[r1,#36]",
+    "ldr r3,[r2,#32]", "str r3,[r1,#40]", "ldr r3,[r2,#36]", "str r3,[r1,#44]",
+    "ldr r2,=0xe000ed04", "ldr r3,[r2]", "str r3,[r1,#48]",
+    "ldr r2,=0x400ac028", "ldr r3,[r2]", "str r3,[r1,#16]",
+    "dsb sy", "ldr r2,=0x31544552", "str r2,[r1,#12]", "dsb sy", "bx lr",
+    ".size AmpProc1ReturnProbe,.-AmpProc1ReturnProbe", ".ltorg",
+);
 
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 pub(super) fn lib_probes_init() {
-    for i in 0..13 { write(SNIPPET + i * 4, 0); }
+    for i in 0..48 { write(RELAUNCH + i * 4, 0); }
+    write(RELAUNCH + 4, 7);
+    write(RELAUNCH + 8, 1);
     barrier();
+    write(RELAUNCH, u32::from_le_bytes(*b"RLA7"));
 }
 
-/// Called once per C0 launch poll, only before C1 READY. No loop or waiting.
-/// C0 clears the mailbox while C1 is held; thereafter C1 owns command (word 0)
-/// and C0 owns acknowledgement (word 1) and results 8..12. Command is published
-/// only after C1 has observed DONE bit6 and acquired the otherwise unused word.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
-pub(super) fn lib_probes_c0() {
-    if read(SNIPPET) != 1 || read(SNIPPET + 4) != 0 { return; }
-    unsafe { core::arch::asm!("dmb sy", options(nostack, preserves_flags)); }
+pub(super) fn relaunch_state(state: u32, time_slot: usize) {
+    write(RELAUNCH + time_slot * 4, read(RAW_LOW));
+    barrier();
+    write(RELAUNCH + 8, state);
+}
+
+/// Read-only tuple/RESETS snapshots; post-start entry may already be consumed.
+#[cfg(feature = "freertos-amp-proc1-no-hooks")]
+#[inline(never)]
+#[unsafe(link_section = ".amp_proc1.profile_text")]
+pub(super) fn relaunch_snapshot(slot: usize) {
+    for (i, address) in [0x4015_400c, 0x4015_4014, 0x4015_401c, 0x4001_4000, 0x4001_4018].into_iter().enumerate() {
+        write(RELAUNCH + (slot + i) * 4, read(address));
+    }
+    barrier();
+}
+
+/// At most 100000 polls/100ms; no second start on timeout or invalid context.
+/// The core is already released: publish the same tuple + DSB/SEV without any
+/// further reset-register write. A marker precedes BX LR; ROM sends its own SEV
+/// after return, so early publication cannot lose the second request at WFE.
+#[cfg(feature = "freertos-amp-proc1-no-hooks")]
+#[inline(never)]
+#[unsafe(link_section = ".amp_proc1.profile_text")]
+pub(super) fn relaunch_normal(entry: u32, stack: u32) -> bool {
+    // First-start snapshot (moved here from rp1_control_session to keep .amp_proc1_irq_text in budget).
+    relaunch_snapshot(29);
     let start = read(RAW_LOW);
-    let (value, status, mask): (u32, u32, u32);
-    unsafe { core::arch::asm!("mrs {mask}, PRIMASK", "cpsid i",
-        "ldrex {v}, [{p}]", "strex {s}, {owner}, [{p}]", "dmb sy", "msr PRIMASK, {mask}",
-        p = in(reg) EXAC, owner = in(reg) 0u32, v = out(reg) value,
-        s = out(reg) status, mask = out(reg) mask, options(nostack, preserves_flags)); }
-    let normal = read(EXAC);
-    let after = exclusive_read();
-    // If the challenger stole the word, release it even if C1 has timed out.
-    if after == 0 { write(EXAC, 15); }
-    write(SNIPPET + 32, value);
-    write(SNIPPET + 36, status);
-    write(SNIPPET + 40, normal);
-    write(SNIPPET + 44, after);
-    write(SNIPPET + 48, read(RAW_LOW).wrapping_sub(start));
-    barrier();
-    write(SNIPPET + 4, 1);
-}
-
-/// v6: DONE-gated single-core semantics, then C1-owner/C0-challenger trial.
-/// C1 waits at most 10ms/100000 polls; C0 performs one attempt and never waits.
-#[cfg(feature = "freertos-amp-proc1-no-hooks")]
-#[inline(never)]
-#[unsafe(link_section = ".amp_proc1.profile_text")]
-fn lib_probes() {
-    const DONE: usize = 0x4001_4018;
-    lput(16, read(DONE));
-    lput(18, read(0x4001_4000));
-    if lget(16) & 64 == 0 {
-        write(0x4001_7000, 64); // only hypothesized EXAC reset bit6, CLR alias
-        barrier();
-    }
-    for _ in 0..1024 {
-        if read(DONE) & 64 != 0 { break; }
-    }
-    lput(17, read(DONE));
-    lput(31, 1); // DONE failure: no EXAC access
-    if lget(17) & 64 != 0 {
-        lput(19, read(EXAC));
-        lput(20, exclusive_read());
-        let original = lget(20);
-        lput(31, 2); // unexpected owner encoding: no EXAC writes
-        if original <= 15 {
-            // Word7 has no firmware user; reset need not initialize it to free.
-            write(EXAC, 15);
+    for _ in 0..100_000 {
+        if read(RELAUNCH + 12) == u32::from_le_bytes(*b"RET1") {
             barrier();
-            let (_, status) = attempt(1);
-            lput(21, status);
-            lput(22, read(EXAC));
-            lput(23, exclusive_read());
-            let status;
-            unsafe { core::arch::asm!("clrex", "strex {s}, {owner}, [{p}]", "dmb sy",
-                p = in(reg) EXAC, owner = in(reg) 0u32, s = out(reg) status,
-                options(nostack, preserves_flags)); }
-            lput(24, status);
-            lput(25, read(EXAC));
-            lput(26, exclusive_read());
-            write(EXAC, 15);
-            barrier();
-            lput(27, read(EXAC));
-            lput(28, exclusive_read());
-            let (value, status) = attempt(1);
-            write(SNIPPET + 8, value);
-            write(SNIPPET + 12, status);
-            write(SNIPPET + 16, read(EXAC));
-            let held = exclusive_read();
-            write(SNIPPET + 20, held);
-            lput(31, 3); // could not establish C1 ownership
-            if held == 1 {
-                barrier();
-                write(SNIPPET, 1);
-                let start = read(RAW_LOW);
-                for _ in 0..100_000 {
-                    if read(SNIPPET + 4) == 1 { break; }
-                    if read(RAW_LOW).wrapping_sub(start) >= 10_000 { break; }
-                }
-                unsafe { core::arch::asm!("dmb sy", options(nostack, preserves_flags)); }
-                lput(31, if read(SNIPPET + 4) == 1 { 0 } else { 4 });
-                write(SNIPPET, 0); // withdraw even on timeout; C0 cleans a late steal
-                write(SNIPPET + 24, read(EXAC));
-                write(SNIPPET + 28, exclusive_read());
+            relaunch_state(3,21);
+            relaunch_snapshot(34);
+            if read(RELAUNCH + 52) != 1 || read(RELAUNCH + 24) != 0
+                || read(RELAUNCH + 28) != 0 || read(RELAUNCH + 40) != 0
+                || read(RELAUNCH + 44) != 0 || read(0x4015_4014) != 0
+                || read(0x4001_4000) & (1 << 31) != 0
+                || read(0x4001_4018) & (1 << 31) == 0 {
+                relaunch_state(0xbad2,22);return false;
             }
-            write(EXAC, original);
+            write(0x4015_400c, 0xb007_c0de);
+            write(0x4015_401c, stack);
             barrier();
-            lput(29, exclusive_read());
+            relaunch_state(4,22);
+            write(0x4015_4014, (entry | 1) ^ 0x4ff8_3f2d);
+            unsafe { core::arch::asm!("dsb sy", "sev", options(nostack, preserves_flags)); }
+            relaunch_snapshot(39);
+            return true;
         }
+        if read(RAW_LOW).wrapping_sub(start) >= 100_000 { break; }
     }
-    barrier();
-    lput(30, u32::from_le_bytes(*b"EXA6"));
+    relaunch_state(0xbad1,21);
+    false
 }
 
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]

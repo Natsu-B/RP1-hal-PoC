@@ -44,7 +44,7 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         # Keyed by (DSRAM stack, hooks compiled out); each value was reviewed against its disassembly.
         body_pins={('0','0'):'afe9292ec9f8ca0a5bd0b438362a74ef7674aa4fa4d4bf1dae2b3e406e8008ec',
                    ('1','0'):'79b4cad2ba4eebfb2653e2b1c1d7ed3f268ad088fdb0b1ef4714dbccd3b99405',
-                   ('1','1'):'18282626049a01048c327adeb6c497e0052a4500a1ebb1bb0b305350695ec91d'}
+                   ('1','1'):'fb8e70d9c09b7173edd5b9959589d6f41bf57c72f7a429afbd98dfce2e241181'}
         mode=(os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))
         assert mode in body_pins and hashlib.sha256(body_code).hexdigest()==body_pins[mode], 'profile loop instructions changed; review again'
     peer_quiesce=not observation and version=='P1A9' and hashlib.sha256(body_code).hexdigest()=='c4324f7e22b9c180a8de3c004d22117f29b904f7c17d8e663eb1ec6f116f1508'
@@ -236,6 +236,15 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
                         ops.append(ins.strip())
                     return ops,sorted(words.values())
                 cand_ops,cand_words=resolved(body)
+                if os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1':
+                    # Relaunch diagnostic: Fault first saves CFSR/HFSR to 0x2000f6f8 (exact 7-instruction prefix), and
+                    # AmpProc1Entry's added record code puts its own words into the shared pool. Nothing else may change.
+                    prefix=['ldr\tr0, =0x2000f6f8','ldr\tr1, =0xe000ed28','ldr\tr2, [r1, #0]','str\tr2, [r0, #0]',
+                            'ldr\tr2, [r1, #4]','str\tr2, [r0, #4]','dsb\tsy']
+                    assert cand_ops[1:8]==prefix, 'relaunch fault prefix changed'
+                    cand_ops=cand_ops[:1]+cand_ops[8:]
+                    extra={'2000f640','2000f6f8','324e5552','400ac028','e000ed04','e000ed28'}
+                    cand_words=sorted(w for w in cand_words if w not in extra)
                 assert any(resolved(r)[0]==cand_ops and sorted([w for w in resolved(r)[1] if w!='2000c748']+['10002000','10002800'])==cand_words for r in ref), \
                     'profile build changed reviewed GPIO IRQ code: '+name
             else:
@@ -282,6 +291,8 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
                 if version in ('P1A5','P1A6','P1A7','P1A8','P1A9'):
                     if name=='AmpProc1Body':permitted.add(0x400e0000)
                     if name=='AmpProc1Fault' and gpio_irq:permitted.add(0x400e3000)
+                    # Relaunch diagnostic: AmpProc1Entry's raw-timer timestamp literal lands in the shared Entry/Fault pool.
+                    if name=='AmpProc1Fault' and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1':permitted.add(0x400ac028)
                     if 'amp_proc18hardware12clear_output' in name:permitted.update({0x400e3000,0x400e0000})
                     if gpio:permitted.add(0x400e2000 if '8set_high' in name else 0x400e3000)
                 if profiled:permitted.update({0x400ac028,0x400e0000})
@@ -293,7 +304,8 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
             if 0xe0000000<=value<0xe0100000:
                 assert value in ({0xe000ed08,0xe00ff01c}|({0xe000e100,0xe000e180,0xe000e200,0xe000e280} if irq else set())
                     |({0xe000e010,0xe000e014,0xe000e018,0xe000e01c,0xe000e100} if profiled else set())
-                    |({0xe000e104,0xe000e200,0xe000e204,0xe000e280,0xe000e284} if profiled and 'lib_probes' in name and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1' else set())), 'proc1 references unadmitted local MMIO'
+                    |({0xe000e104,0xe000e200,0xe000e204,0xe000e280,0xe000e284} if profiled and 'lib_probes' in name and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1' else set())
+                    |({0xe000ed04,0xe000ed28} if name=='AmpProc1Fault' and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1' else set())), 'proc1 references unadmitted local MMIO'
         for branch in re.finditer(r'\b(?:bl|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(?:\.[nw])?|cbnz|cbz)\s+(?:r\d+,\s*)?([0-9a-f]+)\s+<',body):
             target=int(branch[1],16)
             if target in blocks and target!=address:todo.append(target)
@@ -418,14 +430,6 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
     assert not subprocess.check_output(['arm-none-eabi-nm', '-u', str(path)]), 'undefined symbols'
     dis = subprocess.check_output(['arm-none-eabi-objdump', '-d', '-M', 'reg-names-raw', str(path)], text=True)
     exclusive_scope = dis
-    if os.environ.get('RP1_AMP_PROC1_NO_HOOKS') == '1':
-        # v6: exactly two reviewed EXAC7 scopes, including a CLREX/STREX control.
-        probe_blocks = re.findall(r'^[0-9a-f]+ <[^>]*amp_proc17profile(?:10lib_probes|13lib_probes_c0)17h[^>]*>:\n.*?(?=^[0-9a-f]+ <|\Z)', dis, re.M | re.S)
-        assert len(probe_blocks) == 2, 'EXAC probe scopes'
-        for block in probe_blocks:
-            counts = tuple(len(re.findall(r'\b'+op+r'\b', block)) for op in ('ldrex','strex','clrex'))
-            assert counts == ((2,1,1) if '13lib_probes_c0' in block.splitlines()[0] else (9,3,8)), 'EXAC reviewed exclusive counts'
-            exclusive_scope = exclusive_scope.replace(block, '')
     assert not re.search(r'\b(?:ldrex\w*|strex\w*|clrex)\b', exclusive_scope), 'unproven exclusive instruction linked'
     assert not any(name in symbols for name in ['pvPortMalloc', 'vPortFree', 'malloc', '_Unwind_Resume'])
     scmi = None
@@ -488,7 +492,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             # Profiler scratch 0x2000f600 and results 0x2000f700 follow the code, below the RTOS record.
             assert profile_loads==[(0x2000f000,0x2000f000+amp_sections[b'.amp_proc1_profile_text'][5])], 'profile segment/section mismatch'
             prof = amp_sections[b'.amp_proc1_profile_text']
-            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == {('0','0'):'d5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328',('1','0'):'d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8',('1','1'):'a7e0b14106383bd1b6482693a1d8e515549ba1b92d1bf6f800e3bd0d2079b36c'}.get((os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))), 'profile SysTick instructions changed; review again'
+            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == {('0','0'):'d5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328',('1','0'):'d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8',('1','1'):'09cfeaa03a3776e2e4e3995cd10a1bfcff60ec26dfb1f28010595d2e6b60ee8b'}.get((os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))), 'profile SysTick instructions changed; review again'
         assert control_contract[0][3]+24<=0x2000ba00, 'proc1 overlaps clock/proc0 contract'
         assert 0x2000c750<=diagnostic[0][3], 'proc1 stack overlaps DDR code'
         for name,value in [('__amp_proc1_vectors',0x2000be00),('__amp_proc1_guard_low',0x2000bf40),
