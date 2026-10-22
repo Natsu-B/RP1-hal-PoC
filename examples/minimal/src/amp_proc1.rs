@@ -251,6 +251,8 @@ mod hardware {
             RP1_AMP_COMMAND_RECEIPT[0].store(u32::from_le_bytes(*b"CTR1"),Ordering::Relaxed);
             RP1_AMP_COMMAND_RECEIPT[1].store(1,Ordering::Relaxed);
             STOP.store(0,Ordering::Relaxed);
+            #[cfg(feature="freertos-amp-proc1-no-hooks")]
+            super::profile::lib_probes_init();
             for p in [ptr::addr_of!(__amp_proc1_guard_low),ptr::addr_of!(__amp_proc1_guard_high)] {
                 p.cast_mut().cast::<u32>().write_volatile(GUARD);
                 p.cast_mut().cast::<u32>().add(1).write_volatile(!GUARD);
@@ -272,6 +274,8 @@ mod hardware {
         }
         let Some(start)=now() else {STOP.store(1,Ordering::Release);return 9;};
         for _ in 0..100_000 {
+            #[cfg(feature="freertos-amp-proc1-no-hooks")]
+            super::profile::lib_probes_c0();
             if get(0)==READY && get(1)==1 {barrier();return 0;}
             if now().is_none_or(|t| t<start || t-start>=100_000) {break;}
         }
