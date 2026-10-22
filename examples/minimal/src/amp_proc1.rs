@@ -51,6 +51,13 @@ mod profile;
 /// Profiling hook; expands to nothing unless `freertos-amp-proc1-profile`.
 macro_rules! prof {
     ($($call:tt)*) => {
+        #[cfg(all(feature = "freertos-amp-proc1-profile", not(feature = "freertos-amp-proc1-no-hooks")))]
+        super::profile::$($call)*;
+    };
+}
+/// The pre-READY probe also runs in the no-hooks diagnostic (loop left uninstrumented).
+macro_rules! prof_probe {
+    ($($call:tt)*) => {
         #[cfg(feature = "freertos-amp-proc1-profile")]
         super::profile::$($call)*;
     };
@@ -361,7 +368,7 @@ mod hardware {
         let (mut command_sequence,mut command_result,mut previous)=(0u64,0u32,None);
         #[cfg(feature="freertos-amp-proc1-gpio-irq")]
         if !super::gpio_irq::start(generation) {park(4);}
-        prof!(probe());
+        prof_probe!(probe());
         put(10,u32::MAX);put(1,1);barrier();put(0,READY);
         loop {
             if STOP.load(Ordering::Acquire)!=0 {control.retire();finish(2);}

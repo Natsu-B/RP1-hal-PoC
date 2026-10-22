@@ -41,8 +41,12 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         if re.match(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+[a-z]',line)).encode()
     if profile:
         # Reviewed profile bodies: v2/v3 (shared stack) and the proc-local DSRAM stack diagnostic.
-        assert hashlib.sha256(body_code).hexdigest() == ('79b4cad2ba4eebfb2653e2b1c1d7ed3f268ad088fdb0b1ef4714dbccd3b99405' if os.environ.get('RP1_AMP_PROC1_LOCAL_STACK')=='1'
-            else 'afe9292ec9f8ca0a5bd0b438362a74ef7674aa4fa4d4bf1dae2b3e406e8008ec'), 'profile loop instructions changed; review again'
+        # Keyed by (DSRAM stack, hooks compiled out); each value was reviewed against its disassembly.
+        body_pins={('0','0'):'afe9292ec9f8ca0a5bd0b438362a74ef7674aa4fa4d4bf1dae2b3e406e8008ec',
+                   ('1','0'):'79b4cad2ba4eebfb2653e2b1c1d7ed3f268ad088fdb0b1ef4714dbccd3b99405',
+                   ('1','1'):'428e731095ae07107ddd9b2915646f68c227ce91a16a82c1163524de0dbe77c3'}
+        mode=(os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))
+        assert mode in body_pins and hashlib.sha256(body_code).hexdigest()==body_pins[mode], 'profile loop instructions changed; review again'
     peer_quiesce=not observation and version=='P1A9' and hashlib.sha256(body_code).hexdigest()=='c4324f7e22b9c180a8de3c004d22117f29b904f7c17d8e663eb1ec6f116f1508'
     cold_irq=observation and hashlib.sha256(body_code).hexdigest()=='c437a91dfc53c19b1d62c47e26e0e4c5d469f608d0b9e852e9a1de268ad149eb'
     # Profiler builds keep the same cold-IRQ admission source; the guard symbol check in check() still applies.
@@ -473,7 +477,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             # Profiler scratch 0x2000f600 and results 0x2000f700 follow the code, below the RTOS record.
             assert profile_loads==[(0x2000f000,0x2000f000+amp_sections[b'.amp_proc1_profile_text'][5])], 'profile segment/section mismatch'
             prof = amp_sections[b'.amp_proc1_profile_text']
-            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == ('d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8' if os.environ.get('RP1_AMP_PROC1_LOCAL_STACK')=='1' else 'd5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328'), 'profile SysTick instructions changed; review again'
+            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == {('0','0'):'d5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328',('1','0'):'d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8',('1','1'):'e168509f395bc72c600f38dc921ca4aa5479aa991f69c4c6f85ed41fe03358e8'}.get((os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))), 'profile SysTick instructions changed; review again'
         assert control_contract[0][3]+24<=0x2000ba00, 'proc1 overlaps clock/proc0 contract'
         assert 0x2000c750<=diagnostic[0][3], 'proc1 stack overlaps DDR code'
         for name,value in [('__amp_proc1_vectors',0x2000be00),('__amp_proc1_guard_low',0x2000bf40),

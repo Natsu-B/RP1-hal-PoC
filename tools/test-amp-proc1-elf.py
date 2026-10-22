@@ -92,7 +92,10 @@ for extra in ['2000aaaa: 4780 blx r0','2000aaaa: 81000000 .word 0x81000000','200
 tag=result['amp_proc1_probe']['codegen']['telemetry_version']
 if tag=='P1A9':
     found=re.search(r'(^[0-9a-f]+ <AmpProc1Body>:\n)(.*?)(?=^[0-9a-f]+ <|\Z)',dis,re.M|re.S)
-    due_registers = 'r0, r4' if os.environ.get('RP1_AMP_PROC1_PROFILE') == '1' else 'r2, r0'
+    # Register allocation differs per build; the single `subs.w rX, rY, #200` due boundary is located.
+    due=re.findall(r'subs\.w\s+(r\d+, r\d+), #200\b',found[2]) if found else []
+    assert len(due)==1,'period/countdown instruction missing'
+    due_registers=due[0]
     for pattern,replacement in [(r'subs\.w\s+'+due_registers+r', #200\b','subs.w '+due_registers+', #201'),
             (r'(subs\s+r0, )#1(\s*\n[^\n]*it\s+eq\s*\n[^\n]*moveq\.w\s+r0, #1000\b)',r'\g<1>#2\g<2>')]:
         assert found and len(re.findall(pattern,found[2]))==1,'period/countdown instruction missing'

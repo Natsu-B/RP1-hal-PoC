@@ -38,6 +38,8 @@ freertos-amp-observation = ["freertos-amp-proc1-gpio-irq", "rp1-hal/amp-observat
 freertos-amp-proc1-profile = ["freertos-amp-observation"]
 # Diagnostic: C1 stack in its proc-local DSRAM (0x10002000..0x10002800) instead of shared SRAM.
 freertos-amp-proc1-local-stack = ["freertos-amp-proc1-profile"]
+# Diagnostic: keep the pre-READY probe, compile out the per-iteration hooks.
+freertos-amp-proc1-no-hooks = ["freertos-amp-proc1-profile"]
 freertos-r1-local-stack = ["freertos-r1", "rp1-rt/freertos-local-monitor-stack", "rp1-freertos/local-monitor-stack"]
 freertos-r1-local-stack-fault = ["freertos-r1-local-stack", "freertos-r1-fault"]
 freertos-r3-proc1-worker = ["freertos-r1", "rp1-rt/freertos-proc1-worker"]
