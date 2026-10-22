@@ -17,7 +17,7 @@ static void server(int fd,volatile uint32_t *ddr,volatile uint32_t *bar,int cont
             s[4]=0x2000c700;s[5]=0x2000be00;s[9]=s[7]>8?s[7]-8:0;s[10]=s[11]=200;s[12]=s[7];
             s[14]=(uint32_t)timestamp;s[20]=0x2000bf48;s[21]=0x2000c748;
             s[16]=mutation==4?(uint32_t)boot+1:(uint32_t)boot;s[18]=(uint32_t)session;
-            s[29]=active?1:accepted?2:0;s[30]=active;fence();s[31]=s[7]*2;
+            s[22]=active;s[29]=active?1:accepted?2:0;s[30]=active;fence();s[31]=s[7]*2; /* w22 mirrors firmware Decision::Active */
         }
         memset(r,0,sizeof r);r[0]=0x31524b42;r[1]=1;r[3]=w[12];split(r,4,pair(w,6));r[14]=4;r[15]=4;
         if(w[12]==QUERY_TX) {

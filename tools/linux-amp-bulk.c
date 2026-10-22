@@ -448,6 +448,15 @@ static int hold_observation(int fd,volatile uint32_t *ddr,volatile uint32_t *bar
     }
     puts("}");return 0;
 }
+/* Opt-in longer OBS1 command window so a slow peer test (UART1 ~2s) fits inside the
+ * stream. Default 1000 ms keeps the sealed behaviour; out-of-range values are refused. */
+static int observation_stream_ms(uint64_t *ms) {
+    const char *v=getenv("AMP_OBS_STREAM_MS");char *end=NULL;
+    if(!v){*ms=1000;return 0;}
+    errno=0;unsigned long long x=strtoull(v,&end,10);
+    if(errno || end==v || *end || x<1000 || x>5000)return -1;
+    *ms=x;return 0;
+}
 static int exercise_observations(int fd,volatile uint32_t *ddr,volatile uint32_t *bar,uint64_t limit,const char *path) {
     uint32_t r[32],d[16],words[24];unsigned char wire[128];char reply_path[4096];
     int len=snprintf(reply_path,sizeof reply_path,"%s.reply",path);
@@ -455,15 +464,15 @@ static int exercise_observations(int fd,volatile uint32_t *ddr,volatile uint32_t
     int trace=open(path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);if(trace<0)return -1;
     int counters=open(reply_path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600),result=-1;
     unsigned captured=0,e2e=0;uint64_t last_sequence=0,last_timestamp=0,min_end=0,until=0,applied=0;
-    uint32_t w[32],parameters[4]={1,2,3,4},zero[4]={0};
-    if(counters<0)goto done;
+    uint32_t w[32],parameters[4]={1,2,3,4},zero[4]={0};uint64_t stream_ms=0;
+    if(counters<0 || observation_stream_ms(&stream_ms))goto done;
     observation_start_attempted=1;
     if(call(fd,START_OBSERVATIONS,NULL,r,0))goto done;
     if(control_tests) {
-        if(control_query(fd,r) || r[21] || r[22] || r[23] || r[26] || pair(r,12)>UINT64_MAX-2000000)goto done;
-        until=pair(r,12)+2000000;control_command(w,0,0,until,parameters);applied=pair(w,6);
+        if(control_query(fd,r) || r[21] || r[22] || r[23] || r[26] || pair(r,12)>UINT64_MAX-6000000)goto done;
+        until=pair(r,12)+(stream_ms+1000)*1000;control_command(w,0,0,until,parameters);applied=pair(w,6);
         if(exchange(fd,w,r,0) || control_wait(fd,applied,1,1,parameters,"applied",r) || r[20] || r[21]!=1)goto done;
-        min_end=now()+1000000000;
+        min_end=now()+stream_ms*1000000ull;
         printf("{\"observation_control_started\":1,\"applied_sequence\":%"PRIu64",\"rp1_timestamp_us\":%"PRIu64",\"valid_until_us\":%"PRIu64",\"host_monotonic_ns\":%"PRIu64"}\n",applied,pair(r,12),until,now());fflush(stdout);
     }
     while((captured<32 || now()<min_end) && now()<limit && !cancelled) {
