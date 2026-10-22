@@ -1,4 +1,4 @@
-//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3.
+//! Opt-in C1 period-loop profiler (`freertos-amp-proc1-profile`), record v3/v5.
 //!
 //! The RP1 Cortex-M3 has no DWT cycle counter (DWT NOCYCCNT=1), so C1's own
 //! SysTick is used as a free-running core-clock down counter with TICKINT=0.
@@ -28,7 +28,7 @@ pub(super) const SEGMENTS: usize = 11;
 
 // Published words at BASE (u32). Probes are (min, max) over PROBE_N samples.
 const MAGIC: usize = 0; // "PRF1" written last
-const VERSION: usize = 1; // 3
+const VERSION: usize = 1; // 3, or 5 for the no-hooks library probes
 const STATE: usize = 2; // 1 probing, 2 loop live, 0xbad0 SysTick not idle
 const CSR_BEFORE: usize = 3;
 const RVR_BEFORE: usize = 4;
@@ -110,7 +110,7 @@ fn measure(slot: usize, f: impl Fn()) {
 pub(super) fn probe() -> bool {
     for i in 0..WORDS { put(i, 0); }
     for i in 0..LOCAL_WORDS { lput(i, 0); }
-    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 4 } else { 3 });
+    put(VERSION, if cfg!(feature = "freertos-amp-proc1-no-hooks") { 5 } else { 3 });
     put(STATE, 1);
     let (csr, rvr) = (read(SYST_CSR), read(SYST_RVR));
     put(CSR_BEFORE, csr);
@@ -229,54 +229,56 @@ pub(super) fn end(cycle: u32) {
     lput(END, cycles());
 }
 
-/// v4 (no-hooks diagnostic only): library knowledge probes, results in LOCAL 16..30.
-/// G3: does a non-GPIO peripheral line reach proc1's NVIC? TIMER INTF bit3 (alarm3,
-/// IRQ29, unused by this firmware and by Linux) is forced, proc1 ISPR read, then
-/// INTF restored and the latched pending bit cleared (IRQ29 stays disabled here).
-/// G2: one LDREX/STREX pair on proc-local DSRAM (0x10003800, above the C1 stack),
-/// ISRAM (0x10000100, after the v3 snippet) and shared SRAM (0x2000f6c0).
+/// v5, no-hooks only: G4 per-core mailbox event gate (core-local 0xF8000008).
+/// LOCAL 16..31. IRQ57 stays disabled on C1 (only ISPR is observed). Refuses if IRQ57 is
+/// enabled or pending on C1, or channel 1 is already set. Only PROC_EVENTS bit1 (an OpenAMP
+/// kick channel that C0 acks via the CLR alias) is set/cleared; channel 0 (SCMI) is untouched.
+/// Trial 0 opens C1's gate bit1, trial 1 closes it (control); the gate is restored each time.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 #[inline(never)]
 #[unsafe(link_section = ".amp_proc1.profile_text")]
 fn lib_probes() {
-    const NVIC_ISER0: usize = 0xe000_e100;
-    const NVIC_ISPR0: usize = 0xe000_e200;
-    const NVIC_ICPR0: usize = 0xe000_e280;
-    const TIMER_INTF: usize = 0x400a_c03c;
-    const TIMER_INTS: usize = 0x400a_c040;
-    const BIT29: u32 = 1 << 29;
-    lput(16, read(NVIC_ISER0));
-    lput(17, read(NVIC_ISER0 + 4));
-    lput(18, read(NVIC_ISPR0));
-    lput(19, read(NVIC_ISPR0 + 4));
-    let intf = read(TIMER_INTF);
-    lput(20, intf);
-    write(TIMER_INTF, intf | 1 << 3);
-    unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags)); }
-    lput(21, read(NVIC_ISPR0));
-    lput(23, read(TIMER_INTS));
-    write(TIMER_INTF, intf);
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
-    write(NVIC_ICPR0, BIT29);
-    unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags)); }
-    lput(22, read(NVIC_ISPR0));
-    excl(24, 0x1000_3800);
-    excl(26, 0x1000_0100);
-    excl(28, 0x2000_f6c0);
-    lput(30, u32::from_le_bytes(*b"LIB1"));
+    const GATE: usize = 0xf800_0008;
+    const EVENTS: usize = 0x4000_8008;
+    const ISER1: usize = 0xe000_e104;
+    const ISPR1: usize = 0xe000_e204;
+    const ICPR1: usize = 0xe000_e284;
+    const IRQ57: u32 = 1 << 25;
+    let gate = read(GATE);
+    let events = read(EVENTS);
+    let enabled = read(ISER1);
+    let pending = read(ISPR1);
+    lput(16, gate);
+    lput(17, events);
+    lput(18, enabled);
+    lput(19, pending);
+    let refused = (enabled & IRQ57) | ((pending & IRQ57) >> 1) | (events & 2);
+    lput(31, refused);
+    if refused == 0 {
+        for trial in 0..2 {
+            let slot = 20 + trial * 5;
+            write(GATE, if trial == 0 { gate | 2 } else { gate & !2 });
+            barrier();
+            lput(slot, read(GATE));
+            write(EVENTS + 0x2000, 2); // SET alias, as Linux kicks
+            barrier();
+            lput(slot + 1, read(EVENTS));
+            lput(slot + 2, read(ISPR1));
+            write(EVENTS + 0x3000, 2); // CLR alias, as C0 acks kicks
+            barrier();
+            write(ICPR1, IRQ57);
+            barrier();
+            lput(slot + 3, read(EVENTS));
+            lput(slot + 4, read(ISPR1));
+            write(GATE, gate);
+            barrier();
+        }
+    }
+    lput(30, u32::from_le_bytes(*b"LIB2"));
 }
 
-/// One LDREX/STREX pair at `addr` after seeding it; publishes status and final value.
 #[cfg(feature = "freertos-amp-proc1-no-hooks")]
 #[inline(always)]
-fn excl(slot: usize, addr: usize) {
-    write(addr, 0x1111_1111);
-    let status: u32;
-    unsafe {
-        core::arch::asm!("ldrex {v}, [{a}]", "strex {s}, {n}, [{a}]",
-            a = in(reg) addr, n = in(reg) 0x2222_2222u32, v = out(reg) _, s = out(reg) status,
-            options(nostack, preserves_flags));
-    }
-    lput(slot, status);
-    lput(slot + 1, read(addr));
+fn barrier() {
+    unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags)); }
 }
