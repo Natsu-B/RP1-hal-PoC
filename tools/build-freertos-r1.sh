@@ -152,6 +152,7 @@ if [[ "$feature" == freertos-r3-proc1-worker ]]; then
 fi
 export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
 if [[ " ${RP1_EXTRA_FEATURES:-} " == *" freertos-amp-proc1-profile "* ]]; then export RP1_AMP_PROC1_PROFILE=1; fi
+if [[ " ${RP1_EXTRA_FEATURES:-} " == *" freertos-amp-proc1-local-stack "* ]]; then export RP1_AMP_PROC1_LOCAL_STACK=1; fi
 if [[ ( "$feature" == freertos-r3-watchdog-warm-guard || "$feature" == freertos-r3-watchdog-kernel-restart ) || "$feature" == freertos-r3-watchdog-expiry-entry || "$feature" == freertos-r3-reset-entry-selftest || "$feature" == freertos-r3-watchdog-arm-receipt || "$feature" == freertos-r3-watchdog-quiescence || "$feature" == freertos-r3-watchdog-postack || "$feature" == freertos-r3-watchdog-late-disable ]]; then
     cp "$repo/examples/minimal/src/freertos_watchdog.rs" "$out/freertos_watchdog.rs"
     model_flags=()

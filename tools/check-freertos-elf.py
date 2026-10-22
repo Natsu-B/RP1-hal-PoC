@@ -40,7 +40,9 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
     body_code='\n'.join(line.split(':',1)[1].split('@',1)[0].strip() for line in text.splitlines()
         if re.match(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+[a-z]',line)).encode()
     if profile:
-        assert hashlib.sha256(body_code).hexdigest() == 'afe9292ec9f8ca0a5bd0b438362a74ef7674aa4fa4d4bf1dae2b3e406e8008ec', 'profile loop instructions changed; review again'
+        # Reviewed profile bodies: v2/v3 (shared stack) and the proc-local DSRAM stack diagnostic.
+        assert hashlib.sha256(body_code).hexdigest() == ('79b4cad2ba4eebfb2653e2b1c1d7ed3f268ad088fdb0b1ef4714dbccd3b99405' if os.environ.get('RP1_AMP_PROC1_LOCAL_STACK')=='1'
+            else 'afe9292ec9f8ca0a5bd0b438362a74ef7674aa4fa4d4bf1dae2b3e406e8008ec'), 'profile loop instructions changed; review again'
     peer_quiesce=not observation and version=='P1A9' and hashlib.sha256(body_code).hexdigest()=='c4324f7e22b9c180a8de3c004d22117f29b904f7c17d8e663eb1ec6f116f1508'
     cold_irq=observation and hashlib.sha256(body_code).hexdigest()=='c437a91dfc53c19b1d62c47e26e0e4c5d469f608d0b9e852e9a1de268ad149eb'
     # Profiler builds keep the same cold-IRQ admission source; the guard symbol check in check() still applies.
@@ -212,7 +214,28 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
             reference=profile_reference()
             ref=[b for n,b in reference.items() if norm(n)==norm(name)]
             # Generic monomorphizations share a de-hashed name; one must match exactly.
-            assert ref and any(norm(r)==norm(body) for r in ref), 'profile build changed reviewed GPIO IRQ code: '+name
+            if name=='AmpProc1Fault' and os.environ.get('RP1_AMP_PROC1_LOCAL_STACK')=='1':
+                # AmpProc1Entry shares this literal pool: the DSRAM-stack diagnostic swaps the
+                # shared stack-top literal for the DSRAM bounds, shifting pc-relative offsets.
+                # Compare each instruction with pc-relative loads resolved to the loaded word,
+                # and require the pool to differ only by that swap.
+                def resolved(t):
+                    words={int(a,16):w for a,w in re.findall(r'^\s*([0-9a-f]+):\s+[0-9a-f]{8}\s+\.word\s+0x([0-9a-f]+)',t,re.M)}
+                    ops=[]
+                    for line in t.splitlines():
+                        m=re.match(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+([a-z].*)$',line)
+                        if not m or m[1].startswith('.word') or m[1].strip()=='movs\tr0, r0':continue
+                        ins=m[1]
+                        lit=re.search(r'\[(?:r15|pc), #\d+\]\s*@ \(([0-9a-f]+)',ins)
+                        if lit:ins=re.sub(r'\[(?:r15|pc), #\d+\].*','=0x'+words[int(lit[1],16)],ins)
+                        ins=re.sub(r'\b[0-9a-f]{8} <[^>]*>','ADDR',ins.split('@',1)[0] if not lit else ins)
+                        ops.append(ins.strip())
+                    return ops,sorted(words.values())
+                cand_ops,cand_words=resolved(body)
+                assert any(resolved(r)[0]==cand_ops and sorted([w for w in resolved(r)[1] if w!='2000c748']+['10002000','10002800'])==cand_words for r in ref), \
+                    'profile build changed reviewed GPIO IRQ code: '+name
+            else:
+                assert ref and any(norm(r)==norm(body) for r in ref), 'profile build changed reviewed GPIO IRQ code: '+name
         elif irq and not profiled:
             code='\n'.join(line.split(':',1)[1].split('@',1)[0].strip() for line in body.splitlines()
                 if re.match(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+[a-z]',line)).encode()
@@ -450,7 +473,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             # Profiler scratch 0x2000f600 and results 0x2000f700 follow the code, below the RTOS record.
             assert profile_loads==[(0x2000f000,0x2000f000+amp_sections[b'.amp_proc1_profile_text'][5])], 'profile segment/section mismatch'
             prof = amp_sections[b'.amp_proc1_profile_text']
-            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == 'd5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328', 'profile SysTick instructions changed; review again'
+            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == ('d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8' if os.environ.get('RP1_AMP_PROC1_LOCAL_STACK')=='1' else 'd5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328'), 'profile SysTick instructions changed; review again'
         assert control_contract[0][3]+24<=0x2000ba00, 'proc1 overlaps clock/proc0 contract'
         assert 0x2000c750<=diagnostic[0][3], 'proc1 stack overlaps DDR code'
         for name,value in [('__amp_proc1_vectors',0x2000be00),('__amp_proc1_guard_low',0x2000bf40),

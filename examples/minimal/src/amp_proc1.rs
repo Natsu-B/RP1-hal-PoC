@@ -134,7 +134,15 @@ mod hardware {
         "mrs r1,IPSR", "cmp r1,#0", "bne AmpProc1Fault",
         "mrs r1,CONTROL", "cmp r1,#0", "bne AmpProc1Fault",
         "ldr r1,=__amp_proc1_vectors", "ldr r2,=0xe000ed08", "str r1,[r2]",
-        "dsb sy", "isb sy", "ldr r1,=__amp_proc1_stack_top", "msr MSP,r1",
+        "dsb sy", "isb sy",
+        ".if {local_stack}",
+        // Diagnostic: C1 fills its own proc-local DSRAM stack (C0 cannot reach this
+        // instance) with the scan pattern, then runs from it. Registers only.
+        "ldr r1,=0x10002000", "ldr r2,=0x10002800", "ldr r3,={fill}",
+        "2:", "str r3,[r1],#4", "cmp r1,r2", "bne 2b", "dsb sy", "msr MSP,r2",
+        ".else",
+        "ldr r1,=__amp_proc1_stack_top", "msr MSP,r1",
+        ".endif",
         "b.w AmpProc1Body", ".size AmpProc1Entry,.-AmpProc1Entry",
         ".global AmpProc1Fault", ".type AmpProc1Fault,%function", ".thumb_func",
         "AmpProc1Fault:", "cpsid i",
@@ -149,7 +157,18 @@ mod hardware {
         "1:", "dsb sy", "wfe", "b 1b", ".size AmpProc1Fault,.-AmpProc1Fault",
         gpio_vector = sym AmpGpioVector,
         gpio_irq_enabled = const (cfg!(feature="freertos-amp-proc1-gpio-irq")) as u32,
+        local_stack = const (cfg!(feature="freertos-amp-proc1-local-stack")) as u32,
+        fill = const FILL,
     );
+    /// C1 stack actually in use: shared SRAM, or proc-local DSRAM in the diagnostic build.
+    fn stack_low()->*const u32 {
+        if cfg!(feature="freertos-amp-proc1-local-stack") {0x1000_2000 as *const u32}
+        else {ptr::addr_of!(__amp_proc1_stack_low).cast::<u32>()}
+    }
+    fn stack_top()->u32 {
+        if cfg!(feature="freertos-amp-proc1-local-stack") {0x1000_2800}
+        else {ptr::addr_of!(__amp_proc1_stack_top) as u32}
+    }
 
     fn get(i:usize)->u32 { unsafe { ptr::addr_of!(RP1_AMP_PROC1_STATUS).cast::<u32>().add(i).read_volatile() } }
     fn put(i:usize,v:u32) { unsafe { ptr::addr_of_mut!(RP1_AMP_PROC1_STATUS).cast::<u32>().add(i).write_volatile(v) } }
@@ -191,7 +210,7 @@ mod hardware {
         if !guards() {park(4);}
         let Some(start)=now() else {park(4)};
         let mut free=0;
-        while free<512 && unsafe {ptr::addr_of!(__amp_proc1_stack_low).cast::<u32>().add(free).read_volatile()}==FILL {free+=1;}
+        while free<512 && unsafe {stack_low().add(free).read_volatile()}==FILL {free+=1;}
         let Some(duration)=now().and_then(|end|scan_duration(start,end)) else {park(4)};
         put(24,free as u32);put(25,1);put(26,duration);put(27,duration);put(28,duration);
         barrier();put(31,get(31).wrapping_add(1));
@@ -334,7 +353,7 @@ mod hardware {
         put(2,ipsr);put(3,control_register);put(4,msp);put(5,vtor);put(6,unsafe {CORE.read_volatile()});
         let Some(start)=now() else {park(4)};
         if control_register!=0 || ipsr!=0 || vtor!=ptr::addr_of!(__amp_proc1_vectors) as u32
-            || msp&7!=0 || !(ptr::addr_of!(__amp_proc1_stack_low) as u32..ptr::addr_of!(__amp_proc1_stack_top) as u32).contains(&msp)
+            || msp&7!=0 || !(stack_low() as u32..stack_top()).contains(&msp)
             || !guards() {park(4);}
         let Some(mut next)=start.checked_add(PERIOD_US) else {park(4)};
         let (mut sequence,mut cycles,mut missed,mut last)=(0u64,0u64,0u64,start);
@@ -397,7 +416,7 @@ mod hardware {
             put(22,u32::from(matches!(decision,Decision::Active{..})));put(23,control.counters().sample_sequence_gaps as u32);
             prof!(mark(7));
             if guard_due(&mut guard_remaining) {
-                if !guards() || unsafe {ptr::addr_of!(__amp_proc1_stack_low).cast::<u32>().add(31).read_volatile()}!=FILL {
+                if !guards() || unsafe {stack_low().add(31).read_volatile()}!=FILL {
                     control.retire();park(4);
                 }
             }
