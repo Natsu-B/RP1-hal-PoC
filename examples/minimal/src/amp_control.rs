@@ -26,7 +26,7 @@ pub fn run(mut marker: ConfiguredPin<22, Output>) -> ! {
     let hz = calibrate_cpu_hz(); put(5, hz);
     unsafe {
         // Cold initialization is reused unchanged; no alternate PLL writer.
-        scmi::prepare().expect("AMP SCMI cold admission failed");
+        scmi::prepare().expect("AMP SCMI cold admission failed"); #[cfg(feature = "freertos-clk-sys-200")] let hz = { let _ = hz; clk_sys_200_init() };
         timesync::prepare();
         ddr::prepare();
         rp1_hal::openamp::prepare(timesync::boot_epoch());
@@ -100,4 +100,18 @@ unsafe extern "C" fn service(_: *mut c_void) {
             }
         }
     }
+}
+
+// Preserve feature-off panic locations above; keep new cold-only code out of
+// the sealed .text/BSS boundary, using the same free gap as the profiler.
+#[cfg(feature = "freertos-clk-sys-200")]
+#[inline(never)]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".clk_sys_init_text")]
+fn clk_sys_200_init() -> u32 {
+    assert!(rp1_hal::clk_sys::switch(rp1_hal::clk_sys::Source::PllSys200Mhz).is_ok(),
+        "AMP clk_sys switch failed");
+    let hz = calibrate_cpu_hz();
+    put(5, hz);
+    hz
 }

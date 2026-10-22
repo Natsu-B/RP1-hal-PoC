@@ -17,6 +17,8 @@ if not __debug__:
 def profile_reference():
     path=os.environ.get('RP1_AMP_PROC1_PROFILE_REFERENCE')
     assert path, 'profile build needs RP1_AMP_PROC1_PROFILE_REFERENCE (sealed X RP1.elf)'
+    if os.environ.get('RP1_CLK_SYS_200') == '1':
+        assert hashlib.sha256(Path(path).read_bytes()).hexdigest() == '2a6b897be9094e6087e797ef5939ec7a9a57a28149123967062e7707290ccec6', 'clk_sys reference must be sealed X'
     text=subprocess.check_output(['arm-none-eabi-objdump','-d','-M','reg-names-raw',path],text=True)
     starts=list(re.finditer(r'^([0-9a-f]+) <([^>]+)>:\n',text,re.M))
     return {m[2]:text[m.end():starts[i+1].start() if i+1<len(starts) else len(text)] for i,m in enumerate(starts)}
@@ -24,6 +26,8 @@ def profile_reference():
 
 def proc1_codegen(disassembly, gpio_irq=False, observation=False):
     profile=os.environ.get('RP1_AMP_PROC1_PROFILE')=='1'
+    clk_sys_200=os.environ.get('RP1_CLK_SYS_200')=='1'
+    relocated=profile or clk_sys_200
     starts=list(re.finditer(r'^([0-9a-f]+) <([^>]+)>:\n',disassembly,re.M))
     blocks={int(m[1],16):(m[2],disassembly[m.end():starts[i+1].start() if i+1<len(starts) else len(disassembly)]) for i,m in enumerate(starts)}
     named={name:(addr,body) for addr,(name,body) in blocks.items()}
@@ -50,7 +54,7 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
     peer_quiesce=not observation and version=='P1A9' and hashlib.sha256(body_code).hexdigest()=='c4324f7e22b9c180a8de3c004d22117f29b904f7c17d8e663eb1ec6f116f1508'
     cold_irq=observation and hashlib.sha256(body_code).hexdigest()=='c437a91dfc53c19b1d62c47e26e0e4c5d469f608d0b9e852e9a1de268ad149eb'
     # Profiler builds keep the same cold-IRQ admission source; the guard symbol check in check() still applies.
-    cold_irq=cold_irq or (observation and profile)
+    cold_irq=cold_irq or (observation and relocated)
     assert gpio_irq == (version in ('P1A6','P1A7','P1A8','P1A9')), 'GPIO IRQ requires separate explicit admission'
     fault=named['AmpProc1Fault'][1]
     assert ('0x400e3000' in fault)==(version in ('P1A5','P1A6','P1A7','P1A8','P1A9')), 'fault output contract/version mismatch'
@@ -193,7 +197,7 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
             and {'10000001','2000f680'} <= set(re.findall(r'\.word\s+0x([0-9a-f]+)',body))
             and all(op.strip() in ('r0','r1','r2','r3','r4','r5','r6','r8','r9','r10','r11') for op in re.findall(r'\bblx\s+([^\n@]+)',body)))
         assert snippet_call or not re.search(r'\bblx\b',body), 'proc1 indirect call'
-        if irq and not profiled and profile:
+        if irq and not profiled and relocated:
             # Profile build: Rust symbol hashes differ with the feature set, so compare the
             # reviewed IRQ helpers with the sealed X image instead of the pinned hashes.
             # Position-independent compare: instruction addresses, branch encodings/targets and
@@ -247,6 +251,9 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
                     cand_words=sorted(w for w in cand_words if w not in extra)
                 assert any(resolved(r)[0]==cand_ops and sorted([w for w in resolved(r)[1] if w!='2000c748']+['10002000','10002800'])==cand_words for r in ref), \
                     'profile build changed reviewed GPIO IRQ code: '+name
+            elif clk_sys_200:
+                # Cold init must preserve the sealed C1 instructions and literals.
+                assert ref and any(norm(r)==norm(body) for r in ref), 'clk_sys build changed reviewed GPIO IRQ code: '+name
             else:
                 assert ref and any(norm(r)==norm(body) for r in ref), 'profile build changed reviewed GPIO IRQ code: '+name
         elif irq and not profiled:
@@ -275,6 +282,8 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
                       'cmp','cmn','ldmia','stmia','pop','push','bx','b','beq','bne','bmi','bpl','bhi','bls','bcs','bcc','bge','blt','bgt','ble','it'}
                 for mnemonic in re.findall(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+([a-z][a-z0-9.]*)',body,re.M):
                     assert mnemonic.split('.')[0] in safe, 'profile build outlined helper uses '+mnemonic
+            elif clk_sys_200:
+                assert hashlib.sha256(code).hexdigest() in command_outlines.values(), 'clk_sys build changed command outlined helper'
             else:
                 assert hashlib.sha256(code).hexdigest()==command_outlines.get(name), 'unreviewed command outlined helper'
         elif outline:
@@ -314,7 +323,7 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         status=[b for n,(_,b) in named.items() if 'amp_proc18hardware6status' in n]
         assert len(status)==1
         address=0x2000a0d8 if cold_irq else 0x2000a0e4 if observation else 0x2000986c
-        if profile:
+        if relocated:
             # Moves with .text in the profiler build; contents are still hash-checked by the caller.
             words=re.findall(r'\.word\s+0x([0-9a-f]+)',status[0])
             assert len(words)==1, 'C1 status table literal'
@@ -342,6 +351,9 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
     # Diagnostic-only C1 profiler build (freertos-amp-proc1-profile); never a production image.
     profile = os.environ.get('RP1_AMP_PROC1_PROFILE') == '1'
     assert not profile or amp_observation, 'profiler requires the OBS1 C1 build'
+    clk_sys_200 = os.environ.get('RP1_CLK_SYS_200') == '1'
+    assert not clk_sys_200 or amp_control, 'clk_sys init requires AMP control'
+    assert not (clk_sys_200 and profile), 'clk_sys init and profiler code regions conflict'
     profile_loads = []
     for index in range(phcount):
         kind, off, va, pa, filesz, memsz, flags, align = struct.unpack_from('<8I', data, phoff + index * phsize)
@@ -350,7 +362,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
                 nulls.append((off, va, pa, filesz, memsz, flags, align))
             continue
         assert va == pa, 'loader copy contract requires VMA == p_paddr'
-        if profile and pa >= 0x2000e000:
+        if (profile or clk_sys_200) and pa >= 0x2000e000:
             # Opt-in C1 profiler: one R+X file-backed segment above the fixed MSP top only.
             assert pa == 0x2000f000 and 0 < memsz == filesz <= 0x600 and flags == 5, 'profile segment shape'
             assert not profile_loads, 'more than one profile segment'
@@ -470,6 +482,16 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
         control = dict(tasks=2,task_stack_words=1024,contract_address=addr,
             target_period_us=200,phase=int(amp_proc1),scope='finite readonly proc1 probe; no control IRQ/actuator' if amp_proc1 else 'proc0 services only; proc1 control/IRQ is not connected')
     amp_sections = {names[s[0]:].split(b'\0',1)[0]:s for s in sections if names[s[0]:].split(b'\0',1)[0].startswith(b'.amp_proc1_')}
+    init_sections = [s for s in sections if names[s[0]:].split(b'\0',1)[0] == b'.clk_sys_init_text']
+    assert bool(init_sections) == clk_sys_200, 'clk_sys init requires separate feature admission'
+    if clk_sys_200:
+        assert len(init_sections) == 1
+        s = init_sections[0]
+        assert s[1] == 1 and s[2] in (6, 6 | 0x200000) and s[3] == 0x2000f000, 'clk_sys init section ownership/type'
+        assert 0 < s[5] <= 0x600 and profile_loads == [(s[3], s[3] + s[5])], 'clk_sys init segment/section mismatch'
+        assert s[3] <= (symbols['clk_sys_200_init'] & ~1) < s[3] + s[5], 'clk_sys init entry outside owned code'
+        # Reviewed cold switch/calibration plus the relocated endpoint finish routine.
+        assert hashlib.sha256(data[s[4]:s[4]+s[5]]).hexdigest() == '34479e55c3e09d495f17fe1241a67b0bff3cd09413bdfdb65f25b521e36c1056', 'clk_sys init instructions changed; review again'
     assert amp_proc1 == bool(amp_sections), 'proc1 local regions require separate phase1 admission'
     amp_probe = None
     if amp_proc1:
@@ -622,6 +644,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             'checked_vector_indices': sorted(required_vectors),
             'exclusive_instructions':0, 'proc1':proc1, 'scmi':scmi, 'amp_control':control,'amp_proc1_probe':amp_probe,
             'amp_observation':observation,
+            'clk_sys_200':clk_sys_200,
             'local_monitor_stack':local_monitor, 'hardware':'OPEN'}
 
 

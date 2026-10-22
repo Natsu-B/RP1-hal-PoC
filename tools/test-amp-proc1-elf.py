@@ -28,6 +28,10 @@ sections=[struct.unpack_from('<10I',raw,h[6]+i*h[11]) for i in range(h[12])]
 strings=sections[h[13]];names=raw[strings[4]:strings[4]+strings[5]]
 slots={names[s[0]:].split(b'\0',1)[0]:(i,s) for i,s in enumerate(sections)}
 mutations=[]
+if os.environ.get('RP1_CLK_SYS_200') == '1':
+    i,s=slots[b'.clk_sys_init_text']
+    mutations += [(h[6]+i*h[11]+field*4,value) for field,value in [(1,0),(2,0),(3,s[3]+8),(5,0),(5,0x8000)]]
+    mutations.append((s[4],0))
 for name in [b'.amp_proc1_storage',b'.amp_proc1_vectors',b'.amp_proc1_stack']+([b'.amp_proc1_irq_storage',b'.amp_proc1_irq_text'] if args.amp_proc1_gpio_irq else [])+([b'.amp_observation_state',b'.amp_observation_text',b'.amp_observation_codec'] if args.amp_observation else [])+([b'.amp_proc1_profile_text'] if os.environ.get('RP1_AMP_PROC1_PROFILE') == '1' else []):
     i,s=slots[name]
     mutations += [(h[6]+i*h[11]+field*4,value) for field,value in [(1,0),(2,0),(3,s[3]+8),(5,0),(5,0x8000)]]

@@ -7,7 +7,7 @@ fn main() {
         const ALLOWED: &[&str] = &["BAR2_READONLY_HANDSHAKE", "DEBUG_MAILBOX_LAYOUT",
             "DEBUG_STACK_LOW", "ENDPOINT_CLOCK_ONLY", "ENDPOINT_CONFIG_FOUNDATION",
             "FREERTOS_ENDPOINT_CONFIG_ONCE", "FREERTOS_ENDPOINT_UART", "FREERTOS_R1", "FREERTOS_TIMESYNC", "FREERTOS_DDR", "FREERTOS_VIRTIO_PROBE", "FREERTOS_OPENAMP", "FREERTOS_OPENAMP_RPMSG", "FREERTOS_AMP_BULK", "FREERTOS_AMP_BULK_DDR_DIAGNOSTICS", "FREERTOS_AMP_CONTROL", "FREERTOS_AMP_PROC1",
-            "FREERTOS_AMP_PROC1_GPIO_IRQ", "FREERTOS_AMP_OBSERVATION", "FREERTOS_AMP_PROC1_PROFILE", "FREERTOS_AMP_PROC1_LOCAL_STACK", "FREERTOS_AMP_PROC1_NO_HOOKS", "FREERTOS_SCMI_READONLY", "PLL_SYS_CORE_LOCK_ONLY", "STATE3_COMPOSITE_BOUNDARY",
+            "FREERTOS_AMP_PROC1_GPIO_IRQ", "FREERTOS_AMP_OBSERVATION", "FREERTOS_AMP_PROC1_PROFILE", "FREERTOS_AMP_PROC1_LOCAL_STACK", "FREERTOS_AMP_PROC1_NO_HOOKS", "FREERTOS_CLK_SYS_200", "FREERTOS_SCMI_READONLY", "PLL_SYS_CORE_LOCK_ONLY", "STATE3_COMPOSITE_BOUNDARY",
             "STATE5_COMPOSITE_BOUNDARY", "UART0_FUNCTIONAL_CLOCK_BEFORE_RESET_DONE", "UART0_RESET_ONLY"];
         for (name, _) in std::env::vars_os() {
             if let Some(feature) = name.to_str().and_then(|v| v.strip_prefix("CARGO_FEATURE_")) {
@@ -167,6 +167,20 @@ ASSERT(DEFINED(rp1_control_take_trace), "collector consumer handoff missing")
 ASSERT(SIZEOF(.amp_observation_codec) > 0 && ADDR(.amp_observation_codec) + SIZEOF(.amp_observation_codec) <= __app_limit, "collector codec exceeds OpenAMP tail")
 "#).unwrap();
         println!("cargo:rustc-link-arg=-T{}",path.display());
+    }
+    if std::env::var_os("CARGO_FEATURE_FREERTOS_CLK_SYS_200").is_some() {
+        assert!(std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1_PROFILE").is_none(),
+            "clk_sys cold init and the diagnostic profiler own the same code gap");
+        let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("clk-sys-200.x");
+        std::fs::write(&path, r#"
+MEMORY { RP1_CLK_SYS_INIT_TEXT (rx) : ORIGIN = 0x2000f000, LENGTH = 0x600 }
+SECTIONS {
+ .clk_sys_init_text 0x2000f000 : { KEEP(*(.clk_sys_init_text)); } > RP1_CLK_SYS_INIT_TEXT
+} INSERT BEFORE .inbound_dummy_page;
+ASSERT(_stack_start == 0x2000f000, "clk_sys init must sit above the fixed MSP top")
+ASSERT(SIZEOF(.clk_sys_init_text) > 0 && SIZEOF(.clk_sys_init_text) <= 0x600, "clk_sys init exceeds 0x2000f000..0x2000f600")
+"#).unwrap();
+        println!("cargo:rustc-link-arg=-T{}", path.display());
     }
     if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1_PROFILE").is_some() {
         assert!(std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_OBSERVATION").is_some());

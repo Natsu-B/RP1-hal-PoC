@@ -3,7 +3,7 @@
   "elf_sha256": "2a6b897be9094e6087e797ef5939ec7a9a57a28149123967062e7707290ccec6",
   "sources_sha256": {
     "hal/openamp/rp1.c": "794e949db429830ab9b2ef108d8aaf426773bf13b29396ff2499c1407753fe4d",
-    "hal/examples/minimal/src/amp_control.rs": "9cc5d52de1c3106926e324ca6c7dda5a0db9801f048069c6aca94c75af81de74",
+  "hal/examples/minimal/src/amp_control.rs": "f89f7dac438565466d6f3740a65e6cb23bcc8f1dbc51de303f665073172cf3f6",
     "hal/examples/minimal/src/freertos_scmi.rs": "00dd6230b996e36aa1be566679fdad2d9ae3235de23bcc8ad4568717854a0dc1",
     "hal/crates/rp1-freertos/c/bridge.c": "10a5d4a8e9ab668fce83c2711c37d2d97e50d05c16b69f3150b7982bacabcc26",
     "hal/crates/rp1-freertos/c/FreeRTOSConfig.h": "6dc4bf5fc13034e207fb59417c372678c318dd65685a748c10f273ec3ec853e0",
@@ -18,7 +18,7 @@
     "hal/crates/rp1-rt/src/freertos.rs": "7986a2a91b7100a041b560d7f994fe7b31635f856bad27163e4f72a9df3579d4",
     "hal/crates/rp1-macros/src/lib.rs": "cc49c96e594d2064c9d20b78279acf4049aa4b1d9f675a13182f81d3798c2975",
     "hal/examples/minimal/src/main.rs": "691c12886eb7e77d6c9e8c06779f6b3b0562dcc7d5856b181ee2ffccfc664213",
-  "hal/examples/minimal/src/freertos_r1.rs": "59591e55a5d362897f9dde9971741a7d6c44a38f7d1c368fb8b1defd8fcf935c",
+  "hal/examples/minimal/src/freertos_r1.rs": "690c6d2d3607da6c33efddbe0d4df156fc548586d38678d7b01b112175dd45a3",
     "hal/examples/minimal/src/cold_irq_admission.rs": "1c80ac42bbde95d246cb59755f7c689ae7aaf6d5df38d4afd7e2a8132f643d9e"
   },
   "indirect_targets": {
@@ -182,7 +182,8 @@
     "0x20006026": 12
   },
   "review_notes": [
-    "Exact OBS1 ELF only; changed images require callback/table/stack review.",
+  "Exact OBS1 ELF only; changed images require callback/table/stack review.",
+  "2026-10-22: refresh two source pins for cfg-only clk_sys startup/section attributes; rebuilt feature-off X is byte-identical (2a6b897b...). ELF, table, pivot, and stack bounds stay pinned.",
     "rp1.c dispatch: get_status=status, get_features=features, notify=notify; all other dispatch members NULL.",
     "rpmsg device ops set by pinned rpmsg_init_vdev_with_config; endpoint callbacks received and NS callback only.",
     "state and _metal zeroed; release_cb, NS unbind/bind, notify_wait and metal io custom ops remain NULL.",
