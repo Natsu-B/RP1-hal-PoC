@@ -151,6 +151,7 @@ if [[ "$feature" == freertos-r3-proc1-worker ]]; then
     "$out/proc1-test" > "$out/proc1-host-test.txt"
 fi
 export RP1_CONFIG="$repo/examples/minimal/rtos.toml"
+if [[ " ${RP1_EXTRA_FEATURES:-} " == *" freertos-clk-sys-200 "* ]]; then export RP1_CLK_SYS_200=1; fi
 if [[ " ${RP1_EXTRA_FEATURES:-} " == *" freertos-amp-proc1-profile "* ]]; then export RP1_AMP_PROC1_PROFILE=1; fi
 if [[ " ${RP1_EXTRA_FEATURES:-} " == *" freertos-amp-proc1-local-stack "* ]]; then export RP1_AMP_PROC1_LOCAL_STACK=1; fi
 if [[ " ${RP1_EXTRA_FEATURES:-} " == *" freertos-amp-proc1-no-hooks "* ]]; then export RP1_AMP_PROC1_NO_HOOKS=1; fi
@@ -273,7 +274,7 @@ fi
 python3 "$repo/tools/check-freertos-elf.py" "$out/RP1.elf" "${elf_args[@]}" > "$out/elf-validation.json"
 if [[ "$cargo_feature" == freertos-amp-observation ]]; then
     : "${RP1_OPENAMP_SOURCE:?set the pinned OpenAMP source for callback/stack admission}"
-    if [[ "${RP1_AMP_PROC1_PROFILE:-}" == 1 ]]; then
+    if [[ "${RP1_AMP_PROC1_PROFILE:-}" == 1 || "${RP1_CLK_SYS_200:-}" == 1 ]]; then
         python3 -B "$repo/tools/remap-amp-stack-review.py" \
           --reference-elf "$RP1_AMP_PROC1_PROFILE_REFERENCE" --candidate-elf "$out/RP1.elf" \
           --review "$repo/tools/amp-observation-stack-review.json" --hal "$repo" \

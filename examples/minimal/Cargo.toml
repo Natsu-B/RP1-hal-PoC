@@ -31,6 +31,8 @@ freertos-openamp-rpmsg = ["freertos-openamp", "rp1-hal/openamp-rpmsg"]
 freertos-amp-bulk = ["freertos-openamp-rpmsg", "rp1-hal/amp-bulk"]
 freertos-amp-bulk-ddr-diagnostics = ["freertos-amp-bulk", "rp1-freertos/task-pool-2304"]
 freertos-amp-control = ["freertos-amp-bulk", "rp1-freertos/task-pool-1024", "rp1-freertos/sync-pool-r1"]
+# Cold AMP startup only; recalibrate SysTick after selecting the locked PLL.
+freertos-clk-sys-200 = ["freertos-amp-control"]
 freertos-amp-proc1 = ["freertos-amp-control", "rp1-hal/amp-proc1-probe", "dep:rp1-abi"]
 freertos-amp-proc1-gpio-irq = ["freertos-amp-proc1"]
 freertos-amp-observation = ["freertos-amp-proc1-gpio-irq", "rp1-hal/amp-observation"]
