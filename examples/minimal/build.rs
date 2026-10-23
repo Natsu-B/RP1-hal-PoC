@@ -109,7 +109,7 @@ ASSERT(__app_limit <= _stack_start - 4096, "diagnostics overlap MSP")
     }
     if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1").is_some() {
         let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("amp-proc1.x");
-        std::fs::write(&path, r#"
+        let mut script = String::from(r#"
 SECTIONS {
  .amp_proc1_storage 0x2000ba00 (NOLOAD) : { KEEP(*(.amp_proc1.storage)); } > RP1_APP_SRAM
  .amp_proc1_vectors 0x2000be00 : { __amp_proc1_vectors = .; KEEP(*(.amp_proc1.vectors)); } > RP1_APP_SRAM
@@ -127,7 +127,15 @@ ASSERT(ADDR(.amp_proc1_vectors) % 512 == 0, "proc1 VTOR alignment")
 ASSERT(ADDR(.amp_proc1_stack) + SIZEOF(.amp_proc1_stack) <= ADDR(.ddr_diagnostics_text), "proc1 overlaps DDR diagnostics")
 ASSERT(DEFINED(rp1_control_session) && DEFINED(rp1_control_retire), "proc1 handoff hooks missing")
 ASSERT(DEFINED(AmpProc1Body) && DEFINED(AmpProc1Entry), "proc1 runtime missing")
-"#).unwrap();
+"#);
+        if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1_NO_HOOKS").is_some()
+            && std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1_LOCAL_STACK").is_some() {
+            // C1 switches to local DSRAM before using a stack; keep the shared guards.
+            script = script.replace(".amp_proc1_stack 0x2000bf40 (NOLOAD)", ".amp_proc1_stack 0x2000bf40")
+                .replace("KEEP(*(.amp_proc1.stack));", "LONG(0); LONG(0); KEEP(*(.amp_proc1.doorbell_text)); __amp_proc1_doorbell_end = .; . = __amp_proc1_guard_high; LONG(0); LONG(0);");
+            script.push_str("ASSERT(__amp_proc1_doorbell_end <= __amp_proc1_guard_high, \"doorbell exceeds unused shared stack\")\n");
+        }
+        std::fs::write(&path, script).unwrap();
         if std::env::var_os("CARGO_FEATURE_FREERTOS_AMP_PROC1_GPIO_IRQ").is_some() {
             use std::io::Write;
             std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(br#"

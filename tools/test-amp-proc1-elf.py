@@ -42,6 +42,10 @@ for i in range(h[10]):
 else: raise AssertionError('proc1 storage PT_LOAD missing')
 if os.environ.get('RP1_AMP_PROC1_PROFILE') == '1':
     i,s=slots[b'.amp_proc1_profile_text']; mutations.append((s[4],0))
+    if os.environ.get('RP1_AMP_PROC1_LOCAL_STACK')=='1' and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1':
+        i,s=slots[b'.amp_proc1_stack']
+        # Remove masking, redirect the copied handler, or change its INTF CLR literal.
+        mutations += [(s[4]+j,0) for j in [8,0x17c,0x214]]
 i,s=slots[b'.amp_proc1_vectors'];mutations += [(s[4]+j*4,0) for j in [0,1,2,79]+([16,17] if args.amp_proc1_gpio_irq else [])]
 table=result['amp_proc1_probe']['codegen'].get('status_table')
 if table:

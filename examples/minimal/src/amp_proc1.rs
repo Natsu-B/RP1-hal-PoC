@@ -47,6 +47,8 @@ pub(crate) use hardware::handoff_marker;
 mod gpio_irq;
 #[cfg(all(target_arch = "arm", feature = "freertos-amp-proc1-profile"))]
 mod profile;
+#[cfg(all(target_arch = "arm", feature = "freertos-amp-proc1-no-hooks", feature = "freertos-amp-proc1-local-stack"))]
+mod doorbell;
 
 /// Profiling hook; expands to nothing unless `freertos-amp-proc1-profile`.
 macro_rules! prof {
@@ -99,6 +101,7 @@ mod hardware {
     static mut RP1_AMP_PROC1_STATUS: [u32;32] = [0;32];
     #[used]
     #[unsafe(link_section = ".amp_proc1.stack")]
+    #[cfg(not(all(feature="freertos-amp-proc1-no-hooks", feature="freertos-amp-proc1-local-stack")))]
     static mut PROC1_STACK: [u64;258] = [0;258];
     static mut LAUNCH: Launch = Launch { attempted: false };
     // The existing cold marker token is moved once; C0 never writes it again.
@@ -212,6 +215,8 @@ mod hardware {
         let epoch=get(31)|1;put(31,epoch);barrier();
         let state=if clear_output() {state} else {4};
         put(1,state);barrier();put(31,epoch.wrapping_add(1));
+        #[cfg(all(feature="freertos-amp-proc1-no-hooks", feature="freertos-amp-proc1-local-stack"))]
+        if state==2 {unsafe {super::doorbell::AmpProc1DoorbellStart();}}
         loop {unsafe {core::arch::asm!("dsb sy","wfe",options(nostack,preserves_flags));}}
     }
 
@@ -271,6 +276,8 @@ mod hardware {
                 p.cast_mut().cast::<u32>().write_volatile(GUARD);
                 p.cast_mut().cast::<u32>().add(1).write_volatile(!GUARD);
             }
+            // The local-stack/no-hooks diagnostic uses this otherwise idle reservation for code.
+            #[cfg(not(all(feature="freertos-amp-proc1-no-hooks", feature="freertos-amp-proc1-local-stack")))]
             for i in 0..512 {ptr::addr_of!(__amp_proc1_stack_low).cast_mut().cast::<u32>().add(i).write_volatile(FILL);}
             put(16,boot as u32);put(17,(boot>>32) as u32);put(18,session as u32);put(19,(session>>32) as u32);
             put(20,ptr::addr_of!(__amp_proc1_stack_low) as u32);put(21,ptr::addr_of!(__amp_proc1_stack_top) as u32);

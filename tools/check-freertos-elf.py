@@ -24,6 +24,7 @@ def profile_reference():
 
 def proc1_codegen(disassembly, gpio_irq=False, observation=False):
     profile=os.environ.get('RP1_AMP_PROC1_PROFILE')=='1'
+    doorbell=profile and os.environ.get('RP1_AMP_PROC1_LOCAL_STACK')=='1' and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1'
     starts=list(re.finditer(r'^([0-9a-f]+) <([^>]+)>:\n',disassembly,re.M))
     blocks={int(m[1],16):(m[2],disassembly[m.end():starts[i+1].start() if i+1<len(starts) else len(disassembly)]) for i,m in enumerate(starts)}
     named={name:(addr,body) for addr,(name,body) in blocks.items()}
@@ -44,7 +45,7 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         # Keyed by (DSRAM stack, hooks compiled out); each value was reviewed against its disassembly.
         body_pins={('0','0'):'afe9292ec9f8ca0a5bd0b438362a74ef7674aa4fa4d4bf1dae2b3e406e8008ec',
                    ('1','0'):'79b4cad2ba4eebfb2653e2b1c1d7ed3f268ad088fdb0b1ef4714dbccd3b99405',
-                   ('1','1'):'fb8e70d9c09b7173edd5b9959589d6f41bf57c72f7a429afbd98dfce2e241181'}
+                   ('1','1'):'501a9c131bed3096fe93f0e23c5ddb268fbdeb7cb91475dc5b9af36cb30fbaa0'}
         mode=(os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))
         assert mode in body_pins and hashlib.sha256(body_code).hexdigest()==body_pins[mode], 'profile loop instructions changed; review again'
     peer_quiesce=not observation and version=='P1A9' and hashlib.sha256(body_code).hexdigest()=='c4324f7e22b9c180a8de3c004d22117f29b904f7c17d8e663eb1ec6f116f1508'
@@ -186,7 +187,16 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
         irq= gpio_irq and any(key in name for key in irq_review)
         # Opt-in profiler: its hooks change the reviewed body; pin is replaced by the recorded hash.
         profiled=profile and (name=='AmpProc1Body' or 'amp_proc17profile' in name)
-        assert allowed or timer or outline or gate or gpio or irq or profiled, 'proc1 calls unadmitted service/driver '+name
+        doorbell_code=doorbell and name in {'AmpProc1DoorbellStart','AmpProc1DoorbellIrq'}
+        assert allowed or timer or outline or gate or gpio or irq or profiled or doorbell_code, 'proc1 calls unadmitted service/driver '+name
+        if doorbell_code:
+            # Written review: docs/doorbell-disassembly-review.md. No general indirect-call exception.
+            code='\n'.join(line.split(':',1)[1].split('@',1)[0].strip() for line in body.splitlines()
+                if re.match(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+[a-z]',line)).encode()
+            assert hashlib.sha256(code).hexdigest()=={
+                'AmpProc1DoorbellStart':'26e47b5b2a68fe6f5f3513ff0cb768b76d814d8a5752b66e6860ba48e75d0c63',
+                'AmpProc1DoorbellIrq':'f50dc120eb94adc7193c3ea819ec5f41e09ab125c34cb41eec672ad78f4d7c59',
+            }[name], 'doorbell reviewed opcodes changed'
         # Profile-only exception: probe() times one fixed NOP snippet in proc-local ISRAM and
         # the same snippet in free shared SRAM; no other indirect call is admitted.
         snippet_call=(profile and 'amp_proc17profile5probe' in name
@@ -300,12 +310,14 @@ def proc1_codegen(disassembly, gpio_irq=False, observation=False):
                 if irq:
                     permitted.update({0x400d0110,0x400d0114,0x400d0118,0x400d0048,
                         0x400d004c,0x400d204c,0x400d304c,0x400d2114,0x400d3110,0x400d3114,0x400e0004})
+                if doorbell_code:permitted.update({0x400ac028,0x400d004c,0x400d0118,0x400d2110,0x400d3110,0x400d3114})
                 assert value in permitted, 'proc1 references peripheral MMIO'
             if 0xe0000000<=value<0xe0100000:
                 assert value in ({0xe000ed08,0xe00ff01c}|({0xe000e100,0xe000e180,0xe000e200,0xe000e280} if irq else set())
                     |({0xe000e010,0xe000e014,0xe000e018,0xe000e01c,0xe000e100} if profiled else set())
                     |({0xe000e104,0xe000e200,0xe000e204,0xe000e280,0xe000e284} if profiled and 'lib_probes' in name and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1' else set())
-                    |({0xe000ed04,0xe000ed28} if name=='AmpProc1Fault' and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1' else set())), 'proc1 references unadmitted local MMIO'
+                    |({0xe000ed04,0xe000ed28} if name=='AmpProc1Fault' and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1' else set())
+                    |({0xe000e100,0xe000e180,0xe000e280} if doorbell_code else set())), 'proc1 references unadmitted local MMIO'
         for branch in re.finditer(r'\b(?:bl|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(?:\.[nw])?|cbnz|cbz)\s+(?:r\d+,\s*)?([0-9a-f]+)\s+<',body):
             target=int(branch[1],16)
             if target in blocks and target!=address:todo.append(target)
@@ -341,6 +353,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
     nulls = []
     # Diagnostic-only C1 profiler build (freertos-amp-proc1-profile); never a production image.
     profile = os.environ.get('RP1_AMP_PROC1_PROFILE') == '1'
+    doorbell = profile and os.environ.get('RP1_AMP_PROC1_LOCAL_STACK')=='1' and os.environ.get('RP1_AMP_PROC1_NO_HOOKS')=='1'
     assert not profile or amp_observation, 'profiler requires the OBS1 C1 build'
     profile_loads = []
     for index in range(phcount):
@@ -475,7 +488,12 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
     if amp_proc1:
         expected = {b'.amp_proc1_storage':(8,3,0x2000ba00,None),
                     b'.amp_proc1_vectors':(1,2,0x2000be00,320),
-                    b'.amp_proc1_stack':(8,3,0x2000bf40,2064)}
+                    b'.amp_proc1_stack':(1,6,0x2000bf40,2064) if doorbell else (8,3,0x2000bf40,2064)}
+        if doorbell:
+            s=amp_sections[b'.amp_proc1_stack']
+            assert hashlib.sha256(data[s[4]:s[4]+s[5]]).hexdigest()=='0cc39bd1ec9db6259203df70f0dc8dcba5af040c2f737bd3867daafb72227a68', 'doorbell source/literals changed; review again'
+            assert symbols['AmpProc1DoorbellStart']&~1==0x2000bf48
+            assert symbols['AmpProc1DoorbellIrq']&~1==0x2000c0f8 and symbols['AmpProc1DoorbellIrqEnd']==0x2000c160, 'doorbell copy bounds changed'
         if amp_proc1_gpio_irq:
             expected.update({b'.amp_proc1_irq_storage':(8,3,0x2000c750,130),
                              b'.amp_proc1_irq_text':(1,6,0x2000c7e0,None)})
@@ -492,7 +510,7 @@ def check(path, local_monitor=False, require_scmi=False, require_ddr_diagnostics
             # Profiler scratch 0x2000f600 and results 0x2000f700 follow the code, below the RTOS record.
             assert profile_loads==[(0x2000f000,0x2000f000+amp_sections[b'.amp_proc1_profile_text'][5])], 'profile segment/section mismatch'
             prof = amp_sections[b'.amp_proc1_profile_text']
-            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == {('0','0'):'d5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328',('1','0'):'d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8',('1','1'):'09cfeaa03a3776e2e4e3995cd10a1bfcff60ec26dfb1f28010595d2e6b60ee8b'}.get((os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))), 'profile SysTick instructions changed; review again'
+            assert hashlib.sha256(data[prof[4]:prof[4]+prof[5]]).hexdigest() == {('0','0'):'d5e38660b89ccd30b79425dbee6f96544a2d058b69c2910a59e22207eb9ce328',('1','0'):'d4bab8044ee4e92d29ebaf6192e0cbce8ec0187abeb38233eef12ce697fe34d8',('1','1'):'e7a150437ee21275bf8b3cf7e015233e44bf8018f353b849086a9e77a1ed0d3f'}.get((os.environ.get('RP1_AMP_PROC1_LOCAL_STACK','0'),os.environ.get('RP1_AMP_PROC1_NO_HOOKS','0'))), 'profile SysTick instructions changed; review again'
         assert control_contract[0][3]+24<=0x2000ba00, 'proc1 overlaps clock/proc0 contract'
         assert 0x2000c750<=diagnostic[0][3], 'proc1 stack overlaps DDR code'
         for name,value in [('__amp_proc1_vectors',0x2000be00),('__amp_proc1_guard_low',0x2000bf40),
